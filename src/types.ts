@@ -66,6 +66,8 @@ export type AppConfig = {
     apiKey?: string;
     apiBase: string;
     autoSearch: boolean;
+    plannerEnabled: boolean;
+    plannerModelKind: TextModelKind;
     searchDepth: WebSearchDepth;
     extractDepth: WebExtractDepth;
     maxResults: number;
@@ -192,6 +194,9 @@ export type WebCrawlResponse = {
 export type WebContext = {
   query?: string;
   reason: string;
+  plannerSource?: 'model' | 'fallback';
+  plannerAction?: 'none' | 'search' | 'extract' | 'search_and_extract';
+  usesPreviousTurn?: boolean;
   searchedAt: string;
   search?: WebSearchResponse;
   extracts?: WebExtractResponse;

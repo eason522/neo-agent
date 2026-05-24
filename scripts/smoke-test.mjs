@@ -38,6 +38,8 @@ test('初始化配置', async () => {
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
   assertIncludes(config, '"autoSearch"');
+  assertIncludes(config, '"plannerEnabled"');
+  assertIncludes(config, '"plannerModelKind"');
 });
 
 test('自动联网规划能识别时效问题和追问', async () => {

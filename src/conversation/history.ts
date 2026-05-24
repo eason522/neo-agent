@@ -21,6 +21,22 @@ export class ConversationHistory {
     return this.messages.map(message => ({ ...message }));
   }
 
+  recentMessagesForPlanning(maxChars: number): ChatMessage[] {
+    this.trimToBudget();
+    const selected: ChatMessage[] = [];
+    let usedChars = 0;
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (!message) continue;
+      const remaining = maxChars - usedChars;
+      if (remaining <= 0) break;
+      const content = trimMessage(message.content, remaining);
+      selected.unshift({ ...message, content });
+      usedChars += content.length;
+    }
+    return selected;
+  }
+
   lastUserInput(): string | undefined {
     for (let index = this.messages.length - 1; index >= 0; index -= 1) {
       const message = this.messages[index];

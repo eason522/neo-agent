@@ -322,7 +322,7 @@ function checkWebConfig(config: AppConfig): DoctorCheck {
     status: 'pass',
     name: '联网搜索',
     message: 'Tavily 配置存在。',
-    detail: `apiBase=${config.web.apiBase}, apiKey=${maskSecret(config.web.apiKey)}, maxResults=${config.web.maxResults}`
+    detail: `apiBase=${config.web.apiBase}, apiKey=${maskSecret(config.web.apiKey)}, maxResults=${config.web.maxResults}, planner=${config.web.plannerEnabled ? config.web.plannerModelKind : 'disabled'}`
   };
 }
 

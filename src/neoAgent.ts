@@ -12,7 +12,7 @@ import { Logger } from './logging/logger.js';
 import { TranscriptService } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
-import { planWebUse } from './web/webPlanner.js';
+import { planWebUseWithModel } from './web/webPlanner.js';
 import { ConversationHistory } from './conversation/history.js';
 
 export class NeoAgent {
@@ -125,6 +125,9 @@ export class NeoAgent {
         web: webContext ? {
           reason: webContext.reason,
           query: webContext.query,
+          plannerSource: webContext.plannerSource,
+          plannerAction: webContext.plannerAction,
+          usesPreviousTurn: webContext.usesPreviousTurn,
           searchResults: webContext.search?.results.length ?? 0,
           extractResults: webContext.extracts?.results.length ?? 0,
           searchedAt: webContext.searchedAt
@@ -177,25 +180,56 @@ export class NeoAgent {
 
   private async buildWebContext(input: string): Promise<WebContext | undefined> {
     const previousUserInput = this.conversationHistory.lastUserInput();
-    const plan = planWebUse(input, this.config.web.autoSearch, previousUserInput);
+    if (!this.config.web.autoSearch) {
+      this.logger.info('web.plan', {
+        shouldUseWeb: false,
+        reason: '自动联网已关闭。',
+        autoSearch: false,
+        webConfigured: Boolean(this.config.web.apiKey)
+      });
+      return undefined;
+    }
+    if (!this.config.web.apiKey) {
+      this.logger.info('web.plan', {
+        shouldUseWeb: false,
+        reason: '未配置 Tavily API key，跳过联网规划。',
+        autoSearch: this.config.web.autoSearch,
+        webConfigured: false
+      });
+      return undefined;
+    }
+
+    const plan = await planWebUseWithModel(input, {
+      autoSearchEnabled: this.config.web.autoSearch,
+      plannerEnabled: this.config.web.plannerEnabled,
+      previousUserInput,
+      history: this.conversationHistory.recentMessagesForPlanning(8000),
+      model: this.models.get(this.config.web.plannerModelKind),
+      timeoutMs: Math.min(this.config.web.timeoutMs, 12000)
+    });
     this.logger.info('web.plan', {
       shouldUseWeb: plan.shouldUseWeb,
       reason: plan.reason,
+      source: plan.source,
+      action: plan.action,
+      usesPreviousTurn: plan.usesPreviousTurn,
       hasQuery: Boolean(plan.query),
       urlCount: plan.urls.length,
+      plannerError: plan.error,
       hasPreviousUserInput: Boolean(previousUserInput),
       autoSearch: this.config.web.autoSearch,
+      plannerEnabled: this.config.web.plannerEnabled,
+      plannerModelKind: this.config.web.plannerModelKind,
       webConfigured: Boolean(this.config.web.apiKey)
     });
     if (!plan.shouldUseWeb) return undefined;
-    if (!this.config.web.apiKey) {
-      this.logger.warn('web.skip.missing_api_key', { reason: plan.reason });
-      return undefined;
-    }
 
     const context: WebContext = {
       query: plan.query,
       reason: plan.reason,
+      plannerSource: plan.source,
+      plannerAction: plan.action,
+      usesPreviousTurn: plan.usesPreviousTurn,
       searchedAt: new Date().toISOString()
     };
 
