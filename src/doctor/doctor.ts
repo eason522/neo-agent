@@ -62,6 +62,7 @@ export async function runDoctor(cwd = process.cwd()): Promise<DoctorReport> {
     checks.push(await checkTranscriptPath(config));
     checks.push(await checkSoul(cwd));
     checks.push(await checkOpenViking(config));
+    checks.push(checkWebConfig(config));
     checks.push(...checkMcpConfig(config));
   }
 
@@ -296,6 +297,33 @@ async function checkOpenViking(config: AppConfig): Promise<DoctorCheck> {
       fix: '如果需要 OpenViking 检索，请启动 OpenViking 服务，或把 NEO_AGENT_MEMORY_BACKEND 设置为 local。'
     };
   }
+}
+
+function checkWebConfig(config: AppConfig): DoctorCheck {
+  if (!config.web.apiKey) {
+    return {
+      status: 'warn',
+      name: '联网搜索',
+      message: '未配置 Tavily API key，web search/extract 暂不可用。',
+      detail: `provider=${config.web.provider}, apiBase=${config.web.apiBase}`,
+      fix: '设置 TAVILY_API_KEY，或写入 ~/.neo-agent/config.json 的 web.apiKey。'
+    };
+  }
+  if (!/^https?:\/\//.test(config.web.apiBase)) {
+    return {
+      status: 'fail',
+      name: '联网搜索',
+      message: 'Tavily apiBase 不是有效 URL。',
+      detail: config.web.apiBase,
+      fix: '把 web.apiBase 改成 http:// 或 https:// 开头的地址。'
+    };
+  }
+  return {
+    status: 'pass',
+    name: '联网搜索',
+    message: 'Tavily 配置存在。',
+    detail: `apiBase=${config.web.apiBase}, apiKey=${maskSecret(config.web.apiKey)}, maxResults=${config.web.maxResults}`
+  };
 }
 
 function checkMcpConfig(config: AppConfig): DoctorCheck[] {

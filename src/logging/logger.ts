@@ -187,6 +187,7 @@ function redactString(input: string): string {
   return input
     .replace(/sk-[A-Za-z0-9_-]{12,}/g, 'sk-[REDACTED]')
     .replace(/tp-[A-Za-z0-9_-]{12,}/g, 'tp-[REDACTED]')
+    .replace(/tvly-[A-Za-z0-9_-]{12,}/g, 'tvly-[REDACTED]')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, 'data:image/[REDACTED];base64,[REDACTED]');
 }

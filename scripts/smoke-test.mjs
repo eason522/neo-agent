@@ -21,6 +21,7 @@ test('显示帮助', async () => {
   assertIncludes(result.stdout, '个人终端 AI agent');
   assertIncludes(result.stdout, 'doctor');
   assertIncludes(result.stdout, 'dream');
+  assertIncludes(result.stdout, 'web');
   assertIncludes(result.stdout, 'transcripts');
 });
 
@@ -31,6 +32,9 @@ test('初始化配置', async () => {
   assertIncludes(config, 'deepseek-v4-pro');
   assertIncludes(config, 'mimo-v2.5');
   assertIncludes(config, '"dreaming"');
+  assertIncludes(config, '"web"');
+  assertIncludes(config, 'https://api.tavily.com');
+  assertIncludes(config, '"maxDepth"');
 });
 
 test('doctor 缺 key 时失败并给出建议', async () => {
@@ -92,6 +96,7 @@ async function run(args, options = {}) {
     NEO_AGENT_HOME: tempHome,
     DEEPSEEK_API_KEY: '',
     MIMO_API_KEY: '',
+    TAVILY_API_KEY: '',
     NEO_AGENT_LOG_MAX_BYTES: '2048',
     NEO_AGENT_LOG_MAX_FILES: '3',
     NEO_AGENT_LOG_RETENTION_DAYS: '14'

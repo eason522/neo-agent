@@ -8,6 +8,7 @@ import { startRepl } from './terminal/repl.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService, tailFile } from './transcript/transcriptService.js';
 import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
+import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch, TavilyClient } from './web/tavilyClient.js';
 
 const program = new Command();
 
@@ -128,6 +129,99 @@ program
     }
   });
 
+const webCommand = program
+  .command('web')
+  .description('联网搜索和网页读取');
+
+webCommand
+  .command('search')
+  .description('使用 Tavily 搜索互联网')
+  .argument('<query...>')
+  .option('-n, --max-results <count>', '结果数量')
+  .option('-d, --depth <basic|advanced>', '搜索深度')
+  .action(async (queryParts: string[], options: { maxResults?: string; depth?: 'basic' | 'advanced' }) => {
+    const config = await loadConfig();
+    const logger = new Logger(config);
+    const client = new TavilyClient(config, logger);
+    const maxResults = Number.parseInt(options.maxResults ?? '', 10);
+    try {
+      const response = await client.search(queryParts.join(' '), {
+        maxResults: Number.isFinite(maxResults) ? maxResults : undefined,
+        depth: options.depth
+      });
+      console.log(formatWebSearch(response));
+    } finally {
+      await logger.flush();
+    }
+  });
+
+webCommand
+  .command('extract')
+  .description('使用 Tavily 提取网页正文')
+  .argument('<url...>')
+  .option('-d, --depth <basic|advanced>', '提取深度')
+  .option('--max-chars <count>', '每个网页最多输出字符数', '5000')
+  .action(async (urls: string[], options: { depth?: 'basic' | 'advanced'; maxChars: string }) => {
+    const config = await loadConfig();
+    const logger = new Logger(config);
+    const client = new TavilyClient(config, logger);
+    const maxChars = Number.parseInt(options.maxChars, 10);
+    try {
+      const response = await client.extract(urls, { depth: options.depth });
+      console.log(formatWebExtract(response, Number.isFinite(maxChars) ? maxChars : 5000));
+    } finally {
+      await logger.flush();
+    }
+  });
+
+webCommand
+  .command('map')
+  .description('使用 Tavily 发现站点 URL')
+  .argument('<url>')
+  .option('-i, --instructions <text>', '自然语言筛选指令')
+  .option('--limit <count>', '最多返回 URL 数量')
+  .option('--depth <count>', '最大深度，1-5')
+  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string }) => {
+    const config = await loadConfig();
+    const logger = new Logger(config);
+    const client = new TavilyClient(config, logger);
+    try {
+      const response = await client.map(url, {
+        instructions: options.instructions,
+        limit: parseOptionalInt(options.limit),
+        maxDepth: parseOptionalInt(options.depth)
+      });
+      console.log(formatWebMap(response));
+    } finally {
+      await logger.flush();
+    }
+  });
+
+webCommand
+  .command('crawl')
+  .description('使用 Tavily 有限深度爬取站点正文')
+  .argument('<url>')
+  .option('-i, --instructions <text>', '自然语言筛选指令')
+  .option('--limit <count>', '最多处理页面数')
+  .option('--depth <count>', '最大深度，1-5')
+  .option('--max-chars <count>', '每个页面最多输出字符数', '1200')
+  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string; maxChars: string }) => {
+    const config = await loadConfig();
+    const logger = new Logger(config);
+    const client = new TavilyClient(config, logger);
+    const maxChars = Number.parseInt(options.maxChars, 10);
+    try {
+      const response = await client.crawl(url, {
+        instructions: options.instructions,
+        limit: parseOptionalInt(options.limit),
+        maxDepth: parseOptionalInt(options.depth)
+      });
+      console.log(formatWebCrawl(response, Number.isFinite(maxChars) ? maxChars : 1200));
+    } finally {
+      await logger.flush();
+    }
+  });
+
 program
   .command('chat')
   .description('启动终端对话')
@@ -150,3 +244,9 @@ program.parseAsync(process.argv).catch(error => {
   console.error(chalk.red(error instanceof Error ? error.message : String(error)));
   process.exitCode = 1;
 });
+
+function parseOptionalInt(input: string | undefined): number | undefined {
+  if (!input) return undefined;
+  const parsed = Number.parseInt(input, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}

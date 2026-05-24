@@ -11,6 +11,7 @@ import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
+import { TavilyClient } from './web/tavilyClient.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -21,6 +22,7 @@ export class NeoAgent {
   readonly logger: Logger;
   readonly transcripts: TranscriptService;
   readonly dreams: DreamService;
+  readonly web: TavilyClient;
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
@@ -34,6 +36,7 @@ export class NeoAgent {
     this.mcp = new McpManager(config, this.logger);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
+    this.web = new TavilyClient(config, this.logger);
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
   }

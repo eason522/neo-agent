@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { MemoryCategory, MemoryRecord } from '../types.js';
+import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: chalk.gray('neo> ') });
@@ -194,6 +195,36 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       }
       return true;
     }
+    case '/web': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const [subCommand, ...webArgs] = rest;
+      if (subCommand === 'search') {
+        const query = webArgs.join(' ').trim();
+        if (!query) console.log('用法：/web search <查询词>');
+        else console.log(formatWebSearch(await agent.web.search(query)));
+        return true;
+      }
+      if (subCommand === 'extract') {
+        const urls = webArgs.filter(Boolean);
+        if (urls.length === 0) console.log('用法：/web extract <url...>');
+        else console.log(formatWebExtract(await agent.web.extract(urls)));
+        return true;
+      }
+      if (subCommand === 'map') {
+        const [url, ...instructionParts] = webArgs;
+        if (!url) console.log('用法：/web map <url> [筛选指令]');
+        else console.log(formatWebMap(await agent.web.map(url, { instructions: instructionParts.join(' ').trim() || undefined })));
+        return true;
+      }
+      if (subCommand === 'crawl') {
+        const [url, ...instructionParts] = webArgs;
+        if (!url) console.log('用法：/web crawl <url> [筛选指令]');
+        else console.log(formatWebCrawl(await agent.web.crawl(url, { instructions: instructionParts.join(' ').trim() || undefined })));
+        return true;
+      }
+      console.log('用法：/web search <查询词>、/web extract <url...>、/web map <url> 或 /web crawl <url>');
+      return true;
+    }
     default:
       await agent.transcripts.append('command', line, { command, known: false });
       console.log(`未知命令：${command}`);
@@ -224,6 +255,10 @@ function printHelp(): void {
     '/transcripts [数量]   查看最近会话 transcript 列表',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
     '/dream [--dry-run]    整理记忆并提炼灵感',
+    '/web search <查询词>  联网搜索',
+    '/web extract <url>    提取网页正文',
+    '/web map <url>        发现站点 URL',
+    '/web crawl <url>      有限深度爬取站点正文',
     '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
 }

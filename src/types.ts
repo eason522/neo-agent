@@ -22,6 +22,8 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 export type MemoryCategory = 'preference' | 'project_fact' | 'workflow' | 'session_summary';
 export type MemoryOrigin = 'manual' | 'session' | 'agent' | 'imported' | 'openviking';
 export type MemoryStatus = 'active' | 'archived';
+export type WebSearchDepth = 'basic' | 'advanced';
+export type WebExtractDepth = 'basic' | 'advanced';
 
 export type McpServerConfig = {
   command: string;
@@ -54,6 +56,19 @@ export type AppConfig = {
     transcriptTailLines: number;
     maxMemories: number;
     modelKind: TextModelKind;
+  };
+  web: {
+    provider: 'tavily';
+    apiKey?: string;
+    apiBase: string;
+    searchDepth: WebSearchDepth;
+    extractDepth: WebExtractDepth;
+    maxResults: number;
+    maxDepth: number;
+    maxBreadth: number;
+    maxPages: number;
+    allowExternal: boolean;
+    timeoutMs: number;
   };
   skills: {
     autoCreate: boolean;
@@ -122,4 +137,47 @@ export type AgentResponse = {
   visionContext?: string;
   memories: MemoryHit[];
   skills: Skill[];
+};
+
+export type WebSearchResult = {
+  title: string;
+  url: string;
+  content: string;
+  score?: number;
+  publishedDate?: string;
+};
+
+export type WebSearchResponse = {
+  query: string;
+  answer?: string;
+  results: WebSearchResult[];
+  responseTime?: number;
+};
+
+export type WebExtractResult = {
+  url: string;
+  content: string;
+};
+
+export type WebExtractResponse = {
+  results: WebExtractResult[];
+  failedResults: Array<{ url: string; error?: string }>;
+  responseTime?: number;
+};
+
+export type WebMapResponse = {
+  baseUrl?: string;
+  results: string[];
+  responseTime?: number;
+};
+
+export type WebCrawlResult = {
+  url: string;
+  content: string;
+};
+
+export type WebCrawlResponse = {
+  baseUrl?: string;
+  results: WebCrawlResult[];
+  responseTime?: number;
 };

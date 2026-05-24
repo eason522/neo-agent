@@ -37,6 +37,19 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
     maxMemories: z.number().int().positive(),
     modelKind: z.enum(['main', 'small'])
   }),
+  web: z.object({
+    provider: z.literal('tavily'),
+    apiKey: z.string().optional(),
+    apiBase: z.string(),
+    searchDepth: z.enum(['basic', 'advanced']),
+    extractDepth: z.enum(['basic', 'advanced']),
+    maxResults: z.number().int().positive(),
+    maxDepth: z.number().int().positive(),
+    maxBreadth: z.number().int().positive(),
+    maxPages: z.number().int().positive(),
+    allowExternal: z.boolean(),
+    timeoutMs: z.number().int().positive()
+  }),
   skills: z.object({
     autoCreate: z.boolean(),
     autoCreateThreshold: z.number().int().positive()
@@ -121,6 +134,19 @@ export function defaultConfig(): AppConfig {
       transcriptTailLines: Number.parseInt(process.env.NEO_AGENT_DREAM_TRANSCRIPT_TAIL_LINES || '80', 10),
       maxMemories: Number.parseInt(process.env.NEO_AGENT_DREAM_MAX_MEMORIES || '80', 10),
       modelKind: (process.env.NEO_AGENT_DREAM_MODEL_KIND as AppConfig['dreaming']['modelKind']) || 'main'
+    },
+    web: {
+      provider: 'tavily',
+      apiKey: process.env.TAVILY_API_KEY,
+      apiBase: process.env.TAVILY_API_BASE || 'https://api.tavily.com',
+      searchDepth: (process.env.NEO_AGENT_WEB_SEARCH_DEPTH as AppConfig['web']['searchDepth']) || 'basic',
+      extractDepth: (process.env.NEO_AGENT_WEB_EXTRACT_DEPTH as AppConfig['web']['extractDepth']) || 'basic',
+      maxResults: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_RESULTS || '5', 10),
+      maxDepth: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_DEPTH || '1', 10),
+      maxBreadth: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_BREADTH || '20', 10),
+      maxPages: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_PAGES || '20', 10),
+      allowExternal: process.env.NEO_AGENT_WEB_ALLOW_EXTERNAL === '1',
+      timeoutMs: Number.parseInt(process.env.NEO_AGENT_WEB_TIMEOUT_MS || '12000', 10)
     },
     skills: {
       autoCreate: true,

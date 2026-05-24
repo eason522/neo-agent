@@ -27,6 +27,7 @@
 - CLI 命令冒烟测试
 - 结构化记忆 schema 和显式记忆管理命令
 - dreaming 记忆整理命令和定时门控基础
+- Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览
 - GitHub `main` 分支同步
 
 ## 开发规则
@@ -88,13 +89,15 @@
 
 ### M4：工具和 MCP 执行
 
-状态：计划中
+状态：进行中
 
-- [ ] 添加联网能力配置：搜索、网页提取、站点 map/crawl、超时、结果数量、脱敏日志
-- [ ] 接入 Tavily Search，作为默认轻量搜索能力
-- [ ] 接入 Tavily Extract，用于读取指定 URL 的正文和引用来源
-- [ ] 接入 Tavily Map/Crawl，用于文档站、产品页、项目资料的有限深度浏览
-- [ ] 添加 `neo web search/extract/map/crawl` 命令和 REPL slash command
+- [x] 添加联网能力配置：搜索、网页提取、超时、结果数量、脱敏日志
+- [x] 添加站点 map/crawl 配置：最大深度、最大页面数、费用保护
+- [ ] 添加站点 map/crawl 路径过滤：select_paths、exclude_paths、select_domains、exclude_domains
+- [x] 接入 Tavily Search，作为默认轻量搜索能力
+- [x] 接入 Tavily Extract，用于读取指定 URL 的正文和引用来源
+- [x] 接入 Tavily Map/Crawl，用于文档站、产品页、项目资料的有限深度浏览
+- [x] 添加 `neo web search/extract/map/crawl` 命令和 REPL slash command
 - [ ] 把联网结果接入 agent 上下文，并要求回答中保留来源链接和时间
 - [ ] 为 MCP 工具执行添加安全调用协议
 - [ ] 针对高风险工具添加权限确认
@@ -179,6 +182,10 @@ dreaming 本质上是记忆生命周期：整理 transcript、合并重复记忆
 ### 2026-05-25：dreaming 默认不自动消耗模型额度
 
 参考 CC-Source autoDream 的门控思路，neo 先实现 `neo dream` 和 `/dream` 手动整理能力，并预留 `NEO_AGENT_DREAM_ENABLED`、最小间隔和最小会话数量。默认关闭自动 dreaming，避免用户只是启动 neo 就发生后台模型调用。开启后只在 chat 生命周期中按门控触发；单次 `ask` 和 `dream` 命令不会额外触发定时 dreaming。
+
+### 2026-05-25：Tavily 先作为显式联网工具，不自动混入普通 ask
+
+第一版联网能力先实现 `neo web search/extract/map/crawl` 和对应 `/web` slash command。这样用户能主动查最新信息、读取网页正文、发现文档站 URL 和做有限深度爬取，但普通 `neo ask` 暂不自动联网，避免不透明的额度消耗和来源混乱。下一步再把联网结果作为显式上下文接入 agent 回答，并要求保留来源链接和检索时间。
 
 ## 恢复开发检查清单
 

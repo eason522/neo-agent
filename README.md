@@ -12,6 +12,7 @@
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
 - 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
+- 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
 
@@ -40,6 +41,12 @@ export MIMO_API_BASE=...
 
 也可以编辑 `~/.neo-agent/config.json`。
 
+配置 Tavily 联网搜索：
+
+```bash
+export TAVILY_API_KEY=...
+```
+
 ## 常用命令
 
 ```text
@@ -58,6 +65,10 @@ export MIMO_API_BASE=...
 /transcripts [数量]   查看最近会话 transcript 列表
 /agent <任务>         把聚焦任务交给小模型 sub-agent
 /dream [--dry-run]    整理记忆并提炼灵感
+/web search <查询词>  联网搜索
+/web extract <url>    提取网页正文
+/web map <url>        发现站点 URL
+/web crawl <url>      有限深度爬取站点正文
 ```
 
 一次性提问：
@@ -126,6 +137,18 @@ export NEO_AGENT_DREAM_MIN_SESSIONS=5
 ```
 
 dream 报告写入 `~/.neo-agent/dream/reports/`，状态写入 `~/.neo-agent/dream/state.json`。
+
+联网搜索和网页读取：
+
+```bash
+neo web search "DeepSeek 最新模型"
+neo web search --depth advanced --max-results 8 "TypeScript 5.8 release notes"
+neo web extract https://docs.tavily.com/documentation/api-reference/endpoint/search
+neo web map https://docs.tavily.com --limit 20 --depth 1
+neo web crawl https://docs.tavily.com --limit 5 --depth 1 --instructions "只看 API reference"
+```
+
+联网能力默认使用 Tavily，Base URL 为 `https://api.tavily.com`。日志只记录查询长度、URL 数量、结果数量、耗时等元数据，不记录 Tavily API key。`map/crawl` 默认深度为 1、最多 20 页、不开启外部域名，避免一次命令消耗过多额度。
 
 运行 CLI 冒烟测试：
 
