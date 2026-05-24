@@ -76,7 +76,7 @@ export function defaultConfig(): AppConfig {
       vision: {
         model: process.env.NEO_AGENT_VISION_MODEL || 'mimo-v2.5',
         apiKey: process.env.MIMO_API_KEY,
-        apiBase: process.env.MIMO_API_BASE || deepseekApiBase,
+        apiBase: process.env.MIMO_API_BASE || 'https://token-plan-cn.xiaomimimo.com/v1',
         temperature: 0.0,
         maxTokens: 2048
       }

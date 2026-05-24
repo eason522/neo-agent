@@ -79,6 +79,12 @@ neo transcripts --tail <sessionId>
 
 默认 transcript 写入 `~/.neo-agent/transcripts/YYYY-MM-DD/<sessionId>.jsonl`，用于回顾会话和后续调试。
 
+诊断安装和配置：
+
+```bash
+neo doctor
+```
+
 ## MCP 配置示例
 
 在 `~/.neo-agent/config.json` 里添加：

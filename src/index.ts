@@ -7,6 +7,7 @@ import { extractImageAttachments } from './input/attachments.js';
 import { startRepl } from './terminal/repl.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService, tailFile } from './transcript/transcriptService.js';
+import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
 
 const program = new Command();
 
@@ -88,8 +89,25 @@ program
   });
 
 program
-  .command('chat', { isDefault: true })
+  .command('doctor')
+  .description('诊断 neo-agent 安装、配置和运行环境')
+  .action(async () => {
+    const report = await runDoctor();
+    console.log(formatDoctorReport(report));
+    process.exitCode = report.status === 'fail' ? 1 : 0;
+  });
+
+program
+  .command('chat')
   .description('启动终端对话')
+  .action(async () => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize();
+    await startRepl(agent);
+  });
+
+program
   .action(async () => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);
