@@ -11,6 +11,8 @@
 - MCP：支持在配置中声明 stdio MCP server，并列出/调用工具的基础能力。
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
 
+持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
+
 ## 安装与运行
 
 ```bash
