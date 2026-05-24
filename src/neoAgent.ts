@@ -9,6 +9,7 @@ import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
 import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
+import { TranscriptService } from './transcript/transcriptService.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -17,12 +18,14 @@ export class NeoAgent {
   readonly mcp: McpManager;
   readonly subAgent: SubAgentRunner;
   readonly logger: Logger;
+  readonly transcripts: TranscriptService;
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
 
   constructor(readonly config: AppConfig) {
     this.logger = new Logger(config);
+    this.transcripts = new TranscriptService(config, this.logger);
     this.models = new ModelRegistry(config, this.logger);
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
@@ -38,6 +41,7 @@ export class NeoAgent {
       logFile: this.logger.filePath,
       memoryBackend: this.config.memory.backend
     });
+    await this.transcripts.start();
     await this.mcp.connectAll();
     this.logger.info('agent.initialize.success');
   }
@@ -47,6 +51,14 @@ export class NeoAgent {
     this.logger.info('agent.ask.start', {
       inputChars: input.length,
       attachmentCount: attachments.length
+    });
+    await this.transcripts.append('user', input, {
+      attachmentCount: attachments.length,
+      attachments: attachments.map(attachment => ({
+        type: attachment.type,
+        path: attachment.path,
+        mimeType: attachment.mimeType
+      }))
     });
     const [memories, matchedSkills, mcpTools, visionContext, soul] = await Promise.all([
       this.memory.search(input),
@@ -83,6 +95,14 @@ export class NeoAgent {
 
     try {
       const text = await this.models.get(decision.modelKind).chat({ messages });
+      await this.transcripts.append('assistant', text, {
+        modelKind: decision.modelKind,
+        model: this.config.models[decision.modelKind].model,
+        routerReason: decision.reason,
+        memoryHits: memories.length,
+        matchedSkills: matchedSkills.map(skill => skill.name),
+        hasVisionContext: Boolean(visionContext)
+      });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, ['session'], 'session');
       const createdSkill = await this.skills.maybeAutoCreate(input, text).catch(error => {
         this.logger.error('skill.autocreate.error', error);
@@ -104,6 +124,10 @@ export class NeoAgent {
       };
     } catch (error) {
       this.logger.error('agent.ask.error', error, { durationMs: Date.now() - start });
+      await this.transcripts.append('error', error instanceof Error ? error.message : String(error), {
+        stage: 'agent.ask',
+        durationMs: Date.now() - start
+      });
       throw error;
     }
   }
@@ -111,6 +135,7 @@ export class NeoAgent {
   async close(): Promise<void> {
     await this.mcp.close();
     this.logger.info('agent.close');
+    await this.transcripts.end();
     await this.logger.flush();
   }
 }

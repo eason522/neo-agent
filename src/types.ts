@@ -54,6 +54,11 @@ export type AppConfig = {
     file: string;
     console: boolean;
   };
+  transcripts: {
+    enabled: boolean;
+    dir: string;
+    maxTailLines: number;
+  };
 };
 
 export type Attachment = {

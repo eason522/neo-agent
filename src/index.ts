@@ -6,6 +6,7 @@ import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
 import { startRepl } from './terminal/repl.js';
 import { Logger } from './logging/logger.js';
+import { TranscriptService, tailFile } from './transcript/transcriptService.js';
 
 const program = new Command();
 
@@ -53,6 +54,37 @@ program
     console.log(chalk.gray(logger.filePath));
     const tail = await logger.tail(Number.isFinite(lines) ? lines : 80);
     console.log(tail || chalk.gray('暂时没有日志'));
+  });
+
+program
+  .command('transcripts')
+  .description('查看最近的对话 transcript')
+  .option('-n, --limit <limit>', '显示会话数量', '10')
+  .option('-t, --tail <sessionIdOrPath>', '查看某个会话文件的末尾')
+  .option('-l, --lines <lines>', 'tail 显示行数', '80')
+  .action(async (options: { limit: string; tail?: string; lines: string }) => {
+    const config = await loadConfig();
+    const transcripts = new TranscriptService(config);
+    const lines = Number.parseInt(options.lines, 10);
+    if (options.tail) {
+      const sessions = await transcripts.listSessions(200);
+      const target = sessions.find(session => session.sessionId === options.tail || session.path === options.tail);
+      const filePath = target?.path ?? options.tail;
+      console.log(chalk.gray(filePath));
+      console.log(await tailFile(filePath, Number.isFinite(lines) ? lines : 80) || chalk.gray('没有找到 transcript 内容'));
+      return;
+    }
+
+    const limit = Number.parseInt(options.limit, 10);
+    const sessions = await transcripts.listSessions(Number.isFinite(limit) ? limit : 10);
+    if (sessions.length === 0) {
+      console.log(chalk.gray('没有找到 transcript'));
+      return;
+    }
+    for (const session of sessions) {
+      console.log(`${session.updatedAt}  ${session.sessionId}  ${session.sizeBytes}B`);
+      console.log(chalk.gray(session.path));
+    }
   });
 
 program

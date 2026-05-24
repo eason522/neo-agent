@@ -49,6 +49,8 @@ export MIMO_API_BASE=...
 /skill create <名称> :: <描述>
 /mcp                  查看已连接的 MCP 工具
 /logs [行数]          查看最近的 JSONL 日志
+/transcript [行数]    查看当前会话 transcript
+/transcripts [数量]   查看最近会话 transcript 列表
 /agent <任务>         把聚焦任务交给小模型 sub-agent
 ```
 
@@ -67,6 +69,15 @@ neo logs --lines 200
 ```
 
 默认日志写入 `~/.neo-agent/logs/neo-agent.log`，格式是 JSONL。日志会记录启动、路由、模型请求耗时、记忆检索、MCP 连接和错误摘要；API key、Authorization header 和图片 base64 会被脱敏。
+
+查看对话 transcript：
+
+```bash
+neo transcripts
+neo transcripts --tail <sessionId>
+```
+
+默认 transcript 写入 `~/.neo-agent/transcripts/YYYY-MM-DD/<sessionId>.jsonl`，用于回顾会话和后续调试。
 
 ## MCP 配置示例
 
