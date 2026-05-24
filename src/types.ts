@@ -61,9 +61,11 @@ export type AppConfig = {
     provider: 'tavily';
     apiKey?: string;
     apiBase: string;
+    autoSearch: boolean;
     searchDepth: WebSearchDepth;
     extractDepth: WebExtractDepth;
     maxResults: number;
+    maxContextChars: number;
     maxDepth: number;
     maxBreadth: number;
     maxPages: number;
@@ -135,6 +137,7 @@ export type AgentResponse = {
   text: string;
   modelKind: TextModelKind;
   visionContext?: string;
+  webContext?: WebContext;
   memories: MemoryHit[];
   skills: Skill[];
 };
@@ -180,4 +183,12 @@ export type WebCrawlResponse = {
   baseUrl?: string;
   results: WebCrawlResult[];
   responseTime?: number;
+};
+
+export type WebContext = {
+  query?: string;
+  reason: string;
+  searchedAt: string;
+  search?: WebSearchResponse;
+  extracts?: WebExtractResponse;
 };

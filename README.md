@@ -13,6 +13,7 @@
 - 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 - 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
+- 自动联网：自然语言提问包含最新、今天、搜索、验证、价格、新闻或 URL 时，neo 会自动搜索或提取网页。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
 
@@ -76,6 +77,8 @@ export TAVILY_API_KEY=...
 ```bash
 npm run dev -- ask "帮我总结 PRD.md"
 npm run dev -- ask "分析这个页面 @image:/tmp/screen.png"
+neo ask "Tavily 最近的 API 文档有什么变化？"
+neo ask --no-web "只根据你已有知识回答这个问题"
 ```
 
 查看日志：
@@ -149,6 +152,8 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --instructions "只看
 ```
 
 联网能力默认使用 Tavily，Base URL 为 `https://api.tavily.com`。日志只记录查询长度、URL 数量、结果数量、耗时等元数据，不记录 Tavily API key。`map/crawl` 默认深度为 1、最多 20 页、不开启外部域名，避免一次命令消耗过多额度。
+
+普通自然语言提问会在明显需要时自动联网，例如“最新”“今天”“搜索”“验证”“价格”“新闻”或包含 URL 的问题。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。
 
 运行 CLI 冒烟测试：
 

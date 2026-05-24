@@ -5,7 +5,8 @@ import type {
   WebMapResponse,
   WebCrawlResponse,
   WebSearchDepth,
-  WebSearchResponse
+  WebSearchResponse,
+  WebContext
 } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 
@@ -256,6 +257,37 @@ export function formatWebSearch(response: WebSearchResponse): string {
   }
   if (response.responseTime !== undefined) lines.push('', `耗时：${response.responseTime}s`);
   return lines.join('\n');
+}
+
+export function formatWebContext(context: WebContext, maxChars: number): string {
+  const lines = [
+    `联网时间：${context.searchedAt}`,
+    `联网原因：${context.reason}`
+  ];
+  if (context.query) lines.push(`搜索词：${context.query}`);
+  if (context.search) {
+    lines.push('', '## 搜索摘要');
+    if (context.search.answer) lines.push(context.search.answer.trim());
+    lines.push('', '## 搜索来源');
+    context.search.results.forEach((result, index) => {
+      const date = result.publishedDate ? `，published=${result.publishedDate}` : '';
+      lines.push(`${index + 1}. ${result.title || result.url}${date}`);
+      lines.push(`URL: ${result.url}`);
+      if (result.content) lines.push(`摘要: ${result.content}`);
+    });
+  }
+  if (context.extracts?.results.length) {
+    lines.push('', '## 网页正文');
+    context.extracts.results.forEach((result, index) => {
+      lines.push(`${index + 1}. URL: ${result.url}`);
+      lines.push(truncate(result.content.trim(), Math.max(1000, Math.floor(maxChars / context.extracts!.results.length))));
+    });
+  }
+  if (context.extracts?.failedResults.length) {
+    lines.push('', '## 读取失败');
+    context.extracts.failedResults.forEach(item => lines.push(`- ${item.url}${item.error ? `: ${item.error}` : ''}`));
+  }
+  return truncate(lines.join('\n'), maxChars);
 }
 
 export function formatWebExtract(response: WebExtractResponse, maxChars = 5000): string {

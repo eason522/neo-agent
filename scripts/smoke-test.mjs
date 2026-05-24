@@ -35,6 +35,7 @@ test('初始化配置', async () => {
   assertIncludes(config, '"web"');
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
+  assertIncludes(config, '"autoSearch"');
 });
 
 test('doctor 缺 key 时失败并给出建议', async () => {

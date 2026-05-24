@@ -31,8 +31,10 @@ program
   .command('ask')
   .description('单次提问并输出答案')
   .argument('<prompt...>')
-  .action(async (promptParts: string[]) => {
+  .option('--no-web', '本次提问不自动联网搜索')
+  .action(async (promptParts: string[], options: { web?: boolean }) => {
     const config = await loadConfig();
+    if (options.web === false) config.web.autoSearch = false;
     const agent = new NeoAgent(config);
     await agent.initialize({ scheduledDreams: false });
     const { text, attachments } = extractImageAttachments(promptParts.join(' '));

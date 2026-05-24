@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage } from './types.js';
+import type { AgentResponse, AppConfig, Attachment, ChatMessage, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -11,7 +11,8 @@ import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
-import { TavilyClient } from './web/tavilyClient.js';
+import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
+import { planWebUse } from './web/webPlanner.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -71,12 +72,13 @@ export class NeoAgent {
         mimeType: attachment.mimeType
       }))
     });
-    const [memories, matchedSkills, mcpTools, visionContext, soul] = await Promise.all([
+    const [memories, matchedSkills, mcpTools, visionContext, soul, webContext] = await Promise.all([
       this.memory.search(input),
       this.skills.match(input),
       this.mcp.listTools().catch(() => []),
       this.vision.analyze(attachments, input),
-      loadSoul()
+      loadSoul(),
+      this.buildWebContext(input)
     ]);
 
     const decision = this.router.decide(input, attachments);
@@ -86,7 +88,8 @@ export class NeoAgent {
       memoryHits: memories.length,
       matchedSkills: matchedSkills.length,
       mcpTools: mcpTools.length,
-      hasVisionContext: Boolean(visionContext)
+      hasVisionContext: Boolean(visionContext),
+      hasWebContext: Boolean(webContext)
     });
     const systemPrompt = buildSystemPrompt({
       memories,
@@ -97,6 +100,7 @@ export class NeoAgent {
     });
     const userContent = [
       visionContext ? `Vision context:\n${visionContext}` : '',
+      webContext ? `Web context:\n${formatWebContext(webContext, this.config.web.maxContextChars)}\n\n使用要求：如果你使用了 Web context，请在回答末尾列出“来源”，包含关键 URL 和联网时间 ${webContext.searchedAt}。不要编造来源。` : '',
       `User request:\n${input}`
     ].filter(Boolean).join('\n\n');
     const messages: ChatMessage[] = [
@@ -112,7 +116,14 @@ export class NeoAgent {
         routerReason: decision.reason,
         memoryHits: memories.length,
         matchedSkills: matchedSkills.map(skill => skill.name),
-        hasVisionContext: Boolean(visionContext)
+        hasVisionContext: Boolean(visionContext),
+        web: webContext ? {
+          reason: webContext.reason,
+          query: webContext.query,
+          searchResults: webContext.search?.results.length ?? 0,
+          extractResults: webContext.extracts?.results.length ?? 0,
+          searchedAt: webContext.searchedAt
+        } : undefined
       });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
         category: 'session_summary',
@@ -128,6 +139,7 @@ export class NeoAgent {
       this.logger.info('agent.ask.success', {
         modelKind: decision.modelKind,
         outputChars: text.length,
+        hasWebContext: Boolean(webContext),
         durationMs: Date.now() - start
       });
       return {
@@ -135,7 +147,8 @@ export class NeoAgent {
         modelKind: decision.modelKind,
         visionContext,
         memories,
-        skills: matchedSkills
+        skills: matchedSkills,
+        webContext
       };
     } catch (error) {
       this.logger.error('agent.ask.error', error, { durationMs: Date.now() - start });
@@ -152,5 +165,53 @@ export class NeoAgent {
     this.logger.info('agent.close');
     await this.transcripts.end();
     await this.logger.flush();
+  }
+
+  private async buildWebContext(input: string): Promise<WebContext | undefined> {
+    const plan = planWebUse(input, this.config.web.autoSearch);
+    this.logger.info('web.plan', {
+      shouldUseWeb: plan.shouldUseWeb,
+      reason: plan.reason,
+      hasQuery: Boolean(plan.query),
+      urlCount: plan.urls.length,
+      autoSearch: this.config.web.autoSearch,
+      webConfigured: Boolean(this.config.web.apiKey)
+    });
+    if (!plan.shouldUseWeb) return undefined;
+    if (!this.config.web.apiKey) {
+      this.logger.warn('web.skip.missing_api_key', { reason: plan.reason });
+      return undefined;
+    }
+
+    const context: WebContext = {
+      query: plan.query,
+      reason: plan.reason,
+      searchedAt: new Date().toISOString()
+    };
+
+    try {
+      if (plan.query) {
+        context.search = await this.web.search(plan.query, {
+          maxResults: this.config.web.maxResults,
+          includeAnswer: true
+        });
+      }
+      if (plan.urls.length > 0) {
+        context.extracts = await this.web.extract(plan.urls);
+      } else if (context.search?.results.length) {
+        const urls = context.search.results.slice(0, 2).map(result => result.url);
+        context.extracts = await this.web.extract(urls).catch(error => {
+          this.logger.warn('web.auto_extract.error', {
+            error: error instanceof Error ? error.message : String(error),
+            urlCount: urls.length
+          });
+          return undefined;
+        });
+      }
+      return context;
+    } catch (error) {
+      this.logger.error('web.context.error', error, { reason: plan.reason });
+      return undefined;
+    }
   }
 }
