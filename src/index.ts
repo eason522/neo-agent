@@ -11,12 +11,14 @@ const program = new Command();
 
 program
   .name('neo-agent')
-  .description('Personal terminal AI agent')
-  .version('0.1.0');
+  .description('个人终端 AI agent')
+  .version('0.1.0')
+  .helpOption('-h, --help', '显示帮助')
+  .addHelpCommand('help [command]', '显示命令帮助');
 
 program
   .command('config:init')
-  .description('Create ~/.neo-agent/config.json')
+  .description('创建 ~/.neo-agent/config.json')
   .action(async () => {
     const filePath = await initConfigFile();
     console.log(filePath);
@@ -24,7 +26,7 @@ program
 
 program
   .command('ask')
-  .description('Ask once and print the answer')
+  .description('单次提问并输出答案')
   .argument('<prompt...>')
   .action(async (promptParts: string[]) => {
     const config = await loadConfig();
@@ -42,20 +44,20 @@ program
 
 program
   .command('logs')
-  .description('Show recent JSONL logs')
-  .option('-n, --lines <lines>', 'Number of lines to show', '80')
+  .description('查看最近的 JSONL 日志')
+  .option('-n, --lines <lines>', '显示行数', '80')
   .action(async (options: { lines: string }) => {
     const config = await loadConfig();
     const logger = new Logger(config);
     const lines = Number.parseInt(options.lines, 10);
     console.log(chalk.gray(logger.filePath));
     const tail = await logger.tail(Number.isFinite(lines) ? lines : 80);
-    console.log(tail || chalk.gray('no logs yet'));
+    console.log(tail || chalk.gray('暂时没有日志'));
   });
 
 program
   .command('chat', { isDefault: true })
-  .description('Start terminal chat')
+  .description('启动终端对话')
   .action(async () => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);

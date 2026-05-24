@@ -50,28 +50,28 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       return true;
     case '/memory': {
       const records = arg ? await agent.memory.search(arg) : await agent.memory.list(12);
-      if (records.length === 0) console.log(chalk.gray('no memory found'));
+      if (records.length === 0) console.log(chalk.gray('没有找到记忆'));
       for (const item of records) console.log(`${chalk.gray(item.uri)}\n${item.content}\n`);
       return true;
     }
     case '/remember': {
-      if (!arg) console.log('usage: /remember <text>');
+      if (!arg) console.log('用法：/remember <内容>');
       else {
         const record = await agent.memory.remember(arg, ['manual'], 'user');
-        console.log(`${chalk.green('remembered')} ${record.uri}`);
+        console.log(`${chalk.green('已记住')} ${record.uri}`);
       }
       return true;
     }
     case '/skills': {
       const skills = await agent.skills.loadSkills();
-      if (skills.length === 0) console.log(chalk.gray('no skills found'));
+      if (skills.length === 0) console.log(chalk.gray('没有找到 skill'));
       for (const skill of skills) console.log(`${chalk.cyan(skill.name)} - ${skill.description}`);
       return true;
     }
     case '/skill': {
       const [subCommand, ...skillRest] = rest;
       if (subCommand !== 'create' || skillRest.length === 0) {
-        console.log('usage: /skill create <name> :: <description>');
+        console.log('用法：/skill create <名称> :: <描述>');
         return true;
       }
       const [name, description = 'Manual skill'] = skillRest.join(' ').split(/\s+::\s+/, 2);
@@ -79,12 +79,12 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
         'Confirm the task matches this skill.',
         'Apply the remembered workflow and adapt only where the current request differs.'
       ]);
-      console.log(`${chalk.green('created skill')} ${skill.path}`);
+      console.log(`${chalk.green('已创建 skill')} ${skill.path}`);
       return true;
     }
     case '/mcp': {
       const tools = await agent.mcp.listTools();
-      if (tools.length === 0) console.log(chalk.gray('no MCP tools connected'));
+      if (tools.length === 0) console.log(chalk.gray('没有已连接的 MCP 工具'));
       else tools.forEach(tool => console.log(tool));
       return true;
     }
@@ -92,36 +92,36 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       const lineCount = Number.parseInt(arg, 10);
       const tail = await agent.logger.tail(Number.isFinite(lineCount) ? lineCount : 60);
       console.log(chalk.gray(agent.logger.filePath));
-      console.log(tail || chalk.gray('no logs yet'));
+      console.log(tail || chalk.gray('暂时没有日志'));
       return true;
     }
     case '/agent': {
-      if (!arg) console.log('usage: /agent <delegated task>');
+      if (!arg) console.log('用法：/agent <任务>');
       else console.log(await agent.subAgent.run(arg));
       return true;
     }
     default:
-      console.log(`unknown command: ${command}`);
+      console.log(`未知命令：${command}`);
       return true;
   }
 }
 
 function printBanner(): void {
   console.log(chalk.bold('neo-agent'));
-  console.log(chalk.gray('Type /help for commands. Use @image:/path/to/file.png or @/path/file.png for images.\n'));
+  console.log(chalk.gray('输入 /help 查看命令。图片输入可使用 @image:/path/to/file.png 或 @/path/file.png。\n'));
 }
 
 function printHelp(): void {
   console.log([
-    '/help                 Show commands',
-    '/exit                 Exit',
-    '/remember <text>      Store a user memory',
-    '/memory [query]       List or search memories',
-    '/skills               List skills',
-    '/skill create <name> :: <description>',
-    '/mcp                  List connected MCP tools',
-    '/logs [lines]         Show recent JSONL logs',
-    '/agent <task>         Delegate a focused task to the small model',
-    '@/path/image.png      Attach an image to a normal prompt'
+    '/help                 查看命令',
+    '/exit                 退出',
+    '/remember <内容>      保存一条用户记忆',
+    '/memory [查询词]      查看或搜索记忆',
+    '/skills               查看已加载的 skill',
+    '/skill create <名称> :: <描述>',
+    '/mcp                  查看已连接的 MCP 工具',
+    '/logs [行数]          查看最近的 JSONL 日志',
+    '/agent <任务>         把聚焦任务交给小模型 sub-agent',
+    '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
 }

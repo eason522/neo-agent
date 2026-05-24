@@ -10,6 +10,7 @@
 - skill 功能：`~/.neo-agent/skills/*/SKILL.md`，会按触发词匹配；重复任务达到阈值后会自动创建 skill。
 - MCP：支持在配置中声明 stdio MCP server，并列出/调用工具的基础能力。
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
+- 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
 
@@ -41,14 +42,14 @@ export MIMO_API_BASE=...
 ## 常用命令
 
 ```text
-/help                 Show commands
-/remember <text>      Store a user memory
-/memory [query]       List or search memories
-/skills               List skills
-/skill create <name> :: <description>
-/mcp                  List connected MCP tools
-/logs [lines]         Show recent JSONL logs
-/agent <task>         Delegate a focused task to the small model
+/help                 查看命令
+/remember <内容>      保存一条用户记忆
+/memory [查询词]      查看或搜索记忆
+/skills               查看已加载的 skill
+/skill create <名称> :: <描述>
+/mcp                  查看已连接的 MCP 工具
+/logs [行数]          查看最近的 JSONL 日志
+/agent <任务>         把聚焦任务交给小模型 sub-agent
 ```
 
 一次性提问：

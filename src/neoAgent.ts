@@ -7,6 +7,7 @@ import { SkillManager } from './skills/skillManager.js';
 import { McpManager } from './mcp/mcpManager.js';
 import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
+import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
 
 export class NeoAgent {
@@ -47,11 +48,12 @@ export class NeoAgent {
       inputChars: input.length,
       attachmentCount: attachments.length
     });
-    const [memories, matchedSkills, mcpTools, visionContext] = await Promise.all([
+    const [memories, matchedSkills, mcpTools, visionContext, soul] = await Promise.all([
       this.memory.search(input),
       this.skills.match(input),
       this.mcp.listTools().catch(() => []),
-      this.vision.analyze(attachments, input)
+      this.vision.analyze(attachments, input),
+      loadSoul()
     ]);
 
     const decision = this.router.decide(input, attachments);
@@ -63,7 +65,13 @@ export class NeoAgent {
       mcpTools: mcpTools.length,
       hasVisionContext: Boolean(visionContext)
     });
-    const systemPrompt = buildSystemPrompt(memories, matchedSkills, mcpTools);
+    const systemPrompt = buildSystemPrompt({
+      memories,
+      skills: matchedSkills,
+      mcpTools,
+      soul,
+      modelName: this.config.models[decision.modelKind].model
+    });
     const userContent = [
       visionContext ? `Vision context:\n${visionContext}` : '',
       `User request:\n${input}`
