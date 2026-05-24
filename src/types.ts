@@ -17,6 +17,7 @@ export type ModelConfig = {
 };
 
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 export type McpServerConfig = {
   command: string;
@@ -47,6 +48,11 @@ export type AppConfig = {
   };
   mcp: {
     servers: Record<string, McpServerConfig>;
+  };
+  logging: {
+    level: LogLevel;
+    file: string;
+    console: boolean;
   };
 };
 

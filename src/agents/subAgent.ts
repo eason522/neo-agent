@@ -1,8 +1,9 @@
 import type { ChatMessage } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
+import type { Logger } from '../logging/logger.js';
 
 export class SubAgentRunner {
-  constructor(private readonly models: ModelRegistry) {}
+  constructor(private readonly models: ModelRegistry, private readonly logger?: Logger) {}
 
   async run(task: string, context = ''): Promise<string> {
     const messages: ChatMessage[] = [
@@ -20,6 +21,15 @@ export class SubAgentRunner {
       }
     ];
 
-    return this.models.small.chat({ messages });
+    const start = Date.now();
+    this.logger?.info('subagent.run.start', { taskChars: task.length, contextChars: context.length });
+    try {
+      const output = await this.models.small.chat({ messages });
+      this.logger?.info('subagent.run.success', { durationMs: Date.now() - start, outputChars: output.length });
+      return output;
+    } catch (error) {
+      this.logger?.error('subagent.run.error', error, { durationMs: Date.now() - start });
+      throw error;
+    }
   }
 }

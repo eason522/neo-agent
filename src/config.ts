@@ -39,6 +39,11 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
       env: z.record(z.string()).optional(),
       disabled: z.boolean().optional()
     }))
+  }),
+  logging: z.object({
+    level: z.enum(['debug', 'info', 'warn', 'error', 'silent']),
+    file: z.string(),
+    console: z.boolean()
   })
 });
 
@@ -97,6 +102,11 @@ export function defaultConfig(): AppConfig {
     },
     mcp: {
       servers: {}
+    },
+    logging: {
+      level: (process.env.NEO_AGENT_LOG_LEVEL as AppConfig['logging']['level']) || 'info',
+      file: process.env.NEO_AGENT_LOG_FILE || 'logs/neo-agent.log',
+      console: process.env.NEO_AGENT_LOG_CONSOLE === '1'
     }
   };
 }

@@ -88,6 +88,13 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       else tools.forEach(tool => console.log(tool));
       return true;
     }
+    case '/logs': {
+      const lineCount = Number.parseInt(arg, 10);
+      const tail = await agent.logger.tail(Number.isFinite(lineCount) ? lineCount : 60);
+      console.log(chalk.gray(agent.logger.filePath));
+      console.log(tail || chalk.gray('no logs yet'));
+      return true;
+    }
     case '/agent': {
       if (!arg) console.log('usage: /agent <delegated task>');
       else console.log(await agent.subAgent.run(arg));
@@ -113,6 +120,7 @@ function printHelp(): void {
     '/skills               List skills',
     '/skill create <name> :: <description>',
     '/mcp                  List connected MCP tools',
+    '/logs [lines]         Show recent JSONL logs',
     '/agent <task>         Delegate a focused task to the small model',
     '@/path/image.png      Attach an image to a normal prompt'
   ].join('\n'));

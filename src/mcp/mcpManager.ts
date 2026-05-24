@@ -1,4 +1,5 @@
 import type { AppConfig } from '../types.js';
+import type { Logger } from '../logging/logger.js';
 
 type ConnectedServer = {
   name: string;
@@ -12,11 +13,14 @@ type ConnectedServer = {
 export class McpManager {
   private readonly servers = new Map<string, ConnectedServer>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: AppConfig, private readonly logger?: Logger) {}
 
   async connectAll(): Promise<void> {
     const enabled = Object.entries(this.config.mcp.servers).filter(([, server]) => !server.disabled);
-    if (enabled.length === 0) return;
+    if (enabled.length === 0) {
+      this.logger?.debug('mcp.connect.skip', { reason: 'no_enabled_servers' });
+      return;
+    }
 
     const [{ Client }, { StdioClientTransport }] = await Promise.all([
       import('@modelcontextprotocol/sdk/client/index.js'),
@@ -24,6 +28,7 @@ export class McpManager {
     ]);
 
     for (const [name, server] of enabled) {
+      const start = Date.now();
       const client = new Client({ name: 'neo-agent', version: '0.1.0' });
       const transport = new StdioClientTransport({
         command: server.command,
@@ -33,8 +38,18 @@ export class McpManager {
           ...(server.env ?? {})
         } as Record<string, string>
       });
-      await client.connect(transport);
+      try {
+        await client.connect(transport);
+      } catch (error) {
+        this.logger?.error('mcp.connect.error', error, { server: name, command: server.command });
+        throw error;
+      }
       this.servers.set(name, { name, client });
+      this.logger?.info('mcp.connect.success', {
+        server: name,
+        command: server.command,
+        durationMs: Date.now() - start
+      });
     }
   }
 
@@ -46,6 +61,7 @@ export class McpManager {
         output.push(`${server.name}.${tool.name}${tool.description ? ` - ${tool.description}` : ''}`);
       }
     }
+    this.logger?.debug('mcp.tools.list', { connectedServers: this.servers.size, toolCount: output.length });
     return output;
   }
 

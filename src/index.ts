@@ -5,6 +5,7 @@ import { initConfigFile, loadConfig } from './config.js';
 import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
 import { startRepl } from './terminal/repl.js';
+import { Logger } from './logging/logger.js';
 
 const program = new Command();
 
@@ -37,6 +38,19 @@ program
     } finally {
       await agent.close();
     }
+  });
+
+program
+  .command('logs')
+  .description('Show recent JSONL logs')
+  .option('-n, --lines <lines>', 'Number of lines to show', '80')
+  .action(async (options: { lines: string }) => {
+    const config = await loadConfig();
+    const logger = new Logger(config);
+    const lines = Number.parseInt(options.lines, 10);
+    console.log(chalk.gray(logger.filePath));
+    const tail = await logger.tail(Number.isFinite(lines) ? lines : 80);
+    console.log(tail || chalk.gray('no logs yet'));
   });
 
 program

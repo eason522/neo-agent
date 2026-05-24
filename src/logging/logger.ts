@@ -1,0 +1,127 @@
+import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
+import type { AppConfig, LogLevel } from '../types.js';
+
+type LogFields = Record<string, unknown>;
+
+const levelRank: Record<LogLevel, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  silent: 50
+};
+
+export class Logger {
+  readonly filePath: string;
+  private readonly level: LogLevel;
+  private readonly consoleEnabled: boolean;
+  private pendingWrite: Promise<void> = Promise.resolve();
+
+  constructor(config: AppConfig) {
+    this.level = config.logging.level;
+    this.consoleEnabled = config.logging.console;
+    this.filePath = path.isAbsolute(config.logging.file)
+      ? config.logging.file
+      : path.join(config.homeDir, config.logging.file);
+  }
+
+  debug(event: string, fields: LogFields = {}): void {
+    this.write('debug', event, fields);
+  }
+
+  info(event: string, fields: LogFields = {}): void {
+    this.write('info', event, fields);
+  }
+
+  warn(event: string, fields: LogFields = {}): void {
+    this.write('warn', event, fields);
+  }
+
+  error(event: string, error: unknown, fields: LogFields = {}): void {
+    this.write('error', event, {
+      ...fields,
+      error: serializeError(error)
+    });
+  }
+
+  async tail(lines = 80): Promise<string> {
+    await this.flush();
+    try {
+      const fileStat = await stat(this.filePath);
+      const maxRead = Math.min(fileStat.size, 256 * 1024);
+      const raw = await readFile(this.filePath, 'utf8');
+      return raw
+        .slice(Math.max(0, raw.length - maxRead))
+        .trimEnd()
+        .split('\n')
+        .slice(-lines)
+        .join('\n');
+    } catch {
+      return '';
+    }
+  }
+
+  async flush(): Promise<void> {
+    await this.pendingWrite.catch(() => undefined);
+  }
+
+  private write(level: Exclude<LogLevel, 'silent'>, event: string, fields: LogFields): void {
+    if (levelRank[level] < levelRank[this.level]) return;
+
+    const record = {
+      ts: new Date().toISOString(),
+      level,
+      event,
+      ...(redact(fields) as LogFields)
+    };
+    const line = `${JSON.stringify(record)}\n`;
+
+    this.pendingWrite = this.pendingWrite.then(() => mkdir(path.dirname(this.filePath), { recursive: true })
+      .then(() => appendFile(this.filePath, line, 'utf8'))
+      .catch(() => undefined));
+
+    if (this.consoleEnabled) {
+      const stream = level === 'error' || level === 'warn' ? process.stderr : process.stdout;
+      stream.write(`[${record.ts}] ${level} ${event}\n`);
+    }
+  }
+}
+
+export function serializeError(error: unknown): { name: string; message: string; stack?: string } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: redactString(error.message),
+      stack: error.stack ? redactString(error.stack).split('\n').slice(0, 8).join('\n') : undefined
+    };
+  }
+  return {
+    name: 'UnknownError',
+    message: redactString(String(error))
+  };
+}
+
+export function redact(value: unknown): unknown {
+  if (typeof value === 'string') return redactString(value);
+  if (Array.isArray(value)) return value.map(item => redact(item));
+  if (!value || typeof value !== 'object') return value;
+
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (/api[-_]?key|authorization|token|secret|password/i.test(key)) {
+      output[key] = '[REDACTED]';
+      continue;
+    }
+    output[key] = redact(nested);
+  }
+  return output;
+}
+
+function redactString(input: string): string {
+  return input
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, 'sk-[REDACTED]')
+    .replace(/tp-[A-Za-z0-9_-]{12,}/g, 'tp-[REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, 'data:image/[REDACTED];base64,[REDACTED]');
+}

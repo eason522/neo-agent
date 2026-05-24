@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelConfig } from '../types.js';
+import type { Logger } from '../logging/logger.js';
 
 type ChatOptions = {
   messages: ChatMessage[] | unknown[];
@@ -8,7 +9,7 @@ type ChatOptions = {
 };
 
 export class OpenAICompatibleClient {
-  constructor(private readonly config: ModelConfig) {}
+  constructor(private readonly config: ModelConfig, private readonly logger?: Logger) {}
 
   async chat(options: ChatOptions): Promise<string> {
     if (!this.config.apiKey) {
@@ -16,32 +17,54 @@ export class OpenAICompatibleClient {
     }
 
     const url = new URL('chat/completions', ensureTrailingSlash(this.config.apiBase));
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.config.apiKey}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: options.messages,
-        temperature: options.temperature ?? this.config.temperature,
-        max_tokens: options.maxTokens ?? this.config.maxTokens
-      }),
-      signal: options.signal
+    const start = Date.now();
+    this.logger?.debug('model.request.start', {
+      model: this.config.model,
+      apiBase: this.config.apiBase,
+      messageCount: options.messages.length,
+      temperature: options.temperature ?? this.config.temperature,
+      maxTokens: options.maxTokens ?? this.config.maxTokens
     });
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`Model ${this.config.model} request failed: ${response.status} ${response.statusText} ${body}`);
-    }
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: options.messages,
+          temperature: options.temperature ?? this.config.temperature,
+          max_tokens: options.maxTokens ?? this.config.maxTokens
+        }),
+        signal: options.signal
+      });
 
-    const payload = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error(`Model ${this.config.model} returned an empty response.`);
-    return content;
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`Model ${this.config.model} request failed: ${response.status} ${response.statusText} ${body.slice(0, 1200)}`);
+      }
+
+      const payload = await response.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) throw new Error(`Model ${this.config.model} returned an empty response.`);
+      this.logger?.info('model.request.success', {
+        model: this.config.model,
+        durationMs: Date.now() - start,
+        outputChars: content.length
+      });
+      return content;
+    } catch (error) {
+      this.logger?.error('model.request.error', error, {
+        model: this.config.model,
+        durationMs: Date.now() - start
+      });
+      throw error;
+    }
   }
 }
 

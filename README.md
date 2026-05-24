@@ -45,6 +45,7 @@ export MIMO_API_BASE=...
 /skills               List skills
 /skill create <name> :: <description>
 /mcp                  List connected MCP tools
+/logs [lines]         Show recent JSONL logs
 /agent <task>         Delegate a focused task to the small model
 ```
 
@@ -54,6 +55,15 @@ export MIMO_API_BASE=...
 npm run dev -- ask "帮我总结 PRD.md"
 npm run dev -- ask "分析这个页面 @image:/tmp/screen.png"
 ```
+
+查看日志：
+
+```bash
+neo logs
+neo logs --lines 200
+```
+
+默认日志写入 `~/.neo-agent/logs/neo-agent.log`，格式是 JSONL。日志会记录启动、路由、模型请求耗时、记忆检索、MCP 连接和错误摘要；API key、Authorization header 和图片 base64 会被脱敏。
 
 ## MCP 配置示例
 
