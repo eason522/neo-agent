@@ -42,8 +42,9 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   const result = await run([], {
     input: [
       '/help',
-      '/remember 我喜欢简洁直接的回答',
-      '/memory 简洁',
+      '/remember --type workflow --tag cli --pin 我喜欢简洁直接的回答',
+      '/memory --type workflow 简洁',
+      '/memory-export 5',
       '/logs 5',
       '/transcript 20',
       '/transcripts 5',
@@ -53,7 +54,9 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   });
   assertIncludes(result.stdout, '/help                 查看命令');
   assertIncludes(result.stdout, '已记住');
+  assertIncludes(result.stdout, '置顶 workflow');
   assertIncludes(result.stdout, '我喜欢简洁直接的回答');
+  assertIncludes(result.stdout, '"category": "workflow"');
   assertIncludes(result.stdout, 'transcripts');
 });
 

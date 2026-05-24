@@ -6,7 +6,7 @@
 - 主模型 `deepseek-v4-pro`、小模型 `deepseek-v4-flash`、视觉模型 `mimo-v2.5`，都按 OpenAI-compatible API 调用。
 - 文本智能路由：短文本走小模型，开发/架构/复杂任务走主模型。
 - 图片智能路由：输入包含 `@image:/path/a.png` 或 `@/path/a.png` 时，先调用 `mimo-v2.5` 生成视觉 primitives，再交给 DeepSeek 推理。
-- 记忆功能：本地 `~/.neo-agent/memory/memories.json` 为默认可靠存储，并可在 `hybrid/openviking` 模式下尝试读取 OpenViking。
+- 记忆功能：本地 `~/.neo-agent/memory/memories.json` 为默认可靠存储，按 `preference/project_fact/workflow/session_summary` 分类，并可在 `hybrid/openviking` 模式下尝试读取 OpenViking。
 - skill 功能：`~/.neo-agent/skills/*/SKILL.md`，会按触发词匹配；重复任务达到阈值后会自动创建 skill。
 - MCP：支持在配置中声明 stdio MCP server，并列出/调用工具的基础能力。
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
@@ -43,8 +43,12 @@ export MIMO_API_BASE=...
 
 ```text
 /help                 查看命令
-/remember <内容>      保存一条用户记忆
-/memory [查询词]      查看或搜索记忆
+/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin
+/memory [查询词]      查看或搜索记忆，支持 --type
+/memory-update <id|uri> <新内容>
+/memory-delete <id|uri>
+/memory-pin <id|uri>
+/memory-export [数量]
 /skills               查看已加载的 skill
 /skill create <名称> :: <描述>
 /mcp                  查看已连接的 MCP 工具
@@ -80,6 +84,23 @@ neo transcripts --tail <sessionId>
 ```
 
 默认 transcript 写入 `~/.neo-agent/transcripts/YYYY-MM-DD/<sessionId>.jsonl`，用于回顾会话和后续调试。
+
+记忆类型：
+
+- `preference`：用户偏好、长期目标、沟通方式和协作习惯。
+- `project_fact`：项目目标、约束、决策背景和时间点，且不是直接读代码就能知道的信息。
+- `workflow`：用户认可的重复流程、检查清单和工作方法。
+- `session_summary`：对未来有价值的会话摘要，不保存临时流水账。
+
+示例：
+
+```text
+/remember --type workflow --tag debug --pin 每次改 CLI 后先跑 npm run smoke
+/memory --type workflow smoke
+/memory-update <id> <新内容>
+/memory-delete <id>
+/memory-export 20
+```
 
 诊断安装和配置：
 

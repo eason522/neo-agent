@@ -1,9 +1,29 @@
 import path from 'node:path';
-import type { AppConfig, MemoryHit, MemoryRecord } from '../types.js';
+import type { AppConfig, MemoryCategory, MemoryHit, MemoryOrigin, MemoryRecord, MemoryStatus } from '../types.js';
 import { readJsonFile, stableId, writeJsonFile } from '../utils/fs.js';
 
 type MemoryStore = {
+  version?: number;
   records: MemoryRecord[];
+};
+
+type LegacyMemoryRecord = Partial<MemoryRecord> & {
+  kind?: 'user' | 'agent' | 'session';
+};
+
+type MemoryWriteInput = {
+  content: string;
+  category?: MemoryCategory;
+  tags?: string[];
+  origin?: MemoryOrigin;
+  pinned?: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+type MemoryListOptions = {
+  limit?: number;
+  category?: MemoryCategory;
+  includeArchived?: boolean;
 };
 
 export class LocalMemory {
@@ -17,6 +37,7 @@ export class LocalMemory {
     const store = await this.readStore();
     const queryTerms = tokenize(query);
     return store.records
+      .filter(record => record.status === 'active')
       .map(record => ({
         ...record,
         score: scoreRecord(record, queryTerms),
@@ -27,16 +48,21 @@ export class LocalMemory {
       .slice(0, limit);
   }
 
-  async remember(content: string, tags: string[] = [], kind: MemoryRecord['kind'] = 'user'): Promise<MemoryRecord> {
+  async remember(input: string | MemoryWriteInput, tags: string[] = []): Promise<MemoryRecord> {
+    const payload = typeof input === 'string' ? { content: input, tags } : input;
     const now = new Date().toISOString();
     const record: MemoryRecord = {
       id: stableId('mem'),
       uri: `viking://user/memories/${now.slice(0, 10)}/${stableId('item')}`,
-      kind,
-      content: content.trim(),
-      tags,
+      category: payload.category ?? 'preference',
+      content: payload.content.trim(),
+      tags: normalizeTags(payload.tags ?? []),
+      origin: payload.origin ?? 'manual',
+      pinned: payload.pinned ?? false,
+      status: 'active',
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      metadata: payload.metadata
     };
     const store = await this.readStore();
     store.records.unshift(record);
@@ -44,15 +70,57 @@ export class LocalMemory {
     return record;
   }
 
-  async list(limit = 20): Promise<MemoryRecord[]> {
+  async list(options: number | MemoryListOptions = 20): Promise<MemoryRecord[]> {
+    const resolved = typeof options === 'number' ? { limit: options } : options;
     const store = await this.readStore();
-    return store.records.slice(0, limit);
+    return store.records
+      .filter(record => resolved.includeArchived || record.status === 'active')
+      .filter(record => !resolved.category || record.category === resolved.category)
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, resolved.limit ?? 20);
+  }
+
+  async update(idOrUri: string, updates: Partial<Pick<MemoryRecord, 'content' | 'category' | 'tags' | 'pinned' | 'status' | 'metadata'>>): Promise<MemoryRecord | undefined> {
+    const store = await this.readStore();
+    const index = store.records.findIndex(record => matchesRecord(record, idOrUri));
+    if (index < 0) return undefined;
+    const current = store.records[index];
+    const next: MemoryRecord = {
+      ...current,
+      ...updates,
+      content: updates.content?.trim() || current.content,
+      tags: updates.tags ? normalizeTags(updates.tags) : current.tags,
+      updatedAt: new Date().toISOString()
+    };
+    store.records[index] = next;
+    await writeJsonFile(this.filePath, { ...store, version: 2 });
+    return next;
+  }
+
+  async forget(idOrUri: string): Promise<MemoryRecord | undefined> {
+    return this.update(idOrUri, { status: 'archived' });
+  }
+
+  async delete(idOrUri: string): Promise<MemoryRecord | undefined> {
+    const store = await this.readStore();
+    const index = store.records.findIndex(record => matchesRecord(record, idOrUri));
+    if (index < 0) return undefined;
+    const [removed] = store.records.splice(index, 1);
+    await writeJsonFile(this.filePath, { ...store, version: 2 });
+    return removed;
+  }
+
+  async find(idOrUri: string): Promise<MemoryRecord | undefined> {
+    const store = await this.readStore();
+    return store.records.find(record => matchesRecord(record, idOrUri));
   }
 
   private async readStore(): Promise<MemoryStore> {
-    const store = await readJsonFile<MemoryStore>(this.filePath, { records: [] });
+    const store = await readJsonFile<{ version?: number; records?: LegacyMemoryRecord[] }>(this.filePath, { records: [] });
+    const records = Array.isArray(store.records) ? store.records.map(normalizeRecord).filter(isMemoryRecord) : [];
     return {
-      records: Array.isArray(store.records) ? store.records : []
+      version: 2,
+      records
     };
   }
 }
@@ -65,12 +133,76 @@ function tokenize(input: string): string[] {
 }
 
 function scoreRecord(record: MemoryRecord, queryTerms: string[]): number {
-  const haystack = `${record.content} ${record.tags.join(' ')}`.toLowerCase();
-  let score = 0;
+  if (queryTerms.length === 0) return record.pinned ? 2 : 1;
+  const haystack = `${record.category} ${record.content} ${record.tags.join(' ')}`.toLowerCase();
+  let termScore = 0;
   for (const term of queryTerms) {
-    if (haystack.includes(term)) score += term.length > 2 ? 2 : 1;
+    if (haystack.includes(term)) termScore += term.length > 2 ? 2 : 1;
   }
+  if (termScore === 0) return 0;
   const ageMs = Date.now() - Date.parse(record.updatedAt);
   const recencyBoost = Math.max(0, 1 - ageMs / (1000 * 60 * 60 * 24 * 30));
-  return score + recencyBoost;
+  const pinnedBoost = record.pinned ? 3 : 0;
+  return termScore + recencyBoost + pinnedBoost;
+}
+
+function normalizeRecord(raw: LegacyMemoryRecord): MemoryRecord | undefined {
+  if (!raw || typeof raw.content !== 'string' || !raw.content.trim()) return undefined;
+  const now = new Date().toISOString();
+  const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : now;
+  const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt;
+  return {
+    id: typeof raw.id === 'string' ? raw.id : stableId('mem'),
+    uri: typeof raw.uri === 'string' ? raw.uri : `viking://user/memories/${createdAt.slice(0, 10)}/${stableId('item')}`,
+    category: normalizeCategory(raw.category ?? categoryFromLegacyKind(raw.kind)),
+    content: raw.content.trim(),
+    tags: normalizeTags(Array.isArray(raw.tags) ? raw.tags : []),
+    origin: normalizeOrigin(raw.origin ?? sourceFromLegacyKind(raw.kind)),
+    pinned: Boolean(raw.pinned),
+    status: normalizeStatus(raw.status),
+    createdAt,
+    updatedAt,
+    lastAccessedAt: typeof raw.lastAccessedAt === 'string' ? raw.lastAccessedAt : undefined,
+    metadata: raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : undefined
+  };
+}
+
+function isMemoryRecord(record: MemoryRecord | undefined): record is MemoryRecord {
+  return record !== undefined;
+}
+
+function normalizeCategory(value: unknown): MemoryCategory {
+  return value === 'preference' || value === 'project_fact' || value === 'workflow' || value === 'session_summary'
+    ? value
+    : 'preference';
+}
+
+function normalizeOrigin(value: unknown): MemoryOrigin {
+  return value === 'manual' || value === 'session' || value === 'agent' || value === 'imported' || value === 'openviking'
+    ? value
+    : 'manual';
+}
+
+function normalizeStatus(value: unknown): MemoryStatus {
+  return value === 'archived' ? 'archived' : 'active';
+}
+
+function categoryFromLegacyKind(kind: LegacyMemoryRecord['kind']): MemoryCategory {
+  if (kind === 'session') return 'session_summary';
+  if (kind === 'agent') return 'workflow';
+  return 'preference';
+}
+
+function sourceFromLegacyKind(kind: LegacyMemoryRecord['kind']): MemoryOrigin {
+  if (kind === 'session') return 'session';
+  if (kind === 'agent') return 'agent';
+  return 'manual';
+}
+
+function normalizeTags(tags: string[]): string[] {
+  return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))].slice(0, 16);
+}
+
+function matchesRecord(record: MemoryRecord, idOrUri: string): boolean {
+  return record.id === idOrUri || record.uri === idOrUri || record.uri.endsWith(`/${idOrUri}`);
 }

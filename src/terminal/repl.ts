@@ -3,6 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
+import type { MemoryCategory, MemoryRecord } from '../types.js';
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: chalk.gray('neo> ') });
@@ -51,18 +52,67 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       return true;
     case '/memory': {
       await agent.transcripts.append('command', line, { command, queryChars: arg.length });
-      const records = arg ? await agent.memory.search(arg) : await agent.memory.list(12);
-      if (records.length === 0) console.log(chalk.gray('没有找到记忆'));
-      for (const item of records) console.log(`${chalk.gray(item.uri)}\n${item.content}\n`);
+      const parsed = parseMemoryQuery(arg);
+      const records = parsed.query ? await agent.memory.search(parsed.query) : await agent.memory.list(12, parsed.category);
+      const filtered = parsed.category ? records.filter(record => record.category === parsed.category) : records;
+      if (filtered.length === 0) console.log(chalk.gray('没有找到记忆'));
+      for (const item of filtered) console.log(formatMemory(item));
       return true;
     }
     case '/remember': {
       await agent.transcripts.append('command', line, { command, contentChars: arg.length });
-      if (!arg) console.log('用法：/remember <内容>');
+      const parsed = parseRememberArgs(arg);
+      if (!parsed.content) console.log('用法：/remember [--type preference|project_fact|workflow|session_summary] [--tag 标签] [--pin] <内容>');
       else {
-        const record = await agent.memory.remember(arg, ['manual'], 'user');
-        console.log(`${chalk.green('已记住')} ${record.uri}`);
+        const record = await agent.memory.remember(parsed.content, {
+          category: parsed.category,
+          tags: parsed.tags,
+          pinned: parsed.pinned,
+          origin: 'manual'
+        });
+        console.log(`${chalk.green('已记住')} ${formatMemorySummary(record)}`);
       }
+      return true;
+    }
+    case '/memory-update': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const [idOrUri, ...contentParts] = rest;
+      const content = contentParts.join(' ').trim();
+      if (!idOrUri || !content) {
+        console.log('用法：/memory-update <id|uri> <新内容>');
+        return true;
+      }
+      const record = await agent.memory.update(idOrUri, { content });
+      console.log(record ? `${chalk.green('已更新')} ${formatMemorySummary(record)}` : chalk.yellow('没有找到这条记忆'));
+      return true;
+    }
+    case '/memory-delete':
+    case '/forget': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      if (!arg) {
+        console.log('用法：/memory-delete <id|uri>');
+        return true;
+      }
+      const record = await agent.memory.forget(arg);
+      console.log(record ? `${chalk.green('已删除')} ${formatMemorySummary(record)}` : chalk.yellow('没有找到这条记忆'));
+      return true;
+    }
+    case '/memory-pin': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      if (!arg) {
+        console.log('用法：/memory-pin <id|uri>');
+        return true;
+      }
+      const record = await agent.memory.update(arg, { pinned: true });
+      console.log(record ? `${chalk.green('已置顶')} ${formatMemorySummary(record)}` : chalk.yellow('没有找到这条记忆'));
+      return true;
+    }
+    case '/memory-export': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const parsed = parseMemoryQuery(arg);
+      const limit = Number.parseInt(parsed.query, 10);
+      const records = await agent.memory.list(Number.isFinite(limit) ? limit : 100, parsed.category);
+      console.log(JSON.stringify(records, null, 2));
       return true;
     }
     case '/skills': {
@@ -146,8 +196,12 @@ function printHelp(): void {
   console.log([
     '/help                 查看命令',
     '/exit                 退出',
-    '/remember <内容>      保存一条用户记忆',
-    '/memory [查询词]      查看或搜索记忆',
+    '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
+    '/memory [查询词]      查看或搜索记忆，支持 --type',
+    '/memory-update <id|uri> <新内容>',
+    '/memory-delete <id|uri>',
+    '/memory-pin <id|uri>',
+    '/memory-export [数量]',
     '/skills               查看已加载的 skill',
     '/skill create <名称> :: <描述>',
     '/mcp                  查看已连接的 MCP 工具',
@@ -157,4 +211,67 @@ function printHelp(): void {
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
     '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
+}
+
+function parseRememberArgs(arg: string): { content: string; category: MemoryCategory; tags: string[]; pinned: boolean } {
+  const tokens = arg.split(/\s+/).filter(Boolean);
+  const tags: string[] = [];
+  let category: MemoryCategory = 'preference';
+  let pinned = false;
+  const content: string[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if ((token === '--type' || token === '--category') && tokens[index + 1]) {
+      category = parseMemoryCategory(tokens[index + 1]);
+      index += 1;
+      continue;
+    }
+    if ((token === '--tag' || token === '--tags') && tokens[index + 1]) {
+      tags.push(...tokens[index + 1].split(',').map(item => item.trim()).filter(Boolean));
+      index += 1;
+      continue;
+    }
+    if (token === '--pin' || token === '--pinned') {
+      pinned = true;
+      continue;
+    }
+    content.push(token);
+  }
+
+  return { content: content.join(' ').trim(), category, tags, pinned };
+}
+
+function parseMemoryQuery(arg: string): { query: string; category?: MemoryCategory } {
+  const tokens = arg.split(/\s+/).filter(Boolean);
+  const query: string[] = [];
+  let category: MemoryCategory | undefined;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if ((token === '--type' || token === '--category') && tokens[index + 1]) {
+      category = parseMemoryCategory(tokens[index + 1]);
+      index += 1;
+      continue;
+    }
+    query.push(token);
+  }
+  return { query: query.join(' ').trim(), category };
+}
+
+function parseMemoryCategory(raw: string): MemoryCategory {
+  const value = raw.trim().toLowerCase();
+  if (['project_fact', 'project', 'fact', '项目', '事实', '项目事实'].includes(value)) return 'project_fact';
+  if (['workflow', 'flow', '工作流', '流程'].includes(value)) return 'workflow';
+  if (['session_summary', 'session', 'summary', '会话', '摘要', '会话摘要'].includes(value)) return 'session_summary';
+  return 'preference';
+}
+
+function formatMemory(record: MemoryRecord): string {
+  return `${formatMemorySummary(record)}\n${record.content}\n`;
+}
+
+function formatMemorySummary(record: MemoryRecord): string {
+  const pin = record.pinned ? '置顶 ' : '';
+  const tags = record.tags.length > 0 ? ` #${record.tags.join(' #')}` : '';
+  return `${pin}${record.category} ${record.id}${tags}\n${chalk.gray(record.uri)}`;
 }

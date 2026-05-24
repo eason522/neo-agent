@@ -18,6 +18,9 @@ export type ModelConfig = {
 
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
+export type MemoryCategory = 'preference' | 'project_fact' | 'workflow' | 'session_summary';
+export type MemoryOrigin = 'manual' | 'session' | 'agent' | 'imported' | 'openviking';
+export type MemoryStatus = 'active' | 'archived';
 
 export type McpServerConfig = {
   command: string;
@@ -78,11 +81,16 @@ export type RouterDecision = {
 export type MemoryRecord = {
   id: string;
   uri: string;
-  kind: 'user' | 'agent' | 'session';
+  category: MemoryCategory;
   content: string;
   tags: string[];
+  origin: MemoryOrigin;
+  pinned: boolean;
+  status: MemoryStatus;
   createdAt: string;
   updatedAt: string;
+  lastAccessedAt?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type MemoryHit = MemoryRecord & {

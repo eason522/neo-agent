@@ -29,14 +29,18 @@ export class OpenVikingMemory {
     const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
     if (!response.ok) return [];
     const payload = await response.json() as { results?: Array<{ uri?: string; content?: string; score?: number }> };
+    const now = new Date().toISOString();
     return (payload.results ?? []).map((item, index): MemoryHit => ({
       id: item.uri ?? `openviking_${index}`,
       uri: item.uri ?? 'viking://unknown',
-      kind: 'user',
+      category: 'preference',
       content: item.content ?? '',
       tags: ['openviking'],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      origin: 'openviking',
+      pinned: false,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
       score: item.score ?? 1,
       source: 'openviking'
     })).filter(hit => hit.content);
@@ -49,14 +53,18 @@ export class OpenVikingMemory {
     });
     const content = stdout.trim();
     if (!content) return [];
+    const now = new Date().toISOString();
     const hit: MemoryHit = {
       id: 'openviking_cli',
       uri: 'viking://openviking/cli/find',
-      kind: 'user',
+      category: 'preference',
       content: content.slice(0, 6000),
       tags: ['openviking', 'cli'],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      origin: 'openviking',
+      pinned: false,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
       score: 1,
       source: 'openviking'
     };

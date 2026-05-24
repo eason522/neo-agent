@@ -1,7 +1,15 @@
-import type { AppConfig, MemoryHit, MemoryRecord } from '../types.js';
+import type { AppConfig, MemoryCategory, MemoryHit, MemoryRecord } from '../types.js';
 import { LocalMemory } from './localMemory.js';
 import { OpenVikingMemory } from './openVikingMemory.js';
 import type { Logger } from '../logging/logger.js';
+
+export type RememberOptions = {
+  category?: MemoryCategory;
+  tags?: string[];
+  origin?: MemoryRecord['origin'];
+  pinned?: boolean;
+  metadata?: Record<string, unknown>;
+};
 
 export class MemoryService {
   readonly local: LocalMemory;
@@ -32,21 +40,47 @@ export class MemoryService {
     return hits;
   }
 
-  async remember(content: string, tags: string[] = [], kind: MemoryRecord['kind'] = 'user'): Promise<MemoryRecord> {
-    const record = await this.local.remember(content, tags, kind);
+  async remember(content: string, tagsOrOptions: string[] | RememberOptions = []): Promise<MemoryRecord> {
+    const options: RememberOptions = Array.isArray(tagsOrOptions) ? { tags: tagsOrOptions } : tagsOrOptions;
+    const record = await this.local.remember({ content, ...options });
     if (this.config.memory.backend !== 'local') {
-      await this.openViking.remember(content, tags).catch(() => undefined);
+      await this.openViking.remember(content, options.tags ?? []).catch(() => undefined);
     }
     this.logger?.debug('memory.remember', {
-      kind,
-      tags,
+      category: record.category,
+      origin: record.origin,
+      tags: record.tags,
       contentChars: content.length,
       uri: record.uri
     });
     return record;
   }
 
-  async list(limit = 20): Promise<MemoryRecord[]> {
-    return this.local.list(limit);
+  async list(limit = 20, category?: MemoryCategory): Promise<MemoryRecord[]> {
+    return this.local.list({ limit, category });
+  }
+
+  async update(idOrUri: string, updates: Partial<Pick<MemoryRecord, 'content' | 'category' | 'tags' | 'pinned' | 'status' | 'metadata'>>): Promise<MemoryRecord | undefined> {
+    const record = await this.local.update(idOrUri, updates);
+    this.logger?.debug('memory.update', {
+      found: Boolean(record),
+      idOrUri,
+      category: record?.category,
+      pinned: record?.pinned,
+      status: record?.status
+    });
+    return record;
+  }
+
+  async forget(idOrUri: string): Promise<MemoryRecord | undefined> {
+    const record = await this.local.forget(idOrUri);
+    this.logger?.debug('memory.forget', { found: Boolean(record), idOrUri });
+    return record;
+  }
+
+  async delete(idOrUri: string): Promise<MemoryRecord | undefined> {
+    const record = await this.local.delete(idOrUri);
+    this.logger?.debug('memory.delete', { found: Boolean(record), idOrUri });
+    return record;
   }
 }

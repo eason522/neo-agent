@@ -141,20 +141,38 @@ function getSoulSection(soul: string): string {
 }
 
 function getMemorySection(memories: MemoryHit[]): string {
+  const memoryRules = [
+    '记忆类型固定为 preference、project_fact、workflow、session_summary。',
+    'preference 记录用户偏好、沟通方式、长期目标和协作习惯。',
+    'project_fact 记录当前项目中不容易从代码直接推导出的目标、约束、决策背景和时间点。',
+    'workflow 记录用户认可的重复流程、检查清单和工作方法。',
+    'session_summary 只记录对未来有价值的会话摘要，不保存临时任务流水账。',
+    '不要把 API key、token、密码、隐私数据、可从代码/git 直接得到的信息、一次性任务细节写入长期记忆。',
+    '如果记忆提到文件、函数、配置或当前状态，使用前要核实当前项目真实状态；发现过期要更新或删除。'
+  ];
+
   if (memories.length === 0) {
     return [
       '# 记忆',
       ...bullets([
         '当前没有命中的相关记忆。',
         '你可以使用已有记忆帮助理解用户，但不要机械展示记忆内容。',
-        '只有当信息对长期协作有价值、稳定、非隐私敏感时，才值得形成长期记忆。'
+        ...memoryRules
       ])
     ].join('\n');
   }
 
   return [
     '# 相关记忆',
-    ...bullets(memories.map(hit => `(${hit.source}) ${hit.content}`))
+    ...bullets([
+      ...memoryRules,
+      '本次命中的记忆：',
+      ...memories.map(hit => {
+        const pin = hit.pinned ? '置顶，' : '';
+        const tags = hit.tags.length > 0 ? `，tags=${hit.tags.join(',')}` : '';
+        return `(${hit.source}，${pin}${hit.category}${tags}) ${hit.content}`;
+      })
+    ])
   ].join('\n');
 }
 

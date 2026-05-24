@@ -103,7 +103,11 @@ export class NeoAgent {
         matchedSkills: matchedSkills.map(skill => skill.name),
         hasVisionContext: Boolean(visionContext)
       });
-      await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, ['session'], 'session');
+      await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
+        category: 'session_summary',
+        tags: ['session'],
+        origin: 'session'
+      });
       const createdSkill = await this.skills.maybeAutoCreate(input, text).catch(error => {
         this.logger.error('skill.autocreate.error', error);
         return undefined;
