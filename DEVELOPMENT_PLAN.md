@@ -1,136 +1,142 @@
-# neo-agent Development Plan
+# neo-agent 开发计划
 
-This document tracks ongoing development status, priorities, and decisions. Update it before or during every meaningful feature change so the repository remains easy to resume.
+本文档用于持续跟踪 neo-agent 的开发状态、优先级、待办事项和关键决策。每次做有意义的功能变更前后，都要同步更新这份文档，方便后续恢复上下文和回顾进度。
 
-## Current Status
+## 当前状态
 
-Last updated: 2026-05-24
+最后更新：2026-05-24
 
-The project is an MVP terminal AI agent with:
+当前项目是一个个人终端 AI agent 的 MVP，已经具备：
 
-- CLI entrypoint: `neo`
-- Terminal REPL with slash commands
-- DeepSeek main/small text model routing
-- MiMo vision pre-analysis for image inputs
-- Local memory with OpenViking retrieval fallback
-- Skill discovery and auto-creation scaffold
-- MCP stdio server connection scaffold
-- Focused sub-agent runner
-- JSONL logging system for debugging
-- GitHub sync on `main`
+- CLI 启动命令：`neo`
+- 终端 REPL 交互和 slash command 命令体系
+- DeepSeek 主模型/小模型文本路由
+- MiMo 图片识别预分析，再交给文本模型推理
+- 本地记忆存储，并支持 OpenViking 检索回退
+- skill 发现和自动创建的基础框架
+- MCP stdio server 连接基础框架
+- 聚焦任务的 sub-agent 执行器
+- 用于调试的 JSONL 日志系统
+- GitHub `main` 分支同步
 
-## Development Rules
+## 开发规则
 
-- Keep `DEVELOPMENT_PLAN.md` current when adding, removing, or reprioritizing work.
-- Keep secrets out of git. API keys belong in `~/.neo-agent/config.json` or environment variables.
-- Run `npm run typecheck` and `npm run build` before committing.
-- Push completed commits to `origin/main` unless a branch is explicitly needed.
-- Do not commit `node_modules/`, `dist/`, `.env`, local screenshots, or temporary skill experiments.
+- 增加、删除或调整开发任务时，要同步更新 `DEVELOPMENT_PLAN.md`。
+- 不要把密钥提交到 git。API key 只能放在 `~/.neo-agent/config.json` 或环境变量里。
+- 每次提交前运行 `npm run typecheck` 和 `npm run build`。
+- 完成的提交默认推送到 `origin/main`，除非明确需要开分支。
+- 不要提交 `node_modules/`、`dist/`、`.env`、本地截图、临时测试图片或临时 skill 实验文件。
+- 项目文档和对话说明默认使用中文，除非代码、命令或第三方协议本身必须使用英文。
 
-## Near-Term Milestones
+## 近期里程碑
 
-### M1: Reliable Personal Agent Core
+### M1：可靠的个人 agent 核心
 
-Status: in progress
+状态：进行中
 
-- [x] Create TypeScript CLI project
-- [x] Register simple `neo` startup command
-- [x] Configure DeepSeek and MiMo model clients
-- [x] Implement text/image model routing
-- [x] Add local memory storage
-- [x] Add OpenViking retrieval fallback
-- [x] Add skill manager scaffold
-- [x] Add MCP manager scaffold
-- [x] Add sub-agent runner
-- [x] Add JSONL logging
-- [ ] Add conversation transcript persistence
-- [ ] Add config validation command: `neo doctor`
-- [ ] Add log rotation and retention policy
-- [ ] Add smoke tests for CLI commands
+- [x] 创建 TypeScript CLI 项目
+- [x] 注册简单启动命令 `neo`
+- [x] 配置 DeepSeek 和 MiMo 模型客户端
+- [x] 实现文本/图片模型路由
+- [x] 添加本地记忆存储
+- [x] 添加 OpenViking 检索回退
+- [x] 添加 skill 管理基础框架
+- [x] 添加 MCP 管理基础框架
+- [x] 添加 sub-agent 执行器
+- [x] 添加 JSONL 日志系统
+- [x] 添加持续开发计划文档
+- [ ] 添加对话 transcript 持久化
+- [ ] 添加配置诊断命令：`neo doctor`
+- [ ] 添加日志轮转和保留策略
+- [ ] 添加 CLI 命令冒烟测试
 
-### M2: Better Memory and Personalization
+### M2：更好的记忆和个性化
 
-Status: planned
+状态：计划中
 
-- [ ] Define memory schema for preferences, project facts, workflows, and sessions
-- [ ] Add explicit memory commands: update, delete, pin, export
-- [ ] Improve relevance scoring beyond simple keyword search
-- [ ] Integrate OpenViking write path once local service contract is confirmed
-- [ ] Add memory review flow to prevent low-value or wrong memories
+- [ ] 定义记忆 schema，区分偏好、项目事实、工作流和会话摘要
+- [ ] 添加显式记忆命令：更新、删除、置顶、导出
+- [ ] 改进相关性评分，不只依赖简单关键词搜索
+- [ ] 确认本地 OpenViking 服务接口后，接入 OpenViking 写入链路
+- [ ] 添加记忆复查流程，避免低价值或错误记忆长期留存
 
-### M3: Skill Lifecycle
+### M3：skill 生命周期
 
-Status: planned
+状态：计划中
 
-- [ ] Add `neo skill list/show/edit/delete`
-- [ ] Track skill usage counts and success signals
-- [ ] Improve auto-skill creation criteria
-- [ ] Add skill update suggestions after repeated similar tasks
-- [ ] Separate global user skills from project-local skills
+- [ ] 添加 `neo skill list/show/edit/delete`
+- [ ] 记录 skill 使用次数和成功信号
+- [ ] 改进自动创建 skill 的判断标准
+- [ ] 针对重复任务提出 skill 更新建议
+- [ ] 区分全局用户 skill 和项目本地 skill
 
-### M4: Tooling and MCP Execution
+### M4：工具和 MCP 执行
 
-Status: planned
+状态：计划中
 
-- [ ] Add safe tool-call protocol around MCP tool execution
-- [ ] Add permission prompts for risky tools
-- [ ] Add MCP config commands: add, remove, list, test
-- [ ] Add tool result logging with redaction
-- [ ] Add project-aware filesystem tool support
+- [ ] 为 MCP 工具执行添加安全调用协议
+- [ ] 针对高风险工具添加权限确认
+- [ ] 添加 MCP 配置命令：添加、删除、列表、测试
+- [ ] 添加工具结果日志，并做好脱敏
+- [ ] 添加项目感知的文件系统工具支持
 
-### M5: Terminal UX Parity with CC-Source Ideas
+### M5：终端体验向 CC-Source 设计靠拢
 
-Status: planned
+状态：计划中
 
-- [ ] Add richer TUI rendering for messages
-- [ ] Add input history and multiline editing
-- [ ] Add interrupt/cancel behavior
-- [ ] Add status line with model, memory hits, and log path
-- [ ] Add compact debug view for routing and retrieved context
+- [ ] 添加更丰富的消息渲染
+- [ ] 添加输入历史和多行编辑
+- [ ] 添加中断/取消行为
+- [ ] 添加状态行，展示模型、记忆命中数和日志路径
+- [ ] 添加轻量 debug 视图，展示路由结果和检索到的上下文
 
-## Backlog
+## 待办池
 
-- Add tests around `extractImageAttachments`.
-- Add tests for `Logger` redaction.
-- Add tests for memory search ranking.
-- Add `neo config show --redacted`.
-- Add `neo config set` for common settings.
-- Add streaming model responses.
-- Add retry/backoff around model requests.
-- Add request timeout configuration.
-- Add model usage/cost tracking.
-- Add structured error codes for common setup issues.
-- Add release script and versioning policy.
+- 为 `extractImageAttachments` 添加测试。
+- 为 `Logger` 脱敏逻辑添加测试。
+- 为记忆搜索排序添加测试。
+- 添加 `neo config show --redacted`。
+- 添加 `neo config set`，用于修改常见配置。
+- 添加模型流式输出。
+- 为模型请求添加重试和退避。
+- 添加请求超时配置。
+- 添加模型用量和成本统计。
+- 为常见配置问题添加结构化错误码。
+- 添加发布脚本和版本策略。
 
-## Decision Log
+## 决策记录
 
-### 2026-05-24: Start with a custom lightweight CLI instead of directly modifying CC-Source
+### 2026-05-24：先做轻量自研 CLI，而不是直接改 CC-Source
 
-CC-Source is large and extracted without package metadata. A focused TypeScript CLI lets the project run immediately while preserving room to migrate selected CC-Source terminal UX patterns later.
+CC-Source 体量很大，而且当前是提取出来的源码，缺少完整包元数据。先做一个聚焦的 TypeScript CLI，可以立刻运行和迭代，同时保留后续迁移 CC-Source 终端交互设计的空间。
 
-### 2026-05-24: Use local memory as source of truth first
+### 2026-05-24：先把本地记忆作为可靠来源
 
-OpenViking is treated as an optional retrieval backend until the local OpenViking server contract is confirmed. This keeps the agent usable even when OpenViking is not running.
+在本机 OpenViking 服务接口完全确认之前，OpenViking 先作为可选检索后端。本地记忆保持始终可用，避免 OpenViking 没启动时 agent 不可用。
 
-### 2026-05-24: Use JSONL file logging
+### 2026-05-24：采用 JSONL 文件日志
 
-JSONL is easy to tail, grep, parse, and redact. The logger records operational metadata rather than full prompt payloads by default.
+JSONL 方便 tail、grep、解析和脱敏。默认日志记录运行元数据，不记录完整提示词正文，降低泄露风险。
 
-## Resume Checklist
+### 2026-05-24：项目文档和沟通默认使用中文
 
-Before starting a new development session:
+用户明确要求全程中文交流。后续说明、计划、回顾和文档默认使用中文；只有代码标识符、命令、配置 key、第三方协议名等必须保持英文。
 
-1. Run `git status --short --branch`.
-2. Read this plan's Current Status and Near-Term Milestones.
-3. Pick the next unchecked item or add a new one if priorities changed.
-4. Make the change.
-5. Run `npm run typecheck` and `npm run build`.
-6. Update this plan if status changed.
-7. Commit and push.
+## 恢复开发检查清单
 
-## Open Questions
+开始新的开发任务前：
 
-- What exact OpenViking API surface should be used for durable writes?
-- Should project-local skills live under `.neo-agent/skills` or the user's global `~/.neo-agent/skills` by default?
-- How much CC-Source UI code should be copied versus reimplemented in a smaller terminal UI layer?
-- What is the desired permission model for MCP tools and future filesystem actions?
+1. 运行 `git status --short --branch`。
+2. 阅读本文档的“当前状态”和“近期里程碑”。
+3. 选择下一个未完成任务；如果优先级变化，先更新任务列表。
+4. 实现功能或修复问题。
+5. 运行 `npm run typecheck` 和 `npm run build`。
+6. 如果状态、决策或优先级变化，更新本文档。
+7. 提交并推送到 GitHub。
+
+## 未决问题
+
+- OpenViking 的持久化写入应使用哪一个稳定 API 接口？
+- 项目本地 skill 默认应该放在 `.neo-agent/skills`，还是继续放在用户全局 `~/.neo-agent/skills`？
+- CC-Source 的终端 UI 代码应该复制多少，哪些部分应该在更小的 TUI 层里重新实现？
+- MCP 工具和未来文件系统动作应该采用怎样的权限模型？
