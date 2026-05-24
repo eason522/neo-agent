@@ -87,6 +87,12 @@ neo transcripts --tail <sessionId>
 neo doctor
 ```
 
+运行 CLI 冒烟测试：
+
+```bash
+npm run smoke
+```
+
 ## MCP 配置示例
 
 在 `~/.neo-agent/config.json` 里添加：
