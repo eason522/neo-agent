@@ -20,6 +20,7 @@ test('显示帮助', async () => {
   const result = await run(['--help']);
   assertIncludes(result.stdout, '个人终端 AI agent');
   assertIncludes(result.stdout, 'doctor');
+  assertIncludes(result.stdout, 'dream');
   assertIncludes(result.stdout, 'transcripts');
 });
 
@@ -29,6 +30,7 @@ test('初始化配置', async () => {
   const config = await readFile(path.join(tempHome, 'config.json'), 'utf8');
   assertIncludes(config, 'deepseek-v4-pro');
   assertIncludes(config, 'mimo-v2.5');
+  assertIncludes(config, '"dreaming"');
 });
 
 test('doctor 缺 key 时失败并给出建议', async () => {

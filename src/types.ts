@@ -7,6 +7,7 @@ export type ChatMessage = {
 };
 
 export type ModelKind = 'main' | 'small' | 'vision';
+export type TextModelKind = Exclude<ModelKind, 'vision'>;
 
 export type ModelConfig = {
   model: string;
@@ -45,6 +46,15 @@ export type AppConfig = {
     openVikingUrl: string;
     maxHits: number;
   };
+  dreaming: {
+    enabled: boolean;
+    minHours: number;
+    minSessions: number;
+    maxSessions: number;
+    transcriptTailLines: number;
+    maxMemories: number;
+    modelKind: TextModelKind;
+  };
   skills: {
     autoCreate: boolean;
     autoCreateThreshold: number;
@@ -74,7 +84,7 @@ export type Attachment = {
 };
 
 export type RouterDecision = {
-  modelKind: Exclude<ModelKind, 'vision'>;
+  modelKind: TextModelKind;
   reason: string;
 };
 
@@ -108,7 +118,7 @@ export type Skill = {
 
 export type AgentResponse = {
   text: string;
-  modelKind: Exclude<ModelKind, 'vision'>;
+  modelKind: TextModelKind;
   visionContext?: string;
   memories: MemoryHit[];
   skills: Skill[];

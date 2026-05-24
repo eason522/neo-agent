@@ -180,6 +180,20 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       else console.log(await agent.subAgent.run(arg));
       return true;
     }
+    case '/dream': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const dryRun = rest.includes('--dry-run');
+      const force = rest.includes('--force') || !rest.includes('--scheduled');
+      const result = await agent.dreams.run({ dryRun, force });
+      if (result.status === 'skipped') console.log(chalk.gray(`dream 跳过：${result.reason}`));
+      else {
+        console.log(chalk.green(dryRun ? 'dream dry-run 完成' : 'dream 完成'));
+        console.log(`摘要：${result.summary}`);
+        console.log(`新增/更新建议：${result.upserts.length}，归档建议：${result.archives.length}，灵感：${result.insights.length}`);
+        if (result.reportPath) console.log(chalk.gray(result.reportPath));
+      }
+      return true;
+    }
     default:
       await agent.transcripts.append('command', line, { command, known: false });
       console.log(`未知命令：${command}`);
@@ -209,6 +223,7 @@ function printHelp(): void {
     '/transcript [行数]    查看当前会话 transcript',
     '/transcripts [数量]   查看最近会话 transcript 列表',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
+    '/dream [--dry-run]    整理记忆并提炼灵感',
     '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
 }

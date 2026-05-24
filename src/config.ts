@@ -28,6 +28,15 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
     openVikingUrl: z.string(),
     maxHits: z.number().int().positive()
   }),
+  dreaming: z.object({
+    enabled: z.boolean(),
+    minHours: z.number().positive(),
+    minSessions: z.number().int().positive(),
+    maxSessions: z.number().int().positive(),
+    transcriptTailLines: z.number().int().positive(),
+    maxMemories: z.number().int().positive(),
+    modelKind: z.enum(['main', 'small'])
+  }),
   skills: z.object({
     autoCreate: z.boolean(),
     autoCreateThreshold: z.number().int().positive()
@@ -103,6 +112,15 @@ export function defaultConfig(): AppConfig {
       backend: (process.env.NEO_AGENT_MEMORY_BACKEND as AppConfig['memory']['backend']) || 'hybrid',
       openVikingUrl: process.env.NEO_AGENT_OPENVIKING_URL || 'http://localhost:1933',
       maxHits: 6
+    },
+    dreaming: {
+      enabled: process.env.NEO_AGENT_DREAM_ENABLED === '1',
+      minHours: Number.parseFloat(process.env.NEO_AGENT_DREAM_MIN_HOURS || '24'),
+      minSessions: Number.parseInt(process.env.NEO_AGENT_DREAM_MIN_SESSIONS || '5', 10),
+      maxSessions: Number.parseInt(process.env.NEO_AGENT_DREAM_MAX_SESSIONS || '5', 10),
+      transcriptTailLines: Number.parseInt(process.env.NEO_AGENT_DREAM_TRANSCRIPT_TAIL_LINES || '80', 10),
+      maxMemories: Number.parseInt(process.env.NEO_AGENT_DREAM_MAX_MEMORIES || '80', 10),
+      modelKind: (process.env.NEO_AGENT_DREAM_MODEL_KIND as AppConfig['dreaming']['modelKind']) || 'main'
     },
     skills: {
       autoCreate: true,

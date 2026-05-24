@@ -11,6 +11,7 @@
 - MCP：支持在配置中声明 stdio MCP server，并列出/调用工具的基础能力。
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
 - 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
+- dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
 
@@ -56,6 +57,7 @@ export MIMO_API_BASE=...
 /transcript [行数]    查看当前会话 transcript
 /transcripts [数量]   查看最近会话 transcript 列表
 /agent <任务>         把聚焦任务交给小模型 sub-agent
+/dream [--dry-run]    整理记忆并提炼灵感
 ```
 
 一次性提问：
@@ -107,6 +109,23 @@ neo transcripts --tail <sessionId>
 ```bash
 neo doctor
 ```
+
+整理记忆和灵感：
+
+```bash
+neo dream --dry-run
+neo dream --force --sessions 5
+```
+
+默认不会自动调用模型做 dreaming。需要定时整理时，可在环境变量中开启：
+
+```bash
+export NEO_AGENT_DREAM_ENABLED=1
+export NEO_AGENT_DREAM_MIN_HOURS=24
+export NEO_AGENT_DREAM_MIN_SESSIONS=5
+```
+
+dream 报告写入 `~/.neo-agent/dream/reports/`，状态写入 `~/.neo-agent/dream/state.json`。
 
 运行 CLI 冒烟测试：
 

@@ -10,6 +10,7 @@ import { buildSystemPrompt } from './prompts/systemPrompt.js';
 import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService } from './transcript/transcriptService.js';
+import { DreamService } from './dream/dreamService.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -19,6 +20,7 @@ export class NeoAgent {
   readonly subAgent: SubAgentRunner;
   readonly logger: Logger;
   readonly transcripts: TranscriptService;
+  readonly dreams: DreamService;
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
@@ -31,11 +33,12 @@ export class NeoAgent {
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
+    this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options: { scheduledDreams?: boolean } = {}): Promise<void> {
     this.logger.info('agent.initialize.start', {
       homeDir: this.config.homeDir,
       logFile: this.logger.filePath,
@@ -44,6 +47,11 @@ export class NeoAgent {
     await this.transcripts.start();
     await this.mcp.connectAll();
     this.logger.info('agent.initialize.success');
+    if (options.scheduledDreams ?? true) {
+      void this.dreams.maybeRunScheduled().catch(error => {
+        this.logger.error('dream.scheduled.error', error);
+      });
+    }
   }
 
   async ask(input: string, attachments: Attachment[] = []): Promise<AgentResponse> {
