@@ -70,6 +70,8 @@ neo logs --lines 200
 
 默认日志写入 `~/.neo-agent/logs/neo-agent.log`，格式是 JSONL。日志会记录启动、路由、模型请求耗时、记忆检索、MCP 连接和错误摘要；API key、Authorization header 和图片 base64 会被脱敏。
 
+日志默认单文件超过 5MB 会轮转，归档保留 14 天，最多保留 20 个归档文件。可通过 `NEO_AGENT_LOG_MAX_BYTES`、`NEO_AGENT_LOG_RETENTION_DAYS`、`NEO_AGENT_LOG_MAX_FILES` 调整。
+
 查看对话 transcript：
 
 ```bash

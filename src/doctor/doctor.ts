@@ -226,7 +226,17 @@ function checkModelConfig(name: string, apiKey: string | undefined, apiBase: str
 
 async function checkLogPath(config: AppConfig): Promise<DoctorCheck> {
   const filePath = path.isAbsolute(config.logging.file) ? config.logging.file : path.join(config.homeDir, config.logging.file);
-  return checkWritableDir(path.dirname(filePath), '日志目录');
+  const result = await checkWritableDir(path.dirname(filePath), '日志目录');
+  return {
+    ...result,
+    detail: [
+      result.detail,
+      `file=${filePath}`,
+      `maxBytes=${config.logging.maxBytes}`,
+      `retentionDays=${config.logging.retentionDays}`,
+      `maxFiles=${config.logging.maxFiles}`
+    ].filter(Boolean).join(', ')
+  };
 }
 
 async function checkTranscriptPath(config: AppConfig): Promise<DoctorCheck> {

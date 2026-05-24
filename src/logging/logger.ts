@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig, LogLevel } from '../types.js';
 
@@ -16,11 +16,18 @@ export class Logger {
   readonly filePath: string;
   private readonly level: LogLevel;
   private readonly consoleEnabled: boolean;
+  private readonly maxBytes: number;
+  private readonly retentionDays: number;
+  private readonly maxFiles: number;
+  private cleanupDone = false;
   private pendingWrite: Promise<void> = Promise.resolve();
 
   constructor(config: AppConfig) {
     this.level = config.logging.level;
     this.consoleEnabled = config.logging.console;
+    this.maxBytes = config.logging.maxBytes;
+    this.retentionDays = config.logging.retentionDays;
+    this.maxFiles = config.logging.maxFiles;
     this.filePath = path.isAbsolute(config.logging.file)
       ? config.logging.file
       : path.join(config.homeDir, config.logging.file);
@@ -77,14 +84,72 @@ export class Logger {
     };
     const line = `${JSON.stringify(record)}\n`;
 
-    this.pendingWrite = this.pendingWrite.then(() => mkdir(path.dirname(this.filePath), { recursive: true })
-      .then(() => appendFile(this.filePath, line, 'utf8'))
-      .catch(() => undefined));
+    this.pendingWrite = this.pendingWrite.then(async () => {
+      await mkdir(path.dirname(this.filePath), { recursive: true });
+      const rotated = await this.rotateIfNeeded(Buffer.byteLength(line, 'utf8'));
+      if (!this.cleanupDone || rotated) {
+        this.cleanupDone = true;
+        await this.cleanupArchives();
+      }
+      await appendFile(this.filePath, line, 'utf8');
+    }).catch(() => undefined);
 
     if (this.consoleEnabled) {
       const stream = level === 'error' || level === 'warn' ? process.stderr : process.stdout;
       stream.write(`[${record.ts}] ${level} ${event}\n`);
     }
+  }
+
+  private async rotateIfNeeded(incomingBytes: number): Promise<boolean> {
+    if (this.maxBytes <= 0) return false;
+    try {
+      const fileStat = await stat(this.filePath);
+      if (fileStat.size + incomingBytes <= this.maxBytes) return false;
+      const rotatedPath = this.rotatedPath(new Date());
+      await rename(this.filePath, rotatedPath);
+      return true;
+    } catch {
+      // Missing or unreadable log files should not block application flow.
+      return false;
+    }
+  }
+
+  private async cleanupArchives(): Promise<void> {
+    try {
+      const dir = path.dirname(this.filePath);
+      const base = path.basename(this.filePath);
+      const files = await readdir(dir, { withFileTypes: true });
+      const archives = await Promise.all(
+        files
+          .filter(file => file.isFile() && file.name.startsWith(`${base}.`))
+          .map(async file => {
+            const filePath = path.join(dir, file.name);
+            const fileStat = await stat(filePath);
+            return { filePath, mtimeMs: fileStat.mtimeMs };
+          })
+      );
+
+      const now = Date.now();
+      const retentionMs = this.retentionDays * 24 * 60 * 60 * 1000;
+      const expired = this.retentionDays === 0
+        ? []
+        : archives.filter(item => now - item.mtimeMs > retentionMs);
+      const sorted = archives
+        .filter(item => !expired.some(exp => exp.filePath === item.filePath))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const overflow = this.maxFiles === 0 ? sorted : sorted.slice(this.maxFiles);
+
+      for (const item of [...expired, ...overflow]) {
+        await unlink(item.filePath).catch(() => undefined);
+      }
+    } catch {
+      // Log cleanup is best effort.
+    }
+  }
+
+  private rotatedPath(date: Date): string {
+    const stamp = date.toISOString().replace(/[:.]/g, '-');
+    return `${this.filePath}.${stamp}`;
   }
 }
 

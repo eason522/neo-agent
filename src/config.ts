@@ -43,7 +43,10 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
   logging: z.object({
     level: z.enum(['debug', 'info', 'warn', 'error', 'silent']),
     file: z.string(),
-    console: z.boolean()
+    console: z.boolean(),
+    maxBytes: z.number().int().positive(),
+    retentionDays: z.number().int().nonnegative(),
+    maxFiles: z.number().int().nonnegative()
   }),
   transcripts: z.object({
     enabled: z.boolean(),
@@ -111,7 +114,10 @@ export function defaultConfig(): AppConfig {
     logging: {
       level: (process.env.NEO_AGENT_LOG_LEVEL as AppConfig['logging']['level']) || 'info',
       file: process.env.NEO_AGENT_LOG_FILE || 'logs/neo-agent.log',
-      console: process.env.NEO_AGENT_LOG_CONSOLE === '1'
+      console: process.env.NEO_AGENT_LOG_CONSOLE === '1',
+      maxBytes: Number.parseInt(process.env.NEO_AGENT_LOG_MAX_BYTES || String(5 * 1024 * 1024), 10),
+      retentionDays: Number.parseInt(process.env.NEO_AGENT_LOG_RETENTION_DAYS || '14', 10),
+      maxFiles: Number.parseInt(process.env.NEO_AGENT_LOG_MAX_FILES || '20', 10)
     },
     transcripts: {
       enabled: process.env.NEO_AGENT_TRANSCRIPTS_ENABLED !== '0',

@@ -53,6 +53,9 @@ export type AppConfig = {
     level: LogLevel;
     file: string;
     console: boolean;
+    maxBytes: number;
+    retentionDays: number;
+    maxFiles: number;
   };
   transcripts: {
     enabled: boolean;
