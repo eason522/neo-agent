@@ -5,6 +5,12 @@ export type WebPlan = {
   urls: string[];
 };
 
+const webFollowUpPatterns = [
+  /^(你)?(可以|帮我|麻烦)?(联网搜索|联网查|联网验证|联网核实|联网|搜索|搜一下|查一下|检索|验证|核实)(一下|下)?(吧|吗|呢)?[？?。.\s]*$/,
+  /^(那|这个|上面|刚才|前面|上一(个|条|轮)问题).*(联网|搜索|搜一下|查一下|验证|核实)/,
+  /^(联网|搜索|搜一下|查一下|验证|核实)(这个|一下|下)?[？?。.\s]*$/
+];
+
 const explicitWebPatterns = [
   /联网/,
   /搜索/,
@@ -50,15 +56,19 @@ const freshnessPatterns = [
 ];
 
 const dynamicEntityPatterns = [
+  /普京|习近平|特朗普|拜登|泽连斯基|马克龙|默克尔|金正恩|尹锡悦|石破茂|岸田文雄/,
   /CEO|首席执行官/i,
   /总统|主席|总理|部长|市长/,
   /政策|法规|法律|监管/,
   /模型|API|SDK|框架|库|依赖|npm|package/,
   /融资|财报|收入|估值/,
-  /招聘|职位|官网/
+  /招聘|职位|官网/,
+  /访问|访华|来华|出访|行程|会见|会晤|峰会/
 ];
 
-export function planWebUse(input: string, autoSearchEnabled: boolean): WebPlan {
+const questionPatterns = /谁|多少|是否|哪|什么|如何|怎么|有没有|何时|什么时候|几号|哪天|结束|了吗|吗|呢|安排|计划/;
+
+export function planWebUse(input: string, autoSearchEnabled: boolean, previousUserInput?: string): WebPlan {
   const urls = extractUrls(input);
   if (urls.length > 0) {
     return {
@@ -70,11 +80,21 @@ export function planWebUse(input: string, autoSearchEnabled: boolean): WebPlan {
   }
 
   const trimmed = input.trim();
+  const previous = previousUserInput?.trim();
   if (!autoSearchEnabled || !trimmed) {
     return {
       shouldUseWeb: false,
       reason: autoSearchEnabled ? '没有联网信号。' : '自动联网已关闭。',
       urls: []
+    };
+  }
+
+  if (previous && isWebFollowUp(trimmed)) {
+    return {
+      shouldUseWeb: true,
+      reason: '用户要求对上一轮问题联网搜索或验证。',
+      query: cleanQuery(previous),
+      urls: extractUrls(previous)
     };
   }
 
@@ -96,7 +116,7 @@ export function planWebUse(input: string, autoSearchEnabled: boolean): WebPlan {
     };
   }
 
-  if (dynamicEntityPatterns.some(pattern => pattern.test(trimmed)) && /谁|多少|是否|哪|什么|如何|怎么|有没有/.test(trimmed)) {
+  if (dynamicEntityPatterns.some(pattern => pattern.test(trimmed)) && questionPatterns.test(trimmed)) {
     return {
       shouldUseWeb: true,
       reason: '问题涉及可能变化的实体或资料，需要联网核实。',
@@ -124,4 +144,8 @@ function cleanQuery(input: string): string {
   return stripUrls(input)
     .replace(/^请?(帮我)?(联网|搜索|搜一下|查一下|查找|检索|上网|网上|验证|核实|确认)\s*/g, '')
     .trim() || input.trim();
+}
+
+function isWebFollowUp(input: string): boolean {
+  return webFollowUpPatterns.some(pattern => pattern.test(input));
 }

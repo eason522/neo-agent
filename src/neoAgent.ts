@@ -27,6 +27,7 @@ export class NeoAgent {
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
+  private readonly conversationHistory: ChatMessage[] = [];
 
   constructor(readonly config: AppConfig) {
     this.logger = new Logger(config);
@@ -105,6 +106,7 @@ export class NeoAgent {
     ].filter(Boolean).join('\n\n');
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
+      ...this.recentConversationHistory(),
       { role: 'user', content: userContent }
     ];
 
@@ -135,6 +137,7 @@ export class NeoAgent {
         return undefined;
       });
       if (createdSkill) this.logger.info('skill.autocreate.success', { name: createdSkill.name, path: createdSkill.path });
+      this.appendConversationHistory(input, text);
 
       this.logger.info('agent.ask.success', {
         modelKind: decision.modelKind,
@@ -168,12 +171,14 @@ export class NeoAgent {
   }
 
   private async buildWebContext(input: string): Promise<WebContext | undefined> {
-    const plan = planWebUse(input, this.config.web.autoSearch);
+    const previousUserInput = this.lastUserInput();
+    const plan = planWebUse(input, this.config.web.autoSearch, previousUserInput);
     this.logger.info('web.plan', {
       shouldUseWeb: plan.shouldUseWeb,
       reason: plan.reason,
       hasQuery: Boolean(plan.query),
       urlCount: plan.urls.length,
+      hasPreviousUserInput: Boolean(previousUserInput),
       autoSearch: this.config.web.autoSearch,
       webConfigured: Boolean(this.config.web.apiKey)
     });
@@ -213,5 +218,27 @@ export class NeoAgent {
       this.logger.error('web.context.error', error, { reason: plan.reason });
       return undefined;
     }
+  }
+
+  private recentConversationHistory(): ChatMessage[] {
+    return this.conversationHistory.slice(-8);
+  }
+
+  private appendConversationHistory(userInput: string, assistantText: string): void {
+    this.conversationHistory.push(
+      { role: 'user', content: userInput },
+      { role: 'assistant', content: assistantText.slice(0, 4000) }
+    );
+    if (this.conversationHistory.length > 12) {
+      this.conversationHistory.splice(0, this.conversationHistory.length - 12);
+    }
+  }
+
+  private lastUserInput(): string | undefined {
+    for (let index = this.conversationHistory.length - 1; index >= 0; index -= 1) {
+      const message = this.conversationHistory[index];
+      if (message?.role === 'user') return message.content;
+    }
+    return undefined;
   }
 }

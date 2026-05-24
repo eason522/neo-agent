@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
 const node = process.execPath;
@@ -36,6 +37,17 @@ test('初始化配置', async () => {
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
   assertIncludes(config, '"autoSearch"');
+});
+
+test('自动联网规划能识别时效问题和追问', async () => {
+  const { planWebUse } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webPlanner.js')).href);
+  const visitPlan = planWebUse('普京何时来我国访问呢？结束访问了吗？', true);
+  if (!visitPlan.shouldUseWeb) {
+    throw new Error(`政治人物访问问题应该触发联网。实际：${JSON.stringify(visitPlan)}`);
+  }
+  const followUpPlan = planWebUse('你可以联网搜索一下吧', true, '普京何时来我国访问呢？结束访问了吗？');
+  assertIncludes(followUpPlan.query ?? '', '普京');
+  assertIncludes(followUpPlan.reason, '上一轮问题');
 });
 
 test('doctor 缺 key 时失败并给出建议', async () => {
