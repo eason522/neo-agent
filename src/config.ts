@@ -23,6 +23,10 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
     smallModelMaxChars: z.number().int().positive(),
     forceMainKeywords: z.array(z.string())
   }),
+  conversation: z.object({
+    maxHistoryChars: z.number().int().positive(),
+    maxMessageChars: z.number().int().positive()
+  }),
   memory: z.object({
     backend: z.enum(['local', 'openviking', 'hybrid']),
     openVikingUrl: z.string(),
@@ -122,6 +126,10 @@ export function defaultConfig(): AppConfig {
         '多步',
         '分析'
       ]
+    },
+    conversation: {
+      maxHistoryChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS || '300000', 10),
+      maxMessageChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS || '50000', 10)
     },
     memory: {
       backend: (process.env.NEO_AGENT_MEMORY_BACKEND as AppConfig['memory']['backend']) || 'hybrid',

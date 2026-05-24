@@ -13,6 +13,7 @@ import { TranscriptService } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
 import { planWebUse } from './web/webPlanner.js';
+import { ConversationHistory } from './conversation/history.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -27,7 +28,7 @@ export class NeoAgent {
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
-  private readonly conversationHistory: ChatMessage[] = [];
+  private readonly conversationHistory: ConversationHistory;
 
   constructor(readonly config: AppConfig) {
     this.logger = new Logger(config);
@@ -41,6 +42,7 @@ export class NeoAgent {
     this.web = new TavilyClient(config, this.logger);
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
+    this.conversationHistory = new ConversationHistory(config.conversation.maxHistoryChars, config.conversation.maxMessageChars);
   }
 
   async initialize(options: { scheduledDreams?: boolean } = {}): Promise<void> {
@@ -106,9 +108,10 @@ export class NeoAgent {
     ].filter(Boolean).join('\n\n');
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
-      ...this.recentConversationHistory(),
+      ...this.conversationHistory.recentMessages(),
       { role: 'user', content: userContent }
     ];
+    const historyStats = this.conversationHistory.stats();
 
     try {
       const text = await this.models.get(decision.modelKind).chat({ messages });
@@ -137,11 +140,13 @@ export class NeoAgent {
         return undefined;
       });
       if (createdSkill) this.logger.info('skill.autocreate.success', { name: createdSkill.name, path: createdSkill.path });
-      this.appendConversationHistory(input, text);
+      this.conversationHistory.append(input, text);
 
       this.logger.info('agent.ask.success', {
         modelKind: decision.modelKind,
         outputChars: text.length,
+        historyMessageCount: historyStats.messageCount,
+        historyChars: historyStats.charCount,
         hasWebContext: Boolean(webContext),
         durationMs: Date.now() - start
       });
@@ -171,7 +176,7 @@ export class NeoAgent {
   }
 
   private async buildWebContext(input: string): Promise<WebContext | undefined> {
-    const previousUserInput = this.lastUserInput();
+    const previousUserInput = this.conversationHistory.lastUserInput();
     const plan = planWebUse(input, this.config.web.autoSearch, previousUserInput);
     this.logger.info('web.plan', {
       shouldUseWeb: plan.shouldUseWeb,
@@ -220,25 +225,4 @@ export class NeoAgent {
     }
   }
 
-  private recentConversationHistory(): ChatMessage[] {
-    return this.conversationHistory.slice(-8);
-  }
-
-  private appendConversationHistory(userInput: string, assistantText: string): void {
-    this.conversationHistory.push(
-      { role: 'user', content: userInput },
-      { role: 'assistant', content: assistantText.slice(0, 4000) }
-    );
-    if (this.conversationHistory.length > 12) {
-      this.conversationHistory.splice(0, this.conversationHistory.length - 12);
-    }
-  }
-
-  private lastUserInput(): string | undefined {
-    for (let index = this.conversationHistory.length - 1; index >= 0; index -= 1) {
-      const message = this.conversationHistory[index];
-      if (message?.role === 'user') return message.content;
-    }
-    return undefined;
-  }
 }

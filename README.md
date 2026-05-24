@@ -14,6 +14,7 @@
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 - 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
 - 自动联网：自然语言提问包含最新、今天、搜索、验证、价格、新闻或 URL 时，neo 会自动搜索或提取网页。
+- 会话上下文：REPL 会保留当前 session 的对话历史，并按上下文预算裁剪，不是固定几轮。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
 
@@ -154,6 +155,8 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --instructions "只看
 联网能力默认使用 Tavily，Base URL 为 `https://api.tavily.com`。日志只记录查询长度、URL 数量、结果数量、耗时等元数据，不记录 Tavily API key。`map/crawl` 默认深度为 1、最多 20 页、不开启外部域名，避免一次命令消耗过多额度。
 
 普通自然语言提问会在明显需要时自动联网，例如“最新”“今天”“搜索”“验证”“价格”“新闻”或包含 URL 的问题。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。
+
+REPL 会保留当前 session 的对话上下文，默认最多约 300000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS` 调整。单条消息默认最多保留 50000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS` 调整。后续会继续加入 CC-Source 风格的自动 compact，而不是简单丢弃长对话。
 
 运行 CLI 冒烟测试：
 

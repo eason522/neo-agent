@@ -43,6 +43,10 @@ export type AppConfig = {
     smallModelMaxChars: number;
     forceMainKeywords: string[];
   };
+  conversation: {
+    maxHistoryChars: number;
+    maxMessageChars: number;
+  };
   memory: {
     backend: MemoryBackend;
     openVikingUrl: string;

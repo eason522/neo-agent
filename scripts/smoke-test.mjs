@@ -33,6 +33,7 @@ test('初始化配置', async () => {
   assertIncludes(config, 'deepseek-v4-pro');
   assertIncludes(config, 'mimo-v2.5');
   assertIncludes(config, '"dreaming"');
+  assertIncludes(config, '"conversation"');
   assertIncludes(config, '"web"');
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
