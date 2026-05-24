@@ -38,8 +38,22 @@ test('初始化配置', async () => {
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
   assertIncludes(config, '"autoSearch"');
+  assertIncludes(config, '"toolLoopEnabled"');
+  assertIncludes(config, '"maxToolRounds"');
   assertIncludes(config, '"plannerEnabled"');
   assertIncludes(config, '"plannerModelKind"');
+});
+
+test('联网工具定义符合 tool loop 入口', async () => {
+  const { createWebToolDefinitions } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webTools.js')).href);
+  const tools = createWebToolDefinitions();
+  const names = tools.map(tool => tool.function.name).join(',');
+  assertIncludes(names, 'WebSearch');
+  assertIncludes(names, 'WebFetch');
+  for (const tool of tools) {
+    if (tool.type !== 'function') throw new Error(`联网工具必须是 function 类型：${JSON.stringify(tool)}`);
+    if (!tool.function.parameters?.properties) throw new Error(`联网工具缺少 JSON schema：${tool.function.name}`);
+  }
 });
 
 test('自动联网规划能识别时效问题和追问', async () => {

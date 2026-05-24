@@ -13,7 +13,7 @@
 - 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 - 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
-- 自动联网：自然语言提问会先由小模型规划是否需要搜索、验证或读取网页；规划失败时才回落到保守启发式规则。
+- 自动联网：普通 ask/REPL 默认把 `WebSearch`、`WebFetch` 暴露为模型可调用工具，由模型在回答过程中自行搜索或读取网页；关闭 tool loop 后才回落到过渡版小模型 planner。
 - 会话上下文：REPL 会保留当前 session 的对话历史，并按上下文预算裁剪，不是固定几轮。
 
 持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
@@ -154,7 +154,7 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --instructions "只看
 
 联网能力默认使用 Tavily，Base URL 为 `https://api.tavily.com`。日志只记录查询长度、URL 数量、结果数量、耗时等元数据，不记录 Tavily API key。`map/crawl` 默认深度为 1、最多 20 页、不开启外部域名，避免一次命令消耗过多额度。
 
-普通自然语言提问会先由小模型判断是否需要联网，并结合当前 session 上下文处理“你搜一下”“联网验证一下”这类追问；如果小模型规划失败，会回落到保守启发式规则。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。默认使用小模型做联网规划，可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
+普通自然语言提问默认使用 CC-Source 风格的 tool loop：模型先回答或发起 `WebSearch` / `WebFetch` 工具调用，工具结果作为 `tool` 消息回灌给模型，再继续推理直到最终回答。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。默认最多允许 4 轮联网工具调用，可通过 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 调整。若设置 `NEO_AGENT_WEB_TOOL_LOOP_ENABLED=0`，neo 会回落到过渡版小模型 planner；可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭 planner，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
 
 REPL 会保留当前 session 的对话上下文，默认最多约 300000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS` 调整。单条消息默认最多保留 50000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS` 调整。后续会继续加入 CC-Source 风格的自动 compact，而不是简单丢弃长对话。
 

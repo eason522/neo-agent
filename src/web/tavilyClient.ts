@@ -14,6 +14,8 @@ type TavilySearchOptions = {
   maxResults?: number;
   depth?: WebSearchDepth;
   includeAnswer?: boolean;
+  allowedDomains?: string[];
+  blockedDomains?: string[];
 };
 
 type TavilyExtractOptions = {
@@ -83,7 +85,9 @@ export class TavilyClient {
       search_depth: options.depth ?? this.config.web.searchDepth,
       max_results: options.maxResults ?? this.config.web.maxResults,
       include_answer: options.includeAnswer ?? true,
-      include_raw_content: false
+      include_raw_content: false,
+      include_domains: options.allowedDomains,
+      exclude_domains: options.blockedDomains
     };
     this.logger?.info('web.search.start', {
       provider: this.config.web.provider,

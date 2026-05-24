@@ -4,6 +4,35 @@ export type ChatMessage = {
   role: ChatRole;
   content: string;
   name?: string;
+  tool_call_id?: string;
+  tool_calls?: ChatToolCall[];
+  reasoning_content?: string;
+};
+
+export type ChatToolDefinition = {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    strict?: boolean;
+  };
+};
+
+export type ChatToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type ChatCompletionResult = {
+  content: string;
+  reasoningContent?: string;
+  toolCalls: ChatToolCall[];
+  finishReason?: string | null;
 };
 
 export type ModelKind = 'main' | 'small' | 'vision';
@@ -66,6 +95,8 @@ export type AppConfig = {
     apiKey?: string;
     apiBase: string;
     autoSearch: boolean;
+    toolLoopEnabled: boolean;
+    maxToolRounds: number;
     plannerEnabled: boolean;
     plannerModelKind: TextModelKind;
     searchDepth: WebSearchDepth;
@@ -144,8 +175,18 @@ export type AgentResponse = {
   modelKind: TextModelKind;
   visionContext?: string;
   webContext?: WebContext;
+  webToolCalls?: WebToolCallRecord[];
   memories: MemoryHit[];
   skills: Skill[];
+};
+
+export type WebToolCallRecord = {
+  name: 'WebSearch' | 'WebFetch';
+  query?: string;
+  url?: string;
+  searchedAt: string;
+  resultCount: number;
+  failedCount?: number;
 };
 
 export type WebSearchResult = {
