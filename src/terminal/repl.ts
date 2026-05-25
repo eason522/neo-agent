@@ -198,6 +198,7 @@ async function readInteractiveInput(options: {
   let historyIndex = options.history.length;
   let renderedLines = 0;
   let renderedCursorRow = 0;
+  let pasteBuffer: string | undefined;
 
   const render = (): void => {
     if (renderedLines > 0) {
@@ -213,12 +214,12 @@ async function readInteractiveInput(options: {
     output.write(rendered);
 
     const cursorPosition = getCursorPosition(text, cursor, options.prompt);
-    const endRow = lines.length - 1;
+    const endRow = getRenderedRowCount(lines, options.prompt) - 1;
     if (endRow > cursorPosition.row) output.write(`\x1b[${endRow - cursorPosition.row}A`);
     output.write('\r');
     if (cursorPosition.column > 0) output.write(`\x1b[${cursorPosition.column}C`);
 
-    renderedLines = lines.length;
+    renderedLines = getRenderedRowCount(lines, options.prompt);
     renderedCursorRow = cursorPosition.row;
   };
 
@@ -268,15 +269,34 @@ async function readInteractiveInput(options: {
     };
     const onData = (chunk: Buffer | string): void => {
       const data = chunk.toString();
+      if (pasteBuffer !== undefined) {
+        const end = data.indexOf('\x1b[201~');
+        if (end < 0) {
+          pasteBuffer += data;
+          return;
+        }
+        insert(normalizePastedText(`${pasteBuffer}${data.slice(0, end)}`));
+        pasteBuffer = undefined;
+        const restAfterPaste = data.slice(end + 6);
+        if (!restAfterPaste) return;
+        onData(restAfterPaste);
+        return;
+      }
+      if (looksLikePlainTextPaste(data)) {
+        insert(normalizePastedText(data));
+        return;
+      }
       for (let index = 0; index < data.length;) {
         const rest = data.slice(index);
         if (rest.startsWith('\x1b[200~')) {
           const end = rest.indexOf('\x1b[201~');
           if (end >= 0) {
-            insert(rest.slice(6, end).replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+            insert(normalizePastedText(rest.slice(6, end)));
             index += end + 6;
             continue;
           }
+          pasteBuffer = rest.slice(6);
+          return;
         }
         const multiline = findMultilineSequence(rest);
         if (multiline?.index === 0) {
@@ -392,13 +412,45 @@ function promptForLine(firstPrompt: string, lineIndex: number): string {
 }
 
 function getCursorPosition(text: string, cursor: number, firstPrompt: string): { row: number; column: number } {
+  const columns = getTerminalColumns();
   const beforeCursor = text.slice(0, cursor).split('\n');
-  const row = beforeCursor.length - 1;
-  const lineBeforeCursor = beforeCursor[row] ?? '';
+  let row = 0;
+  for (let index = 0; index < beforeCursor.length - 1; index += 1) {
+    row += getRenderedRowCountForLine(`${promptForLine(firstPrompt, index)}${beforeCursor[index] ?? ''}`, columns);
+  }
+  const logicalLine = beforeCursor.length - 1;
+  const lineBeforeCursor = beforeCursor[logicalLine] ?? '';
+  const cursorWidth = displayWidth(`${promptForLine(firstPrompt, logicalLine)}${lineBeforeCursor}`);
   return {
-    row,
-    column: displayWidth(promptForLine(firstPrompt, row)) + displayWidth(lineBeforeCursor)
+    row: row + Math.floor(cursorWidth / columns),
+    column: cursorWidth % columns
   };
+}
+
+function getRenderedRowCount(lines: string[], firstPrompt: string): number {
+  const columns = getTerminalColumns();
+  return lines
+    .map((line, index) => getRenderedRowCountForLine(`${promptForLine(firstPrompt, index)}${line}`, columns))
+    .reduce((total, rows) => total + rows, 0);
+}
+
+function getRenderedRowCountForLine(value: string, columns: number): number {
+  return Math.max(1, Math.ceil(Math.max(1, displayWidth(value)) / columns));
+}
+
+function getTerminalColumns(): number {
+  return Math.max(20, output.columns || Number(process.env.COLUMNS) || 80);
+}
+
+function looksLikePlainTextPaste(value: string): boolean {
+  if (value.includes('\x1b')) return false;
+  if (!/[\r\n]/.test(value)) return false;
+  return value.length > 12 || (value.match(/\r\n|\r|\n/g)?.length ?? 0) > 1;
+}
+
+function normalizePastedText(value: string): string {
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return normalized.replace(/\n$/, '');
 }
 
 function displayWidth(value: string): number {
@@ -505,7 +557,7 @@ function findMultilineSequence(input: string): { index: number; sequence: string
     .sort((a, b) => a.index - b.index)[0];
 }
 
-function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): TerminalMultilineSupport {
+export function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): TerminalMultilineSupport {
   const override = (env.NEO_AGENT_TERMINAL ?? env.NEO_AGENT_TERMINAL_PROFILE ?? '').toLowerCase();
   const termProgram = (env.TERM_PROGRAM ?? '').toLowerCase();
   const term = (env.TERM ?? '').toLowerCase();
@@ -956,8 +1008,9 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
 }
 
 function printBanner(support: TerminalMultilineSupport): void {
+  void support;
   console.log(chalk.bold('neo-agent'));
-  console.log(chalk.gray(`输入 /help 查看命令。${formatMultilineSupport(support)}\n`));
+  console.log(chalk.gray('输入 /help 查看命令。\n'));
 }
 
 function printHelp(support: TerminalMultilineSupport): void {

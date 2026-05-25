@@ -544,6 +544,8 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 这里没有直接复制 CC-Source 的 Ink TUI。原因是 neo 当前仍是轻量 CLI，直接引入完整 TUI 会显著增加复杂度；先把最影响日常使用的输入和调试能力补齐。后续 M5 继续补更丰富消息渲染、路由/记忆状态和更接近 CC-Source 的交互层。
 
+用户测试发现两类问题：启动 banner 输出了过多终端协议说明；粘贴两行长文本时出现 prompt 重复刷屏，并且粘贴末尾换行会被当成提交。修复前对照 CC-Source `parse-keypress.ts`、`hooks/useTextInput.ts`、`utils/Cursor.ts` 和 Ink 渲染层：CC-Source 会把 bracketed paste 汇总为一次 paste key，普通多字符 paste 中的 `\r` 会转为 `\n`，同时按终端列宽和 wrap 后屏幕行数管理光标与重绘。neo 已按这个方向修正：启动 banner 只保留简短入口提示，终端细节移到 `/status`/`/help`；bracketed paste 支持跨 chunk 汇总，非 bracketed 的多字符粘贴会归一化换行并去掉末尾单个换行，避免自动提交；输入重绘按 `stdout.columns` 估算实际屏幕行数，防止长行 wrap 后旧内容残留。验证方式：`npm run smoke`、真实 TTY bracketed paste 两行长文本、真实 TTY 普通 CR 分隔粘贴，两者均未自动提交且未重复刷 prompt。
+
 ## 恢复开发检查清单
 
 开始新的开发任务前：
