@@ -89,6 +89,8 @@ export type ToolPairRecord = {
   toolName: string;
   hasResult: boolean;
   resultChars: number;
+  persistedPath?: string;
+  originalResultChars?: number;
 };
 
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
@@ -177,6 +179,12 @@ export type AppConfig = {
   files: {
     additionalReadDirs: string[];
     additionalWriteDirs: string[];
+  };
+  toolResults: {
+    enabled: boolean;
+    dir: string;
+    maxInlineChars: number;
+    previewChars: number;
   };
   skills: {
     autoCreate: boolean;

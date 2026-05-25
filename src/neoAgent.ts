@@ -102,6 +102,7 @@ export class NeoAgent {
     this.toolRunners = [this.capabilityToolRunner, this.taskAssessmentToolRunner, this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner];
     this.queryEngine = new QueryEngine(this.models, this.toolRunners, this.logger, {
       maxToolRounds: config.web.maxToolRounds,
+      toolResultBudget: config.toolResults,
       onToolEvent: event => this.toolEventHandler?.(event),
       onContentDelta: delta => this.contentDeltaHandler?.(delta),
       hooks: this.hooks

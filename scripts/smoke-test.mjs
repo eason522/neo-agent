@@ -978,6 +978,73 @@ test('QueryEngine 超时后取消工具并忽略迟到 orphan result', async () 
   }
 });
 
+test('QueryEngine 会把超大工具结果落盘并回灌预览', async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-tool-results-'));
+  try {
+    const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+    const infos = [];
+    const fullOutput = `${'alpha\n'.repeat(400)}TAIL_SHOULD_BE_IN_FILE_ONLY\n`;
+    let modelCalls = 0;
+    let persistedPath = '';
+    const model = {
+      chatWithTools: async options => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            content: '',
+            toolCalls: [{
+              id: 'large_call',
+              type: 'function',
+              function: { name: 'LargeTool', arguments: '{}' }
+            }]
+          };
+        }
+        const toolMessage = options.messages.at(-1);
+        if (toolMessage?.role !== 'tool') throw new Error('第二轮应该收到 tool result。');
+        assertIncludes(toolMessage.content, '<neo_tool_result_persisted>');
+        assertIncludes(toolMessage.content, 'Full output saved to:');
+        if (toolMessage.content.includes('TAIL_SHOULD_BE_IN_FILE_ONLY')) {
+          throw new Error('超大结果尾部不应进入模型上下文预览。');
+        }
+        const match = toolMessage.content.match(/Full output saved to: (.+)/);
+        persistedPath = match?.[1]?.trim() ?? '';
+        return { content: '已读取预览', toolCalls: [] };
+      },
+      chat: async () => 'unused'
+    };
+    const runner = {
+      definitions: () => [{
+        type: 'function',
+        function: { name: 'LargeTool', description: 'Large', parameters: { type: 'object', properties: {} } }
+      }],
+      canExecute: name => name === 'LargeTool',
+      executionMode: () => 'serial',
+      execute: async () => ({ content: fullOutput })
+    };
+    const logger = { info(event, fields) { infos.push({ event, fields }); }, debug() {}, error() {}, warn() {} };
+    const engine = new QueryEngine({ get: () => model }, [runner], logger, {
+      maxToolRounds: 2,
+      toolResultBudget: {
+        enabled: true,
+        dir: outputDir,
+        maxInlineChars: 800,
+        previewChars: 200
+      }
+    });
+    const result = await engine.run('main', [{ role: 'user', content: '大结果测试' }]);
+    assertIncludes(result.text, '预览');
+    if (!persistedPath) throw new Error('应该返回持久化文件路径。');
+    assertIncludes(await readFile(persistedPath, 'utf8'), 'TAIL_SHOULD_BE_IN_FILE_ONLY');
+    if (!result.toolPairs[0]?.persistedPath) throw new Error(`toolPairs 应记录 persistedPath：${JSON.stringify(result.toolPairs)}`);
+    if (result.toolPairs[0]?.originalResultChars !== fullOutput.length) throw new Error(`toolPairs 应记录原始长度：${JSON.stringify(result.toolPairs)}`);
+    if (!infos.some(item => item.event === 'tool.result_persisted')) {
+      throw new Error(`应该记录 tool.result_persisted 日志：${JSON.stringify(infos)}`);
+    }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-files-'));
   const extraReadDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-extra-read-'));

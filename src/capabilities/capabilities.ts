@@ -24,6 +24,12 @@ export type CapabilitySnapshot = {
     root: string;
     additionalReadDirs: string[];
     additionalWriteDirs: string[];
+    toolResultBudget: {
+      enabled: boolean;
+      dir: string;
+      maxInlineChars: number;
+      previewChars: number;
+    };
     tools: string[];
     canRead: boolean;
     canWrite: boolean;
@@ -143,6 +149,7 @@ export function buildCapabilitySnapshot(input: {
       root: input.cwd,
       additionalReadDirs: input.config.files.additionalReadDirs,
       additionalWriteDirs: input.config.files.additionalWriteDirs,
+      toolResultBudget: input.config.toolResults,
       tools: fileTools,
       canRead: fileTools.some(name => ['Read', 'Glob', 'Grep'].includes(name)),
       canWrite: fileTools.some(name => ['Write', 'Edit'].includes(name)),
@@ -187,7 +194,7 @@ export function formatCapabilitySnapshot(snapshot: CapabilitySnapshot): string {
     `cwd: ${snapshot.cwd}`,
     `models: main=${snapshot.models.main}, small=${snapshot.models.small}, vision=${snapshot.models.vision}`,
     `web: ${snapshot.web.enabled ? 'enabled' : 'disabled'} provider=${snapshot.web.provider} tools=${snapshot.web.tools.join(',') || '(none)'}`,
-    `files: tools=${snapshot.files.tools.join(',') || '(none)'} readDirs=${snapshot.files.additionalReadDirs.length} writeDirs=${snapshot.files.additionalWriteDirs.length} write=${snapshot.files.canWrite ? 'available' : 'unavailable'} confirm=${snapshot.files.writeConfirmationAvailable ? 'interactive' : 'not-interactive'}`,
+    `files: tools=${snapshot.files.tools.join(',') || '(none)'} readDirs=${snapshot.files.additionalReadDirs.length} writeDirs=${snapshot.files.additionalWriteDirs.length} toolBudget=${snapshot.files.toolResultBudget.enabled ? snapshot.files.toolResultBudget.maxInlineChars : 'off'} write=${snapshot.files.canWrite ? 'available' : 'unavailable'} confirm=${snapshot.files.writeConfirmationAvailable ? 'interactive' : 'not-interactive'}`,
     `skills: total=${snapshot.skills.total} callable=${snapshot.skills.callable}${snapshot.skills.names.length ? ` names=${snapshot.skills.names.join(',')}` : ''}`,
     `mcp: servers=${snapshot.mcp.connectedServers.join(',') || '(none)'} tools=${snapshot.mcp.visibleTools.length}`,
     `subAgents: background=${snapshot.subAgents.supportsBackground} stop=${snapshot.subAgents.supportsStop} isolation=${snapshot.subAgents.toolIsolation}`,

@@ -17,6 +17,7 @@ import {
   summarizeToolError,
   summarizeToolResult
 } from '../tools/toolLog.js';
+import { applyToolResultBudget, type ToolResultBudgetOptions, type ToolResultBudgetOutcome } from '../tools/toolResultBudget.js';
 
 export type QueryEngineResult = {
   text: string;
@@ -31,6 +32,7 @@ export type QueryEngineResult = {
 type QueryEngineOptions = {
   maxToolRounds: number;
   toolTimeoutMs?: number;
+  toolResultBudget?: ToolResultBudgetOptions;
   onToolEvent?: (event: ToolProgressEvent) => void;
   onContentDelta?: (delta: string) => void;
   hooks?: HookBus;
@@ -162,7 +164,7 @@ export class QueryEngine {
       const mode = runner?.executionMode?.(toolCall.function.name) ?? 'serial';
       return { toolCall, runner, mode };
     });
-    const outputs = new Map<string, { message: ChatMessage; terminal: boolean }>();
+    const outputs = new Map<string, ToolRoundOutput>();
     const exclusiveIndex = tasks.findIndex(task => task.runner && task.mode === 'exclusive');
 
     for (const task of tasks) {
@@ -212,7 +214,7 @@ export class QueryEngine {
     round: number,
     signal: AbortSignal | undefined,
     state: Omit<QueryEngineResult, 'text'>
-  ): Promise<{ message: ChatMessage; terminal: boolean }> {
+  ): Promise<ToolRoundOutput> {
     throwIfAborted(signal);
     if (!runner) {
       const unknownEvent = createUnknownToolEvent(toolCall.function.name, round);
@@ -232,25 +234,43 @@ export class QueryEngine {
       const result = await this.runToolWithLifecycle(runner, toolCall, round, signal);
       throwIfAborted(signal);
       recordToolResult(result.record, state);
+      const budgeted = await applyToolResultBudget({
+        toolName: toolCall.function.name,
+        toolCallId: toolCall.id,
+        content: result.content,
+        options: this.options.toolResultBudget
+      });
+      if (budgeted.persisted) {
+        this.logger.info('tool.result_persisted', {
+          name: toolCall.function.name,
+          toolCallId: toolCall.id,
+          originalChars: budgeted.persisted.originalChars,
+          previewChars: budgeted.persisted.previewChars,
+          path: budgeted.persisted.displayPath,
+          round
+        });
+      }
       this.options.hooks?.emit('PostToolUse', toolCall.function.name, {
         round,
         terminal: Boolean(result.terminal),
-        resultChars: result.content.length
+        resultChars: budgeted.content.length,
+        originalResultChars: budgeted.persisted?.originalChars
       });
-      const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, result.content, round);
+      const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, budgeted.content, round);
       emitToolEvent(successEvent, state.toolEvents, this.options.onToolEvent);
       this.logger.info('tool.success', {
         name: toolCall.function.name,
-        ...summarizeToolResult(result.record, result.content),
+        ...summarizeToolResult(result.record, budgeted.content),
         round
       });
       return {
         message: {
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: result.content
+          content: budgeted.content
         },
-        terminal: Boolean(result.terminal)
+        terminal: Boolean(result.terminal),
+        persisted: budgeted.persisted
       };
     } catch (error) {
       if (signal?.aborted) throw createAbortError();
@@ -334,7 +354,7 @@ export class QueryEngine {
     }
   }
 
-  private skipTool(toolCall: ChatToolCall, reason: string, round: number, toolEvents: ToolProgressEvent[]): { message: ChatMessage; terminal: boolean } {
+  private skipTool(toolCall: ChatToolCall, reason: string, round: number, toolEvents: ToolProgressEvent[]): ToolRoundOutput {
     const error = new Error(reason);
     const errorEvent = createToolErrorEvent(toolCall.function.name, error, round);
     emitToolEvent(errorEvent, toolEvents, this.options.onToolEvent);
@@ -410,7 +430,7 @@ function normalizeToolCallIds(toolCalls: ChatToolCall[]): ChatToolCall[] {
 
 function orderedRoundOutput(
   toolCalls: ChatToolCall[],
-  outputs: Map<string, { message: ChatMessage; terminal: boolean }>,
+  outputs: Map<string, ToolRoundOutput>,
   toolPairs: ToolPairRecord[],
   round: number
 ): { messages: ChatMessage[]; terminal: boolean } {
@@ -439,12 +459,20 @@ function orderedRoundOutput(
       toolCallId: toolCall.id,
       toolName: toolCall.function.name,
       hasResult: true,
-      resultChars: output.message.content.length
+      resultChars: output.message.content.length,
+      persistedPath: output.persisted?.displayPath,
+      originalResultChars: output.persisted?.originalChars
     });
     terminal = terminal || output.terminal;
   }
   return { messages, terminal };
 }
+
+type ToolRoundOutput = {
+  message: ChatMessage;
+  terminal: boolean;
+  persisted?: ToolResultBudgetOutcome['persisted'];
+};
 
 function recordToolResult(record: ToolCallRecord | undefined, state: Omit<QueryEngineResult, 'text'>): void {
   if (!record) return;

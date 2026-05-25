@@ -78,6 +78,12 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
     additionalReadDirs: z.array(z.string()),
     additionalWriteDirs: z.array(z.string())
   }),
+  toolResults: z.object({
+    enabled: z.boolean(),
+    dir: z.string(),
+    maxInlineChars: z.number().int().positive(),
+    previewChars: z.number().int().positive()
+  }),
   skills: z.object({
     autoCreate: z.boolean(),
     autoCreateThreshold: z.number().int().positive()
@@ -231,6 +237,12 @@ export function defaultConfig(): AppConfig {
     files: {
       additionalReadDirs: parseCommaList(process.env.NEO_AGENT_FILE_READ_DIRS),
       additionalWriteDirs: parseCommaList(process.env.NEO_AGENT_FILE_WRITE_DIRS)
+    },
+    toolResults: {
+      enabled: process.env.NEO_AGENT_TOOL_RESULTS_ENABLED !== '0',
+      dir: process.env.NEO_AGENT_TOOL_RESULTS_DIR || '.neo-agent/tool-results',
+      maxInlineChars: Number.parseInt(process.env.NEO_AGENT_TOOL_RESULTS_MAX_INLINE_CHARS || '60000', 10),
+      previewChars: Number.parseInt(process.env.NEO_AGENT_TOOL_RESULTS_PREVIEW_CHARS || '12000', 10)
     },
     skills: {
       autoCreate: true,
