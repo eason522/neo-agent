@@ -31,12 +31,12 @@ export class QueryEngine {
     const model = this.models.get(modelKind);
     const loopMessages = messages.map(message => ({ ...message }));
     await Promise.all(this.tools.map(tool => tool.refresh?.() ?? Promise.resolve()));
-    const toolDefinitions = this.toolDefinitions();
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
     const fileToolCalls: FileToolCallRecord[] = [];
+    const initialToolDefinitions = this.toolDefinitions();
 
-    if (toolDefinitions.length === 0) {
+    if (initialToolDefinitions.length === 0) {
       return {
         text: await model.chat({ messages: loopMessages }),
         webToolCalls,
@@ -46,6 +46,8 @@ export class QueryEngine {
     }
 
     for (let round = 0; round < this.options.maxToolRounds; round += 1) {
+      const toolDefinitions = this.toolDefinitions();
+      if (toolDefinitions.length === 0) break;
       const response = await model.chatWithTools({
         messages: loopMessages,
         tools: toolDefinitions,

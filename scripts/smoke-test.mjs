@@ -51,6 +51,7 @@ test('初始化配置', async () => {
   assertIncludes(config, '"selectDomains"');
   assertIncludes(config, '"excludeDomains"');
   assertIncludes(config, '"permissions"');
+  assertIncludes(config, '"toolSearchThreshold"');
   assertIncludes(config, '"mode": "readOnly"');
 });
 
@@ -238,6 +239,31 @@ test('MCP resource runner 能列出和读取只读资源', async () => {
   });
   assertIncludes(read.content, 'hello resource');
   assertIncludes(read.record.toolName, 'resources/read');
+});
+
+test('ToolSearch 会延迟加载 MCP 工具', async () => {
+  const { McpToolRunner } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpToolRunner.js')).href);
+  const { TOOL_SEARCH_TOOL_NAME, ToolSearchRunner } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'toolSearchRunner.js')).href);
+  const mcp = {
+    listToolDetails: async () => [
+      { serverName: 'github', toolName: 'list_issues', fullName: 'mcp__github__list_issues', description: 'List GitHub issues', inputSchema: { type: 'object', properties: {} }, readOnlyHint: true },
+      { serverName: 'github', toolName: 'create_issue', fullName: 'mcp__github__create_issue', description: 'Create GitHub issue', inputSchema: { type: 'object', properties: {} }, readOnlyHint: false },
+      { serverName: 'slack', toolName: 'send_message', fullName: 'mcp__slack__send_message', description: 'Send Slack message', inputSchema: { type: 'object', properties: {} }, readOnlyHint: false }
+    ],
+    callTool: async () => ({ ok: true })
+  };
+  const runner = new McpToolRunner(mcp, { mode: 'readOnly', allowedTools: [], deniedTools: [] }, 1);
+  const search = new ToolSearchRunner(runner);
+  await runner.refresh();
+  if (runner.definitions().length !== 0) throw new Error('超过阈值时 MCP 工具应该先延迟加载。');
+  assertIncludes(search.definitions().map(tool => tool.function.name).join(','), TOOL_SEARCH_TOOL_NAME);
+  const result = await search.execute({
+    id: 'tool_search',
+    type: 'function',
+    function: { name: TOOL_SEARCH_TOOL_NAME, arguments: JSON.stringify({ query: 'github list', max_results: 2 }) }
+  });
+  assertIncludes(result.content, 'mcp__github__list_issues');
+  assertIncludes(runner.definitions().map(tool => tool.function.name).join(','), 'mcp__github__list_issues');
 });
 
 test('MCP 权限默认只允许只读工具', async () => {

@@ -123,6 +123,7 @@ export type AppConfig = {
   };
   mcp: {
     servers: Record<string, McpServerConfig>;
+    toolSearchThreshold: number;
     permissions: {
       mode: McpPermissionMode;
       allowedTools: string[];

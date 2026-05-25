@@ -4,15 +4,25 @@ import type { McpManager, McpToolDetail } from './mcpManager.js';
 
 export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
   private tools: McpToolDetail[] = [];
+  private activeToolNames = new Set<string>();
 
-  constructor(private readonly mcp: McpManager, private readonly permissions: AppConfig['mcp']['permissions']) {}
+  constructor(
+    private readonly mcp: McpManager,
+    private readonly permissions: AppConfig['mcp']['permissions'],
+    private readonly toolSearchThreshold: number
+  ) {}
 
   async refresh(): Promise<void> {
     this.tools = await this.mcp.listToolDetails().catch(() => []);
+    if (!this.shouldDeferTools()) {
+      this.activeToolNames = new Set(this.tools.map(tool => tool.fullName));
+      return;
+    }
+    this.activeToolNames = new Set([...this.activeToolNames].filter(name => this.tools.some(tool => tool.fullName === name)));
   }
 
   definitions(): ChatToolDefinition[] {
-    return this.tools.map(tool => ({
+    return this.tools.filter(tool => this.activeToolNames.has(tool.fullName)).map(tool => ({
       type: 'function',
       function: {
         name: tool.fullName,
@@ -23,7 +33,28 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
   }
 
   canExecute(name: string): boolean {
-    return this.tools.some(tool => tool.fullName === name);
+    return this.activeToolNames.has(name) && this.tools.some(tool => tool.fullName === name);
+  }
+
+  hasDeferredTools(): boolean {
+    return this.shouldDeferTools() && this.tools.some(tool => !this.activeToolNames.has(tool.fullName));
+  }
+
+  deferredToolCount(): number {
+    return this.tools.filter(tool => !this.activeToolNames.has(tool.fullName)).length;
+  }
+
+  searchDeferredTools(query: string, maxResults: number): ChatToolDefinition[] {
+    const matches = this.findDeferredTools(query, maxResults);
+    for (const tool of matches) this.activeToolNames.add(tool.fullName);
+    return matches.map(tool => ({
+      type: 'function',
+      function: {
+        name: tool.fullName,
+        description: buildDescription(tool),
+        parameters: normalizeInputSchema(tool.inputSchema)
+      }
+    }));
   }
 
   async execute(call: ChatToolCall): Promise<{ content: string; record: McpToolCallRecord }> {
@@ -45,6 +76,30 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
         durationMs: Date.now() - start
       }
     };
+  }
+
+  private shouldDeferTools(): boolean {
+    return this.tools.length > this.toolSearchThreshold;
+  }
+
+  private findDeferredTools(query: string, maxResults: number): McpToolDetail[] {
+    const deferred = this.tools.filter(tool => !this.activeToolNames.has(tool.fullName));
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return [];
+    if (normalizedQuery.startsWith('select:')) {
+      const requested = normalizedQuery.slice('select:'.length)
+        .split(',')
+        .map(name => name.trim())
+        .filter(Boolean);
+      return deferred.filter(tool => requested.includes(tool.fullName.toLowerCase()) || requested.includes(`${tool.serverName}.${tool.toolName}`.toLowerCase()));
+    }
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+    return deferred
+      .map(tool => ({ tool, score: scoreTool(tool, terms, normalizedQuery) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.tool.fullName.localeCompare(b.tool.fullName))
+      .slice(0, Math.max(1, maxResults))
+      .map(item => item.tool);
   }
 }
 
@@ -111,6 +166,24 @@ function buildDescription(tool: McpToolDetail): string {
     hints.length > 0 ? `Hints: ${hints.join(', ')}` : '',
     `Permission: ${permission}`
   ].filter(Boolean).join('\n');
+}
+
+function scoreTool(tool: McpToolDetail, terms: string[], query: string): number {
+  const haystack = [
+    tool.fullName,
+    tool.serverName,
+    tool.toolName,
+    tool.description ?? ''
+  ].join(' ').toLowerCase();
+  if (tool.fullName.toLowerCase() === query || `${tool.serverName}.${tool.toolName}`.toLowerCase() === query) return 100;
+  let score = 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) score += 10;
+    if (tool.fullName.toLowerCase().includes(term)) score += 5;
+    if (tool.toolName.toLowerCase().includes(term)) score += 3;
+    if (tool.serverName.toLowerCase().includes(term)) score += 2;
+  }
+  return score;
 }
 
 function matchesToolRule(fullName: string, qualifiedName: string, rules: string[]): boolean {

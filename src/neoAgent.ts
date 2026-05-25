@@ -19,6 +19,7 @@ import { planWebUseWithModel } from './web/webPlanner.js';
 import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
 import { ConversationHistory } from './conversation/history.js';
 import { QueryEngine } from './agent/queryEngine.js';
+import { getToolSearchPrompt, ToolSearchRunner } from './tools/toolSearchRunner.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -36,6 +37,7 @@ export class NeoAgent {
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
   private readonly fileToolRunner: FileToolRunner;
+  private readonly toolSearchRunner: ToolSearchRunner;
   private readonly mcpToolRunner: McpToolRunner;
   private readonly mcpResourceRunner: McpResourceRunner;
   private readonly queryEngine: QueryEngine;
@@ -47,14 +49,15 @@ export class NeoAgent {
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
-    this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions);
+    this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions, config.mcp.toolSearchThreshold);
+    this.toolSearchRunner = new ToolSearchRunner(this.mcpToolRunner);
     this.mcpResourceRunner = new McpResourceRunner(this.mcp);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.fileToolRunner = new FileToolRunner(process.cwd());
     this.webToolRunner = new WebToolRunner(config, this.web);
-    this.queryEngine = new QueryEngine(this.models, [this.fileToolRunner, this.webToolRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
+    this.queryEngine = new QueryEngine(this.models, [this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
       maxToolRounds: config.web.maxToolRounds
     });
     this.router = new ModelRouter(config);
@@ -243,6 +246,7 @@ export class NeoAgent {
       systemPrompt,
       enabled.file ? getFileToolPrompt() : '',
       enabled.web ? getWebToolPrompt() : '',
+      enabled.mcp ? getToolSearchPrompt() : '',
       enabled.mcp ? getMcpToolPrompt() : '',
       enabled.mcp ? getMcpResourcePrompt() : ''
     ].filter(Boolean).join('\n\n');

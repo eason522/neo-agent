@@ -78,6 +78,7 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
       env: z.record(z.string()).optional(),
       disabled: z.boolean().optional()
     })),
+    toolSearchThreshold: z.number().int().positive(),
     permissions: z.object({
       mode: z.enum(['readOnly', 'allowAll']),
       allowedTools: z.array(z.string()),
@@ -193,6 +194,7 @@ export function defaultConfig(): AppConfig {
     },
     mcp: {
       servers: {},
+      toolSearchThreshold: Number.parseInt(process.env.NEO_AGENT_MCP_TOOL_SEARCH_THRESHOLD || '20', 10),
       permissions: {
         mode: getMcpPermissionMode(),
         allowedTools: parseCommaList(process.env.NEO_AGENT_MCP_ALLOWED_TOOLS),

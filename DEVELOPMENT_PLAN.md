@@ -25,6 +25,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP stdio server 连接基础框架，已连接工具会以 `mcp__server__tool` 形式进入 `QueryEngine`，并具备默认只读的权限保护
 - MCP 配置命令：`neo mcp list/add/remove/test`
 - MCP resource 工具：`ListMcpResources` / `ReadMcpResource`
+- MCP deferred ToolSearch：MCP 工具过多时延迟加载 schema
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -173,7 +174,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
 | 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、filesystem permissions | 部分符合。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内，带读取/搜索上限和默认忽略目录。 | 后续补完整 permission rules、二进制/图片/PDF 支持、ripgrep 后端和 UI 状态。 |
-| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny 的最小权限保护、stdio 配置命令和 resource 读取工具；但还缺 deferred ToolSearch、交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4 继续补 deferred ToolSearch 和交互式权限 UI。 |
+| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio 配置命令、resource 工具和 deferred ToolSearch；但还缺交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4/M5 继续补交互式权限 UI 和远程 MCP。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
@@ -302,6 +303,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：项目文件工具先做只读、项目内访问
 
 参考 CC-Source `FileReadTool`、`GlobTool` 和 `GrepTool`，neo 新增 `FileToolRunner`，默认向普通 ask/REPL 暴露 `Read`、`Glob`、`Grep`。第一版只允许访问 neo 启动目录内的真实路径，拒绝项目外路径和 symlink 跳转；默认跳过 `.git`、`node_modules`、`dist` 等噪声目录，并限制读取大小、读取行数、搜索文件数和返回条数。当前不支持编辑、写入、图片/PDF 原生读取、完整 permission rules 或 ripgrep 后端；后续继续对齐 CC-Source 的 filesystem permission 和更完整文件能力。
+
+### 2026-05-25：MCP 工具过多时使用 ToolSearch 延迟加载
+
+参考 CC-Source `ToolSearchTool` 的 deferred tool 设计，neo 新增 `ToolSearchRunner`。当 MCP 工具数量超过 `mcp.toolSearchThreshold`（默认 20，可用 `NEO_AGENT_MCP_TOOL_SEARCH_THRESHOLD` 调整）时，`McpToolRunner` 不再一次性暴露全部 MCP schema，而是只保留已激活工具，并暴露 `ToolSearch`。模型通过关键词或 `select:mcp__server__tool` 加载需要的 MCP 工具；`QueryEngine` 每轮重新读取 tool definitions，使 ToolSearch 激活的工具能在下一轮被调用。当前 deferred 先覆盖 MCP 工具，后续再考虑 skill/sub-agent 等更多 deferred 类型。
 
 ## 恢复开发检查清单
 
