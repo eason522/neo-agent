@@ -1,6 +1,6 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig, Skill, SkillScope, SkillSuggestion } from '../types.js';
+import type { AppConfig, Skill, SkillImprovementSuggestion, SkillScope, SkillSuggestion, SkillToolCallRecord } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
 import { SkillChangeDetector, type SkillChangeSummary } from './skillChangeDetector.js';
 import { validateSkillContent } from './skillPackage.js';
@@ -177,6 +177,37 @@ export class SkillManager {
       options
     );
   }
+
+  async maybeSuggestSkillImprovement(input: string, assistantOutput: string, skillCalls: SkillToolCallRecord[]): Promise<SkillImprovementSuggestion | undefined> {
+    const call = skillCalls[0];
+    if (!call) return undefined;
+    const skill = await this.getSkill(call.skillName, call.scope);
+    if (!skill) return undefined;
+    const update = detectSkillImprovement(input, assistantOutput, skill);
+    if (!update) return undefined;
+    return {
+      skillName: skill.name,
+      scope: skill.scope,
+      filePath: skill.filePath,
+      updates: [update],
+      reason: `检测到用户在使用 skill ${skill.name} 时提出了可复用的偏好或修正。`
+    };
+  }
+
+  async applySkillImprovementSuggestion(suggestion: SkillImprovementSuggestion): Promise<Skill | undefined> {
+    const skill = await this.getSkill(suggestion.skillName, suggestion.scope);
+    if (!skill) return undefined;
+    const block = [
+      '',
+      '## User-confirmed improvements',
+      `- ${new Date().toISOString()}`,
+      ...suggestion.updates.map(update => `  - ${update.section}: ${update.change} (${update.reason})`),
+      ''
+    ].join('\n');
+    await appendFile(skill.filePath, block, 'utf8');
+    this.invalidateCache();
+    return this.getSkill(suggestion.skillName, suggestion.scope);
+  }
 }
 
 function sortSkills(skills: Skill[]): Skill[] {
@@ -216,4 +247,19 @@ function taskSignature(input: string): string | undefined {
   if (!explicit && !taskLike) return undefined;
   const terms = normalized.match(/[a-z0-9_]{3,}|[\u4e00-\u9fa5]{2}/g) ?? [];
   return terms.slice(0, 6).join('-') || undefined;
+}
+
+function detectSkillImprovement(input: string, assistantOutput: string, skill: Skill): SkillImprovementSuggestion['updates'][number] | undefined {
+  const normalized = input.trim().replace(/\s+/g, ' ');
+  if (normalized.length < 8) return undefined;
+  if (skill.body.includes(normalized)) return undefined;
+  const longTermPreference = /(以后|下次|每次|总是|固定|记住|也要|顺便|不要|别再|必须|一定|优先|默认|always|never|next time|from now on)/i.test(normalized);
+  const correction = /(不对|不是这样|改成|换成|应该|别|不要|instead|prefer|make sure)/i.test(normalized);
+  if (!longTermPreference && !correction) return undefined;
+  const assistantHint = assistantOutput.slice(0, 160).replace(/\s+/g, ' ');
+  return {
+    section: correction ? 'existing workflow or constraints' : 'new reusable preference',
+    change: normalized.slice(0, 220),
+    reason: assistantHint ? `用户在执行 skill 后提出长期偏好；本轮回答摘要：${assistantHint}` : '用户在执行 skill 时提出长期偏好或修正。'
+  };
 }

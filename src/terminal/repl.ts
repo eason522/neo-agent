@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
-import type { MemoryCategory, MemoryRecord, SkillSuggestion, ToolProgressEvent } from '../types.js';
+import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 
@@ -55,6 +55,9 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
         if (isInteractive && response.skillSuggestion && !turnController.signal.aborted) {
           await confirmSkillSuggestion(agent, rl, response.skillSuggestion, turnController.signal);
         }
+        if (isInteractive && response.skillImprovementSuggestion && !turnController.signal.aborted) {
+          await confirmSkillImprovement(agent, rl, response.skillImprovementSuggestion, turnController.signal);
+        }
       } catch (error) {
         if (isAbortError(error) || turnController.signal.aborted) {
           output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
@@ -103,6 +106,39 @@ async function confirmSkillSuggestion(
     name: skill.name,
     path: skill.path,
     signature: suggestion.signature
+  });
+}
+
+async function confirmSkillImprovement(
+  agent: NeoAgent,
+  rl: ReturnType<typeof readline.createInterface>,
+  suggestion: SkillImprovementSuggestion,
+  signal: AbortSignal
+): Promise<void> {
+  output.write([
+    chalk.yellow(`neo 发现 skill ${suggestion.skillName} 可能需要更新：`),
+    ...suggestion.updates.map(update => `- ${update.section}: ${update.change}`),
+    chalk.gray(suggestion.reason)
+  ].join('\n') + '\n');
+  const answer = await rl.question('把这些改进追加到 SKILL.md 吗？[y/N] ', { signal });
+  if (!/^(y|yes|是|更新|追加|同意)$/i.test(answer.trim())) {
+    output.write(chalk.gray('已跳过更新 skill。\n'));
+    await agent.transcripts.append('command', 'skill improvement declined', {
+      command: 'skill_improvement_declined',
+      skillName: suggestion.skillName,
+      scope: suggestion.scope,
+      updateCount: suggestion.updates.length
+    });
+    return;
+  }
+  const skill = await agent.skills.applySkillImprovementSuggestion(suggestion);
+  output.write(skill ? `${chalk.green('已更新 skill')} ${skill.filePath}\n` : chalk.yellow('没有找到要更新的 skill。\n'));
+  await agent.transcripts.append('command', 'skill improvement accepted', {
+    command: 'skill_improvement_accepted',
+    skillName: suggestion.skillName,
+    scope: suggestion.scope,
+    filePath: skill?.filePath,
+    updateCount: suggestion.updates.length
   });
 }
 

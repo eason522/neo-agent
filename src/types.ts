@@ -213,6 +213,20 @@ export type SkillSuggestion = {
   reason: string;
 };
 
+export type SkillImprovementUpdate = {
+  section: string;
+  change: string;
+  reason: string;
+};
+
+export type SkillImprovementSuggestion = {
+  skillName: string;
+  scope: SkillScope;
+  filePath: string;
+  updates: SkillImprovementUpdate[];
+  reason: string;
+};
+
 export type AgentResponse = {
   text: string;
   modelKind: TextModelKind;
@@ -224,6 +238,7 @@ export type AgentResponse = {
   skillToolCalls?: SkillToolCallRecord[];
   toolEvents?: ToolProgressEvent[];
   skillSuggestion?: SkillSuggestion;
+  skillImprovementSuggestion?: SkillImprovementSuggestion;
   memories: MemoryHit[];
   skills: Skill[];
 };

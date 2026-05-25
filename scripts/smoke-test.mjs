@@ -681,6 +681,29 @@ test('skill 自动沉淀只生成建议，确认后才写入', async () => {
   if (afterCreate.length !== 1) throw new Error(`确认后应该写入一个 skill：${JSON.stringify(afterCreate)}`);
 });
 
+test('skill 改进建议只生成建议，确认后才追加到 SKILL.md', async () => {
+  const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
+  const improvementHome = path.join(tempHome, 'skill-improvement-home');
+  const manager = new SkillManager({ homeDir: improvementHome, skills: { autoCreate: true, autoCreateThreshold: 2 } });
+  const skill = await manager.createSkill('review-flow', 'Review code changes', ['review', 'code'], [
+    'Read the diff.',
+    'List risks first.'
+  ]);
+  const suggestion = await manager.maybeSuggestSkillImprovement(
+    '以后每次 review 也要先检查有没有遗漏测试，不要只看实现代码',
+    '已完成 review，并提醒测试风险。',
+    [{ name: 'Skill', skillName: skill.name, scope: skill.scope, bodyChars: skill.body.length, resultChars: skill.body.length, durationMs: 1 }]
+  );
+  if (!suggestion) throw new Error('应该生成 skill 改进建议');
+  assertIncludes(suggestion.updates[0].change, '遗漏测试');
+  const before = await readFile(skill.filePath, 'utf8');
+  if (before.includes('User-confirmed improvements')) throw new Error('生成建议时不应该自动写入 skill');
+  const updated = await manager.applySkillImprovementSuggestion(suggestion);
+  const after = await readFile(updated.filePath, 'utf8');
+  assertIncludes(after, 'User-confirmed improvements');
+  assertIncludes(after, '遗漏测试');
+});
+
 test('skill install 支持 CC-Source plugin manifest 的 skillsPath/skillsPaths', async () => {
   const pluginRoot = path.join(tempHome, 'demo-plugin');
   await mkdir(path.join(pluginRoot, 'skills', 'default-skill'), { recursive: true });

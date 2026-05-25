@@ -258,6 +258,23 @@ export class NeoAgent {
           workflowSteps: skillSuggestion.workflow.length
         });
       }
+      const skillImprovementSuggestion = await this.skills.maybeSuggestSkillImprovement(input, text, skillToolCalls).catch(error => {
+        this.logger.error('skill.improvement.suggest.error', error);
+        return undefined;
+      });
+      if (skillImprovementSuggestion) {
+        this.logger.info('skill.improvement.suggest', {
+          skillName: skillImprovementSuggestion.skillName,
+          scope: skillImprovementSuggestion.scope,
+          updateCount: skillImprovementSuggestion.updates.length
+        });
+        await this.transcripts.append('skill_suggestion', skillImprovementSuggestion.reason, {
+          kind: 'improvement',
+          skillName: skillImprovementSuggestion.skillName,
+          scope: skillImprovementSuggestion.scope,
+          updateCount: skillImprovementSuggestion.updates.length
+        });
+      }
       const compactResult = await this.conversationHistory.append(input, text, this.models.get('small'));
       if (compactResult.compacted) {
         await this.transcripts.append('compact', '自动压缩会话上下文', {
@@ -285,6 +302,7 @@ export class NeoAgent {
         skillToolCallCount: skillToolCalls.length,
         toolEventCount: toolEvents.length,
         hasSkillSuggestion: Boolean(skillSuggestion),
+        hasSkillImprovementSuggestion: Boolean(skillImprovementSuggestion),
         durationMs: Date.now() - start
       });
       return {
@@ -299,7 +317,8 @@ export class NeoAgent {
         fileToolCalls,
         skillToolCalls,
         toolEvents,
-        skillSuggestion
+        skillSuggestion,
+        skillImprovementSuggestion
       };
     } catch (error) {
       if (options.signal?.aborted) {
