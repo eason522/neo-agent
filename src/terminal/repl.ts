@@ -12,6 +12,7 @@ import { createAbortError, isAbortError } from '../utils/abort.js';
 
 type ReplState = {
   debugEnabled: boolean;
+  terminal: TerminalMultilineSupport;
   lastTurn?: {
     inputChars: number;
     modelKind: string;
@@ -22,6 +23,14 @@ type ReplState = {
     fileToolCalls: number;
     skillToolCalls: number;
   };
+};
+
+type TerminalMultilineSupport = {
+  name: string;
+  recommended: string[];
+  fallback: string[];
+  note: string;
+  ctrlEnterLikelyDistinct: boolean;
 };
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
@@ -35,8 +44,10 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     removeHistoryDuplicates: true
   });
   installPersistentHistory(rl, await loadReplHistory(historyFile));
+  const terminalSupport = detectTerminalMultilineSupport();
   const state: ReplState = {
-    debugEnabled: process.env.NEO_AGENT_REPL_DEBUG === '1'
+    debugEnabled: process.env.NEO_AGENT_REPL_DEBUG === '1',
+    terminal: terminalSupport
   };
   let multilineBuffer: string[] | undefined;
   let activeController: AbortController | undefined;
@@ -72,7 +83,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   agent.setToolEventHandler(isInteractive ? event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
   } : undefined);
-  printBanner();
+  printBanner(terminalSupport);
   const handleSigint = (): void => {
     if (activeController && !activeController.signal.aborted) {
       activeController.abort(createAbortError());
@@ -240,6 +251,68 @@ function isMultilineShortcut(sequence: string, key: { name?: string; ctrl?: bool
   ].includes(sequence);
 }
 
+function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): TerminalMultilineSupport {
+  const termProgram = (env.TERM_PROGRAM ?? '').toLowerCase();
+  const term = (env.TERM ?? '').toLowerCase();
+  const colorTerm = (env.COLORTERM ?? '').toLowerCase();
+  const isTmux = Boolean(env.TMUX);
+
+  if (env.WEZTERM_PANE) {
+    return buildTerminalSupport('WezTerm', ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  }
+  if (env.KITTY_WINDOW_ID || term.includes('xterm-kitty')) {
+    return buildTerminalSupport('Kitty', ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  }
+  if (termProgram.includes('ghostty') || env.GHOSTTY_RESOURCES_DIR) {
+    return buildTerminalSupport('Ghostty', ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  }
+  if (termProgram.includes('vscode')) {
+    return buildTerminalSupport('VS Code Terminal', ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'VS Code 的快捷键可能被编辑器或终端配置拦截；若 Ctrl+Enter 无效，优先用 Alt+Enter 或 Ctrl+J。');
+  }
+  if (env.WT_SESSION || termProgram.includes('windows_terminal')) {
+    return buildTerminalSupport('Windows Terminal', ['Ctrl+J', 'Ctrl+Enter'], isTmux, 'Windows Terminal 的 Ctrl+Enter 支持取决于输入协议和配置；Ctrl+J 通常更稳。');
+  }
+  if (termProgram.includes('iterm')) {
+    return buildTerminalSupport('iTerm2', ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'iTerm2 默认不一定把 Ctrl+Enter 单独发给程序；开启 CSI u 或键盘映射后可用。');
+  }
+  if (termProgram.includes('apple_terminal') || termProgram === 'apple terminal') {
+    return buildTerminalSupport('Apple Terminal', ['Ctrl+J'], isTmux, 'Apple Terminal 通常不能可靠区分 Ctrl+Enter 和普通 Enter。');
+  }
+  if (env.VTE_VERSION || termProgram.includes('gnome') || colorTerm.includes('gnome') || term.includes('vte')) {
+    return buildTerminalSupport('VTE/GNOME Terminal', ['Ctrl+J', 'Alt+Enter'], isTmux, 'VTE 系终端通常不能可靠区分 Ctrl+Enter 和普通 Enter。');
+  }
+  if (isTmux) {
+    return buildTerminalSupport('tmux', ['Ctrl+J'], true, 'tmux 未开启 extended-keys 时通常不能传递 Ctrl+Enter；可在 tmux 配置里开启 extended-keys 后重试。');
+  }
+  return buildTerminalSupport('未知终端', ['Ctrl+J', 'Alt+Enter'], false, '当前无法可靠识别终端类型；如果快捷键无效，请使用 /multi。');
+}
+
+function buildTerminalSupport(
+  name: string,
+  recommended: string[],
+  isTmux: boolean,
+  note?: string
+): TerminalMultilineSupport {
+  const fallback = ['/multi', '行尾 \\'];
+  const tmuxNote = isTmux ? '检测到 tmux，组合键可能受 tmux extended-keys 配置影响。' : '';
+  return {
+    name: isTmux && name !== 'tmux' ? `${name} + tmux` : name,
+    recommended,
+    fallback,
+    note: [note, tmuxNote, `稳定兜底：${fallback.join('、')}。`].filter(Boolean).join(' '),
+    ctrlEnterLikelyDistinct: recommended[0] === 'Ctrl+Enter' && !isTmux
+  };
+}
+
+function formatMultilineSupport(support: TerminalMultilineSupport): string {
+  return [
+    `终端=${support.name}`,
+    `推荐换行=${support.recommended.join(' / ')}`,
+    `兜底=${support.fallback.join(' / ')}`,
+    support.note
+  ].join('；');
+}
+
 function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   const toolCount = turn.toolEvents.filter(event => event.phase === 'start').length;
   const parts = [
@@ -260,6 +333,8 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
 function printReplStatus(agent: NeoAgent, state: ReplState): void {
   console.log([
     chalk.bold('neo REPL 状态'),
+    `terminal: ${state.terminal.name}`,
+    `multiline: ${state.terminal.recommended.join(' / ')}；兜底 ${state.terminal.fallback.join(' / ')}`,
     `homeDir: ${agent.config.homeDir}`,
     `log: ${agent.logger.filePath}`,
     `transcript: ${agent.transcripts.filePath}`,
@@ -359,7 +434,7 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
   switch (command) {
     case '/help':
       await agent.transcripts.append('command', line, { command });
-      printHelp();
+      printHelp(state.terminal);
       return true;
     case '/status':
       await agent.transcripts.append('command', line, { command });
@@ -593,18 +668,18 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
   }
 }
 
-function printBanner(): void {
+function printBanner(support: TerminalMultilineSupport): void {
   console.log(chalk.bold('neo-agent'));
-  console.log(chalk.gray('输入 /help 查看命令。多行输入可用 /multi；部分终端支持 Ctrl+Enter/Alt+Enter/Ctrl+J 换行。\n'));
+  console.log(chalk.gray(`输入 /help 查看命令。${formatMultilineSupport(support)}\n`));
 }
 
-function printHelp(): void {
+function printHelp(support: TerminalMultilineSupport): void {
   console.log([
     '/help                 查看命令',
     '/exit                 退出',
     '/status               查看当前 REPL 状态',
     '/debug [on|off|last]  开关轻量 debug 视图',
-    '/multi                多行输入，. 或 /end 提交；部分终端可用 Ctrl+Enter/Alt+Enter/Ctrl+J 换行',
+    `/multi                多行输入，. 或 /end 提交；当前推荐 ${support.recommended.join(' / ')}，兜底 ${support.fallback.join(' / ')}`,
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
     '/memory [查询词]      查看或搜索记忆，支持 --type',
     '/memory-update <id|uri> <新内容>',

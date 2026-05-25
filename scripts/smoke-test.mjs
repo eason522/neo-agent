@@ -1216,6 +1216,22 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, 'transcripts');
 });
 
+test('REPL 会根据终端环境提示多行输入方式', async () => {
+  const result = await run([], {
+    env: {
+      WEZTERM_PANE: '1',
+      TERM_PROGRAM: '',
+      TERM: 'xterm-256color'
+    },
+    input: [
+      '/exit',
+      ''
+    ].join('\n')
+  });
+  assertIncludes(result.stdout, '终端=WezTerm');
+  assertIncludes(result.stdout, '推荐换行=Ctrl+Enter / Alt+Enter / Ctrl+J');
+});
+
 test('transcripts 命令能列出会话', async () => {
   const result = await run(['transcripts', '--limit', '5']);
   assertIncludes(result.stdout, 'session_');
@@ -1249,7 +1265,8 @@ async function run(args, options = {}) {
     TAVILY_API_KEY: '',
     NEO_AGENT_LOG_MAX_BYTES: '2048',
     NEO_AGENT_LOG_MAX_FILES: '3',
-    NEO_AGENT_LOG_RETENTION_DAYS: '14'
+    NEO_AGENT_LOG_RETENTION_DAYS: '14',
+    ...(options.env ?? {})
   };
 
   const result = await new Promise((resolve, reject) => {
