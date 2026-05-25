@@ -1462,6 +1462,20 @@ test('MCP 配置命令能添加、列出和删除 server', async () => {
   const json = await run(['mcp', 'list', '--json']);
   assertIncludes(json.stdout, '"name": "demo"');
   assertIncludes(json.stdout, '"TOKEN": "secret"');
+  assertIncludes(json.stdout, '"scope": "user"');
+
+  const projectDir = path.join(tempHome, 'mcp-project');
+  await mkdir(projectDir, { recursive: true });
+  const addProject = await run(['mcp', 'add', '--scope', 'project', 'local-demo', '--', 'node', 'local-server.js'], { cwd: projectDir });
+  assertIncludes(addProject.stdout, '.mcp.json');
+  assertIncludes(addProject.stdout, 'scope=project');
+  const projectMcp = await readFile(path.join(projectDir, '.mcp.json'), 'utf8');
+  assertIncludes(projectMcp, '"mcpServers"');
+  assertIncludes(projectMcp, '"local-demo"');
+  const projectList = await run(['mcp', 'list', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(projectList.stdout, 'local-demo: stdio node local-server.js scope=project');
+  const mergedConfig = await run(['config', 'show', '--source', 'merged'], { cwd: projectDir });
+  assertIncludes(mergedConfig.stdout, '"local-demo"');
 
   const addHttp = await run(['mcp', 'add', '--type', 'http', '--header', 'X-Test=1', '--oauth-token-env', 'MCP_TOKEN', 'remote', 'https://mcp.example.com/mcp']);
   assertIncludes(addHttp.stdout, 'remote: http https://mcp.example.com/mcp headers=1 oauth=MCP_TOKEN');
@@ -1477,6 +1491,8 @@ test('MCP 配置命令能添加、列出和删除 server', async () => {
 
   const remove = await run(['mcp', 'remove', 'demo']);
   assertIncludes(remove.stdout, '已删除 MCP server：demo');
+  const removeProject = await run(['mcp', 'remove', 'local-demo', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(removeProject.stdout, '已删除 MCP server：local-demo');
   await run(['mcp', 'remove', 'remote']);
   await run(['mcp', 'permission', 'remove', 'mcp__github__create_issue']);
   await run(['mcp', 'permission', 'remove', 'mcp__github__delete_*']);

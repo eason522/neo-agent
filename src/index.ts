@@ -739,9 +739,11 @@ agentCommand
 mcpCommand
   .command('list')
   .description('列出已配置的 MCP server')
+  .option('--scope <user|project|all>', '配置来源，默认 all', 'all')
   .option('--json', '输出 JSON')
-  .action(async (options: { json?: boolean }) => {
-    const { filePath, entries } = await listConfiguredMcpServers();
+  .action(async (options: { scope: string; json?: boolean }) => {
+    const scope = parseMcpConfigScope(options.scope);
+    const { filePath, entries } = await listConfiguredMcpServers({ scope });
     if (options.json) {
       console.log(JSON.stringify({ filePath, servers: entries }, null, 2));
       return;
@@ -766,10 +768,13 @@ mcpCommand
   .option('-H, --header <pair>', 'HTTP/SSE header KEY=VALUE，可重复', collectOption, [])
   .option('--oauth-token-env <name>', '从环境变量读取 OAuth Bearer token')
   .option('--disabled', '添加后先禁用')
-  .action(async (name: string, target: string | undefined, args: string[], options: { type: string; env: string[]; header: string[]; oauthTokenEnv?: string; disabled?: boolean }) => {
+  .option('--scope <user|project>', '写入位置，默认 user', 'user')
+  .action(async (name: string, target: string | undefined, args: string[], options: { type: string; env: string[]; header: string[]; oauthTokenEnv?: string; disabled?: boolean; scope: string }) => {
     const type = parseMcpServerType(options.type);
+    const scope = parseMcpConfigScope(options.scope) ?? 'user';
     const result = await addConfiguredMcpServer({
       name,
+      scope,
       type,
       command: type === 'stdio' ? target : undefined,
       args: type === 'stdio' ? args : [],
@@ -781,15 +786,17 @@ mcpCommand
     });
     console.log(chalk.green(`已添加 MCP server：${name}`));
     console.log(chalk.gray(result.filePath));
-    console.log(formatMcpServerEntry({ name, server: result.server }));
+    console.log(formatMcpServerEntry({ name, server: result.server, scope }));
   });
 
 mcpCommand
   .command('remove')
   .description('删除 MCP server 配置')
   .argument('<name>', 'server 名称')
-  .action(async (name: string) => {
-    const result = await removeConfiguredMcpServer(name);
+  .option('--scope <user|project>', '删除位置，默认 user', 'user')
+  .action(async (name: string, options: { scope: string }) => {
+    const scope = parseMcpConfigScope(options.scope) ?? 'user';
+    const result = await removeConfiguredMcpServer(name, { scope });
     if (!result.removed) {
       console.log(chalk.yellow(`没有找到 MCP server：${name}`));
       return;
@@ -1079,6 +1086,12 @@ function parseConfigSource(input: string): 'merged' | 'user' | 'project' {
 function parseMcpServerType(input: string): 'stdio' | 'http' | 'sse' {
   if (input === 'stdio' || input === 'http' || input === 'sse') return input;
   throw new Error(`无效 MCP server 类型：${input}，只能是 stdio、http 或 sse。`);
+}
+
+function parseMcpConfigScope(input: string | undefined): 'user' | 'project' | undefined {
+  if (!input || input === 'all') return undefined;
+  if (input === 'user' || input === 'project') return input;
+  throw new Error(`无效 MCP scope：${input}，只能是 user、project 或 all。`);
 }
 
 async function openEditorOrPrintPath(filePath: string): Promise<void> {

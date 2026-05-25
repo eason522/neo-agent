@@ -351,13 +351,26 @@ export async function loadConfigSources(cwd = process.cwd()): Promise<{
   const defaults = defaultConfig();
   const userConfigPath = path.join(defaults.homeDir, 'config.json');
   const projectConfigPath = path.join(cwd, 'neo-agent.config.json');
+  const projectMcpConfigPath = path.join(cwd, '.mcp.json');
+  const projectConfig = await readJsonFile<Partial<AppConfig>>(projectConfigPath, {});
+  const projectMcpConfig = await readProjectMcpConfig(projectMcpConfigPath);
   return {
     defaults,
     userConfig: await readJsonFile<Partial<AppConfig>>(userConfigPath, {}),
-    projectConfig: await readJsonFile<Partial<AppConfig>>(projectConfigPath, {}),
+    projectConfig: deepMerge(projectConfig, projectMcpConfig),
     userConfigPath,
     projectConfigPath
   };
+}
+
+async function readProjectMcpConfig(filePath: string): Promise<Partial<AppConfig>> {
+  const raw = await readJsonFile<{ mcpServers?: unknown }>(filePath, {});
+  if (!raw.mcpServers || typeof raw.mcpServers !== 'object' || Array.isArray(raw.mcpServers)) return {};
+  return {
+    mcp: {
+      servers: raw.mcpServers as AppConfig['mcp']['servers']
+    }
+  } as Partial<AppConfig>;
 }
 
 export function validateConfig(value: unknown): AppConfig {

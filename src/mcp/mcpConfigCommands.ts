@@ -14,23 +14,40 @@ type RawUserConfig = Record<string, unknown> & {
   };
 };
 
+type RawProjectMcpConfig = {
+  mcpServers?: Record<string, McpServerConfig>;
+};
+
+export type McpConfigScope = 'user' | 'project';
+
 export type McpConfigEntry = {
   name: string;
   server: McpServerConfig;
+  scope: McpConfigScope;
 };
 
-export async function listConfiguredMcpServers(): Promise<{ filePath: string; entries: McpConfigEntry[] }> {
-  const filePath = getUserConfigPath();
-  const config = await readRawUserConfig(filePath);
-  const servers = config.mcp?.servers ?? {};
+export async function listConfiguredMcpServers(options: { scope?: McpConfigScope; cwd?: string } = {}): Promise<{ filePath: string; entries: McpConfigEntry[] }> {
+  const userFilePath = getUserConfigPath();
+  const projectFilePath = getProjectMcpConfigPath(options.cwd);
+  const entries: McpConfigEntry[] = [];
+  if (!options.scope || options.scope === 'user') {
+    const userConfig = await readRawUserConfig(userFilePath);
+    entries.push(...Object.entries(userConfig.mcp?.servers ?? {}).map(([name, server]) => ({ name, server, scope: 'user' as const })));
+  }
+  if (!options.scope || options.scope === 'project') {
+    const projectConfig = await readRawProjectMcpConfig(projectFilePath);
+    entries.push(...Object.entries(projectConfig.mcpServers ?? {}).map(([name, server]) => ({ name, server, scope: 'project' as const })));
+  }
   return {
-    filePath,
-    entries: Object.entries(servers).map(([name, server]) => ({ name, server }))
+    filePath: options.scope === 'project' ? projectFilePath : options.scope === 'user' ? userFilePath : `${userFilePath} + ${projectFilePath}`,
+    entries: entries.sort((a, b) => a.scope.localeCompare(b.scope) || a.name.localeCompare(b.name))
   };
 }
 
 export async function addConfiguredMcpServer(input: {
   name: string;
+  scope?: McpConfigScope;
+  cwd?: string;
   type?: 'stdio' | 'http' | 'sse';
   command?: string;
   args?: string[];
@@ -44,9 +61,6 @@ export async function addConfiguredMcpServer(input: {
   const type = input.type ?? 'stdio';
   if (type === 'stdio' && !input.command?.trim()) throw new Error('MCP stdio server command 不能为空。');
   if ((type === 'http' || type === 'sse') && !input.url?.trim()) throw new Error(`MCP ${type} server url 不能为空。`);
-  const filePath = getUserConfigPath();
-  const config = await readRawUserConfig(filePath);
-  const mcp = ensureMcpConfig(config);
   const server: McpServerConfig = {
     type,
     ...(input.command ? { command: input.command } : {}),
@@ -57,19 +71,39 @@ export async function addConfiguredMcpServer(input: {
     ...(input.env && Object.keys(input.env).length > 0 ? { env: input.env } : {}),
     ...(input.disabled ? { disabled: true } : {})
   };
-  mcp.servers[input.name] = server;
-  await writeRawUserConfig(filePath, config);
+  const scope = input.scope ?? 'user';
+  const filePath = scope === 'project' ? getProjectMcpConfigPath(input.cwd) : getUserConfigPath();
+  if (scope === 'project') {
+    const config = await readRawProjectMcpConfig(filePath);
+    config.mcpServers ??= {};
+    config.mcpServers[input.name] = server;
+    await writeRawProjectMcpConfig(filePath, config);
+  } else {
+    const config = await readRawUserConfig(filePath);
+    const mcp = ensureMcpConfig(config);
+    mcp.servers[input.name] = server;
+    await writeRawUserConfig(filePath, config);
+  }
   return { filePath, server };
 }
 
-export async function removeConfiguredMcpServer(name: string): Promise<{ filePath: string; removed: boolean }> {
+export async function removeConfiguredMcpServer(name: string, options: { scope?: McpConfigScope; cwd?: string } = {}): Promise<{ filePath: string; removed: boolean }> {
   validateServerName(name);
-  const filePath = getUserConfigPath();
-  const config = await readRawUserConfig(filePath);
-  const mcp = ensureMcpConfig(config);
-  const removed = Boolean(mcp.servers[name]);
-  delete mcp.servers[name];
-  await writeRawUserConfig(filePath, config);
+  const scope = options.scope ?? 'user';
+  const filePath = scope === 'project' ? getProjectMcpConfigPath(options.cwd) : getUserConfigPath();
+  let removed = false;
+  if (scope === 'project') {
+    const config = await readRawProjectMcpConfig(filePath);
+    removed = Boolean(config.mcpServers?.[name]);
+    if (config.mcpServers) delete config.mcpServers[name];
+    await writeRawProjectMcpConfig(filePath, config);
+  } else {
+    const config = await readRawUserConfig(filePath);
+    const mcp = ensureMcpConfig(config);
+    removed = Boolean(mcp.servers[name]);
+    delete mcp.servers[name];
+    await writeRawUserConfig(filePath, config);
+  }
   return { filePath, removed };
 }
 
@@ -184,7 +218,7 @@ export function formatMcpServerEntry(entry: McpConfigEntry): string {
   const headers = entry.server.headers ? ` headers=${Object.keys(entry.server.headers).length}` : '';
   const oauth = entry.server.oauth?.accessTokenEnv ? ` oauth=${entry.server.oauth.accessTokenEnv}` : '';
   const target = type === 'stdio' ? `${entry.server.command ?? ''}${args}` : `${entry.server.url ?? ''}`;
-  return `${entry.name}${disabled}: ${type} ${target}${env}${headers}${oauth}`;
+  return `${entry.name}${disabled}: ${type} ${target}${env}${headers}${oauth} scope=${entry.scope}`;
 }
 
 function getUserConfigPath(): string {
@@ -192,11 +226,24 @@ function getUserConfigPath(): string {
   return path.join(defaults.homeDir, 'config.json');
 }
 
+function getProjectMcpConfigPath(cwd = process.cwd()): string {
+  return path.join(cwd, '.mcp.json');
+}
+
 async function readRawUserConfig(filePath: string): Promise<RawUserConfig> {
   return readJsonFile<RawUserConfig>(filePath, {});
 }
 
+async function readRawProjectMcpConfig(filePath: string): Promise<RawProjectMcpConfig> {
+  return readJsonFile<RawProjectMcpConfig>(filePath, {});
+}
+
 async function writeRawUserConfig(filePath: string, config: RawUserConfig): Promise<void> {
+  await ensureDir(path.dirname(filePath));
+  await writeJsonFile(filePath, config);
+}
+
+async function writeRawProjectMcpConfig(filePath: string, config: RawProjectMcpConfig): Promise<void> {
   await ensureDir(path.dirname(filePath));
   await writeJsonFile(filePath, config);
 }
