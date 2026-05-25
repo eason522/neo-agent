@@ -571,6 +571,8 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 用户复查后指出：只提供启动参数 `--resume` 和 CLI `neo usage` 不符合 REPL 的日常使用方式，也不方便在不知道 session id 时恢复会话。已补齐 REPL `/resume [session]` 和 `/usage [天数]`；`/resume` 不带参数时等价于恢复上一个会话，且会跳过当前刚启动的空 session，避免“latest 恢复到自己”。`/transcripts` 用于查看最近会话 id 和标题；启动前仍可用 `neo --resume` 或 `neo chat --resume`。验证覆盖 `TranscriptService latest` 跳过当前 session、REPL `/resume latest` 无历史时给出明确提示，以及 `/usage` 在 REPL 内输出 usage 视图。
 
+用户进一步指出：恢复会话不应该要求先 `/transcripts` 再复制 session id，CC-Source 已有无参数 `/resume` 打开历史会话选择器的交互。已重新对照 CC-Source `commands/resume/resume.tsx`、`screens/ResumeConversation.tsx`、`components/ResumeTask.tsx` 和 `CustomSelect`：其核心是无参数打开 picker、过滤当前 session、按最近更新时间排序、用 ↑/↓ 和 Enter 选择；带参数时才按 session id 或标题直接恢复。neo 已按这个模式补轻量 raw TTY 选择器：`/resume` 直接列出最近 50 个可恢复 transcript，支持 ↑/↓、j/k、PageUp/PageDown、Enter 恢复、Esc/q 取消；非交互输入仍保持 `/resume` 走 latest，便于脚本和 smoke 测试。验证方式：`npm run typecheck` 和 `npm run smoke`。
+
 ## 恢复开发检查清单
 
 开始新的开发任务前：

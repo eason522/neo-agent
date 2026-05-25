@@ -9,6 +9,7 @@ import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSug
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
+import type { TranscriptSessionSummary } from '../transcript/transcriptService.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -96,7 +97,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       }
       if (line === '/exit' || line === '/quit') break;
       await saveReplHistory(historyFile, line);
-      if (await handleCommand(agent, line, state)) {
+      if (await handleCommand(agent, line, state, false)) {
         if (isInteractive) rl.prompt();
         continue;
       }
@@ -167,7 +168,7 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
       await saveReplHistory(historyFile, line);
       history.push(line);
       if (history.length > 200) history.splice(0, history.length - 200);
-      if (await handleCommand(agent, trimmed, state)) continue;
+      if (await handleCommand(agent, trimmed, state, true)) continue;
 
       await runAgentTurn(agent, line, true, askQuestion, state, controller => {
         activeController = controller;
@@ -770,6 +771,159 @@ function formatDebugView(agent: NeoAgent, state: ReplState): string {
   ].join('\n');
 }
 
+async function pickResumeSession(agent: NeoAgent): Promise<TranscriptSessionSummary | undefined> {
+  const sessions = (await agent.transcripts.listSessions(50))
+    .filter(session => session.sessionId !== agent.transcripts.sessionId);
+  if (sessions.length === 0) {
+    console.log(chalk.gray('没有可恢复的历史会话。'));
+    await agent.transcripts.append('command', 'resume picker empty', {
+      command: '/resume',
+      status: 'empty'
+    });
+    return undefined;
+  }
+  return await readInteractiveSelect({
+    title: '选择要恢复的会话',
+    items: sessions,
+    format: session => formatResumeSessionOption(session),
+    emptyText: '没有可恢复的历史会话。'
+  });
+}
+
+async function readInteractiveSelect<T>(options: {
+  title: string;
+  items: T[];
+  format: (item: T) => string;
+  emptyText: string;
+}): Promise<T | undefined> {
+  if (options.items.length === 0) {
+    console.log(chalk.gray(options.emptyText));
+    return undefined;
+  }
+  let selected = 0;
+  let offset = 0;
+  let renderedLines = 0;
+  const visibleCount = Math.max(1, Math.min(options.items.length, Math.max(5, Math.min(12, (output.rows || 24) - 6))));
+
+  const clear = (): void => {
+    if (renderedLines === 0) return;
+    output.write('\r\x1b[2K');
+    for (let index = 1; index < renderedLines; index += 1) {
+      output.write('\x1b[1A\r\x1b[2K');
+    }
+    renderedLines = 0;
+  };
+  const render = (): void => {
+    clear();
+    if (selected < offset) offset = selected;
+    if (selected >= offset + visibleCount) offset = selected - visibleCount + 1;
+    const end = Math.min(options.items.length, offset + visibleCount);
+    const lines = [
+      chalk.bold(`${options.title}${options.items.length > visibleCount ? ` (${selected + 1}/${options.items.length})` : ''}`),
+      chalk.gray('↑/↓ 选择，Enter 恢复，Esc/q 取消'),
+      ...options.items.slice(offset, end).map((item, index) => {
+        const absoluteIndex = offset + index;
+        const isSelected = absoluteIndex === selected;
+        const pointer = isSelected ? '› ' : '  ';
+        const label = `${pointer}${options.format(item)}`;
+        return isSelected ? chalk.cyan(label) : label;
+      })
+    ];
+    if (offset > 0) lines.splice(2, 0, chalk.gray('  ...'));
+    if (end < options.items.length) lines.push(chalk.gray('  ...'));
+    output.write(lines.join('\n'));
+    renderedLines = lines.length;
+  };
+
+  render();
+  return await new Promise<T | undefined>((resolve, reject) => {
+    const cleanup = (): void => {
+      input.off('data', onData);
+      clear();
+    };
+    const done = (item: T | undefined): void => {
+      cleanup();
+      resolve(item);
+    };
+    const cancel = (): void => {
+      cleanup();
+      output.write(chalk.gray('已取消恢复。\n'));
+      resolve(undefined);
+    };
+    const move = (delta: number): void => {
+      selected = Math.max(0, Math.min(options.items.length - 1, selected + delta));
+      render();
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const data = chunk.toString();
+      for (let index = 0; index < data.length;) {
+        const rest = data.slice(index);
+        if (rest.startsWith('\x1b[A')) {
+          move(-1);
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[B')) {
+          move(1);
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[5~')) {
+          move(-visibleCount);
+          index += 4;
+          continue;
+        }
+        if (rest.startsWith('\x1b[6~')) {
+          move(visibleCount);
+          index += 4;
+          continue;
+        }
+        const char = data[index] ?? '';
+        if (char === '\r' || char === '\n') {
+          done(options.items[selected]);
+          return;
+        }
+        if (char === '\x1b' || char === 'q' || char === 'Q') {
+          cancel();
+          return;
+        }
+        if (char === '\x03' || char === '\x04') {
+          cleanup();
+          reject(createAbortError());
+          return;
+        }
+        if (char === 'k') move(-1);
+        else if (char === 'j') move(1);
+        index += 1;
+      }
+    };
+    input.on('data', onData);
+  });
+}
+
+function formatResumeSessionOption(session: TranscriptSessionSummary): string {
+  const title = session.title?.trim() || '(无标题会话)';
+  const time = formatResumeTime(session.updatedAt);
+  const size = session.sizeBytes > 1024 ? `${Math.round(session.sizeBytes / 1024)}KB` : `${session.sizeBytes}B`;
+  return `${time}  ${truncateDisplay(title, 64)}  ${chalk.gray(`${session.sessionId} ${size}`)}`;
+}
+
+function formatResumeTime(input: string): string {
+  const timestamp = Date.parse(input);
+  if (!Number.isFinite(timestamp)) return input;
+  const date = new Date(timestamp);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  if (sameDay) return `今天 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function truncateDisplay(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 async function confirmSkillSuggestion(
   agent: NeoAgent,
   askQuestion: AskQuestion,
@@ -835,7 +989,7 @@ async function confirmSkillImprovement(
   });
 }
 
-async function handleCommand(agent: NeoAgent, line: string, state: ReplState): Promise<boolean> {
+async function handleCommand(agent: NeoAgent, line: string, state: ReplState, isInteractive: boolean): Promise<boolean> {
   if (!line.startsWith('/')) return false;
   const [command, ...rest] = line.split(/\s+/);
   const arg = rest.join(' ').trim();
@@ -1022,11 +1176,17 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
       return true;
     }
     case '/resume': {
-      const selector = arg.trim() || 'latest';
+      let selector = arg.trim();
+      if (!selector && isInteractive) {
+        const session = await pickResumeSession(agent);
+        if (!session) return true;
+        selector = session.sessionId;
+      }
+      selector ||= 'latest';
       const result = await agent.resumeSession(selector);
       if (result.status !== 'resumed' || !result.snapshot) {
         console.log(chalk.yellow(`没有找到可恢复的会话：${selector}`));
-        console.log(chalk.gray('可以先用 /transcripts 查看最近会话，或启动时使用 neo --resume [sessionId]。'));
+        console.log(chalk.gray('可以直接输入 /resume 打开选择器，或启动时使用 neo --resume [sessionId]。'));
         return true;
       }
       const { snapshot } = result;
