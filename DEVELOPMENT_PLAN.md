@@ -36,6 +36,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP deferred ToolSearch：MCP 工具过多时延迟加载 schema
 - MCP 高风险工具 REPL 一次性权限确认，非交互入口继续默认拒绝
 - 配置管理命令：`neo config show` 默认脱敏显示 merged/user/project 配置，`neo config set` 写入 user/project 配置并做 schema 校验
+- 模型客户端基础可靠性：请求超时、5xx/429/网络/超时重试、4xx 不重试、取消分类和 token usage 日志
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -100,7 +101,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 M1 后续对齐债务：
 
 - [x] 配置体系补 `neo config show` 默认脱敏、`neo config set`、配置 schema 校验，参考 CC-Source settings/config/doctor。
-- [ ] 模型客户端补请求超时、重试退避、用量统计、成本统计和速率限制提示，参考 CC-Source api、cost-tracker、rateLimitMessages。
+- [x] 模型客户端补请求超时、重试退避、取消分类、429/5xx/网络/超时错误分类和 token usage 日志，参考 CC-Source api、cost-tracker、rateLimitMessages。
+- [ ] 模型成本统计落盘和 `neo usage` 视图，参考 CC-Source cost-tracker。
 - [ ] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
 - [ ] doctor 补上下文体积、MCP、skill、配置权限、版本/更新、路径可写性等更细诊断，参考 CC-Source Doctor/context warnings。
 - [ ] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级，参考 CC-Source debug/log/analytics 思路。
@@ -208,7 +210,7 @@ M4 后续硬化项：
 - [x] M3：实现 skill `--scope user|project`，加载时合并全局和项目 skill，并显示来源。
 - [x] M3：把 Skill tool 接入 `QueryEngine`，让模型显式调用 skill，system prompt 只放预算化 skill 列表。
 - [x] M1：添加 `neo config show` 默认脱敏和 `neo config set`，并补配置 schema 校验和敏感字段脱敏。
-- [ ] M1：为模型请求添加超时、重试退避、取消分类、速率限制提示和用量统计。
+- [x] M1：为模型请求添加超时、重试退避、取消分类、速率限制分类和 token usage 记录。
 - [ ] M4：将 `Grep` 工具后端从 JS 遍历升级为 `rg`，并增加超时、最大输出、二进制跳过和错误分类。
 - [ ] M4：为 `QueryEngine` 增强长运行工具真实 kill、并发执行安全策略和 orphan tool result 处理。
 - [ ] M5：补输入历史、多行编辑、状态行和轻量 debug 视图，让日常 REPL 可用性接近 CC-Source。
@@ -222,7 +224,7 @@ M4 后续硬化项：
 - [ ] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
 - [ ] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
 - [ ] M1/M5：transcript/session 增加 resume、compact boundary、tool result pairing、会话标题和恢复校验。
-- [ ] M1：模型用量和成本统计落盘，支持 `neo usage` 或 debug 视图查看。
+- [ ] M1：模型成本统计落盘，支持 `neo usage` 或 debug 视图查看。
 
 ### P2：生态、发布和长期能力
 
@@ -402,6 +404,12 @@ neo 本阶段支持 `neo skill install <pluginDir|plugin.json>` 和 `neo skill v
 参考 CC-Source `utils/settings/settings.ts`、`utils/settings/types.ts` 和 doctor/status notice 对配置来源与校验的处理，neo 先补最小可用配置闭环：`neo config show` 默认输出 merged 配置并脱敏 API key、token、secret、password 等敏感字段；可用 `--source user|project|merged` 查看不同来源；`neo config set <path> <value>` 默认写入用户配置，也支持 `--scope project` 写入 `neo-agent.config.json`。
 
 没有直接照搬 CC-Source 的 managed settings、MDM/policy、drop-in 目录和复杂 setting source 优先级。原因是 neo 当前是个人 agent，先需要简单、可审计、不会泄露密钥的配置管理。写入前会把 defaults/user/project 合并后过完整 schema 校验，非法值不会落盘；后续如果补企业/团队共享配置，再按 CC-Source 的 setting source 和 policy 体系升级。
+
+### 2026-05-25：模型客户端先补可靠调用，再补成本账本
+
+参考 CC-Source `QueryEngine.ts` 中对 abort controller、retry event、usage 累计和 cost tracker 的处理，neo 先在 OpenAI-compatible 客户端补基础可靠性：每个模型配置包含 `requestTimeoutMs`、`maxRetries` 和 `retryBaseDelayMs`；请求会合并用户取消信号和超时信号；5xx、429、网络错误和超时会指数退避重试，4xx 参数/认证错误不重试；取消会单独记录为 cancelled，不进入错误重试。
+
+本阶段没有直接实现完整 cost tracker 和 `neo usage` 命令。原因是不同模型供应商的价格表和返回 usage 字段不完全一致，先把响应中的 `prompt_tokens`、`completion_tokens`、`total_tokens` 解析出来并写入结构化日志，保证后续成本账本可以复用同一字段。后续再补按模型价格配置计算成本、按天落盘和 `neo usage` 视图。
 
 ### 2026-05-24：开发过程以 CC-Source 对应功能为核心参考
 

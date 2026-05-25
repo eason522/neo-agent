@@ -9,7 +9,10 @@ const modelSchema = z.object({
   apiKey: z.string().optional(),
   apiBase: z.string(),
   temperature: z.number(),
-  maxTokens: z.number().int().positive()
+  maxTokens: z.number().int().positive(),
+  requestTimeoutMs: z.number().int().positive(),
+  maxRetries: z.number().int().nonnegative(),
+  retryBaseDelayMs: z.number().int().positive()
 });
 
 export const appConfigSchema: z.ZodType<AppConfig> = z.object({
@@ -116,21 +119,30 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: 4096
+        maxTokens: 4096,
+        requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
+        maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
+        retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
       },
       small: {
         model: process.env.NEO_AGENT_SMALL_MODEL || 'deepseek-v4-flash',
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: 2048
+        maxTokens: 2048,
+        requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '45000', 10),
+        maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
+        retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
       },
       vision: {
         model: process.env.NEO_AGENT_VISION_MODEL || 'mimo-v2.5',
         apiKey: process.env.MIMO_API_KEY,
         apiBase: process.env.MIMO_API_BASE || 'https://token-plan-cn.xiaomimimo.com/v1',
         temperature: 0.0,
-        maxTokens: 2048
+        maxTokens: 2048,
+        requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
+        maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
+        retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
       }
     },
     routing: {

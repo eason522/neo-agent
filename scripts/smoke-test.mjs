@@ -58,6 +58,9 @@ test('初始化配置', async () => {
   assertIncludes(config, '"permissions"');
   assertIncludes(config, '"toolSearchThreshold"');
   assertIncludes(config, '"mode": "readOnly"');
+  assertIncludes(config, '"requestTimeoutMs"');
+  assertIncludes(config, '"maxRetries"');
+  assertIncludes(config, '"retryBaseDelayMs"');
 });
 
 test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
@@ -93,6 +96,84 @@ test('联网工具定义符合 tool loop 入口', async () => {
   for (const tool of tools) {
     if (tool.type !== 'function') throw new Error(`联网工具必须是 function 类型：${JSON.stringify(tool)}`);
     if (!tool.function.parameters?.properties) throw new Error(`联网工具缺少 JSON schema：${tool.function.name}`);
+  }
+});
+
+test('模型客户端会对 5xx 重试并记录 usage', async () => {
+  const { OpenAICompatibleClient } = await import(pathToFileURL(path.join(root, 'dist', 'models', 'openaiCompatibleClient.js')).href);
+  const originalFetch = globalThis.fetch;
+  const events = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response('temporary failure', { status: 500, statusText: 'Server Error' });
+    }
+    return new Response(JSON.stringify({
+      choices: [{
+        finish_reason: 'stop',
+        message: { content: 'retry ok' }
+      }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 3,
+        total_tokens: 14
+      }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const logger = {
+      debug() {},
+      info(name, metadata) { events.push({ level: 'info', name, metadata }); },
+      warn(name, metadata) { events.push({ level: 'warn', name, metadata }); },
+      error(name, error, metadata) { events.push({ level: 'error', name, error, metadata }); }
+    };
+    const client = new OpenAICompatibleClient({
+      model: 'test-model',
+      apiKey: 'test-key',
+      apiBase: 'https://example.com/v1',
+      temperature: 0,
+      maxTokens: 128,
+      requestTimeoutMs: 1000,
+      maxRetries: 1,
+      retryBaseDelayMs: 1
+    }, logger);
+    const result = await client.chatWithTools({ messages: [{ role: 'user', content: 'hi' }] });
+    assertIncludes(result.content, 'retry ok');
+    if (calls !== 2) throw new Error(`应该重试一次：${calls}`);
+    if (result.usage?.totalTokens !== 14) throw new Error(`应该解析 usage：${JSON.stringify(result.usage)}`);
+    if (!events.some(event => event.name === 'model.request.retry')) throw new Error(`应该记录重试日志：${JSON.stringify(events)}`);
+    const success = events.find(event => event.name === 'model.request.success');
+    if (success?.metadata?.totalTokens !== 14) throw new Error(`成功日志应该记录 token usage：${JSON.stringify(success)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('模型客户端不会重试 4xx 参数错误', async () => {
+  const { OpenAICompatibleClient } = await import(pathToFileURL(path.join(root, 'dist', 'models', 'openaiCompatibleClient.js')).href);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('bad request', { status: 400, statusText: 'Bad Request' });
+  };
+  try {
+    const logger = { debug() {}, info() {}, warn() {}, error() {} };
+    const client = new OpenAICompatibleClient({
+      model: 'test-model',
+      apiKey: 'test-key',
+      apiBase: 'https://example.com/v1',
+      temperature: 0,
+      maxTokens: 128,
+      requestTimeoutMs: 1000,
+      maxRetries: 2,
+      retryBaseDelayMs: 1
+    }, logger);
+    await assertRejects(() => client.chatWithTools({ messages: [{ role: 'user', content: 'hi' }] }), '400');
+    if (calls !== 1) throw new Error(`4xx 不应该重试：${calls}`);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

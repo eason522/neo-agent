@@ -33,6 +33,7 @@ export type ChatCompletionResult = {
   reasoningContent?: string;
   toolCalls: ChatToolCall[];
   finishReason?: string | null;
+  usage?: ModelUsage;
 };
 
 export type ModelKind = 'main' | 'small' | 'vision';
@@ -44,6 +45,15 @@ export type ModelConfig = {
   apiBase: string;
   temperature: number;
   maxTokens: number;
+  requestTimeoutMs: number;
+  maxRetries: number;
+  retryBaseDelayMs: number;
+};
+
+export type ModelUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 };
 
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
