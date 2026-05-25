@@ -12,7 +12,7 @@ const modelSchema = z.object({
   maxTokens: z.number().int().positive()
 });
 
-const appConfigSchema: z.ZodType<AppConfig> = z.object({
+export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   homeDir: z.string(),
   models: z.object({
     main: modelSchema,
@@ -258,18 +258,40 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
 }
 
 export async function loadConfig(cwd = process.cwd()): Promise<AppConfig> {
+  const { defaults, userConfig, projectConfig } = await loadConfigSources(cwd);
+  const merged = deepMerge(deepMerge(defaults, userConfig), projectConfig);
+  return validateConfig(merged);
+}
+
+export async function loadConfigSources(cwd = process.cwd()): Promise<{
+  defaults: AppConfig;
+  userConfig: Partial<AppConfig>;
+  projectConfig: Partial<AppConfig>;
+  userConfigPath: string;
+  projectConfigPath: string;
+}> {
   const defaults = defaultConfig();
   const userConfigPath = path.join(defaults.homeDir, 'config.json');
   const projectConfigPath = path.join(cwd, 'neo-agent.config.json');
+  return {
+    defaults,
+    userConfig: await readJsonFile<Partial<AppConfig>>(userConfigPath, {}),
+    projectConfig: await readJsonFile<Partial<AppConfig>>(projectConfigPath, {}),
+    userConfigPath,
+    projectConfigPath
+  };
+}
 
-  const userConfig = await readJsonFile<Partial<AppConfig>>(userConfigPath, {});
-  const projectConfig = await readJsonFile<Partial<AppConfig>>(projectConfigPath, {});
-  const merged = deepMerge(deepMerge(defaults, userConfig), projectConfig);
-  const parsed = appConfigSchema.safeParse(merged);
+export function validateConfig(value: unknown): AppConfig {
+  const parsed = appConfigSchema.safeParse(value);
   if (!parsed.success) {
     throw new Error(`Invalid neo-agent config: ${parsed.error.message}`);
   }
   return parsed.data;
+}
+
+export function mergeConfigSources(defaults: AppConfig, userConfig: Partial<AppConfig>, projectConfig: Partial<AppConfig>): AppConfig {
+  return validateConfig(deepMerge(deepMerge(defaults, userConfig), projectConfig));
 }
 
 export async function initConfigFile(cwd = process.cwd()): Promise<string> {

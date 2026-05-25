@@ -60,6 +60,30 @@ test('初始化配置', async () => {
   assertIncludes(config, '"mode": "readOnly"');
 });
 
+test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
+  await run(['config:init']);
+  const setKey = await run(['config', 'set', 'models.main.apiKey', 'test-secret-123456']);
+  assertIncludes(setKey.stdout, '已更新配置：models.main.apiKey');
+  assertIncludes(setKey.stdout, 'scope=user');
+
+  const redacted = await run(['config', 'show']);
+  assertIncludes(redacted.stdout, '"apiKey": "test…3456"');
+  if (redacted.stdout.includes('test-secret-123456')) throw new Error('config show 默认不应泄露完整 apiKey');
+
+  const raw = await run(['config', 'show', '--show-secrets']);
+  assertIncludes(raw.stdout, 'test-secret-123456');
+
+  const projectDir = path.join(tempHome, 'config-project');
+  await mkdir(projectDir, { recursive: true });
+  const setProject = await run(['config', 'set', 'web.maxToolRounds', '9', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(setProject.stdout, 'scope=project');
+  const projectConfig = await readFile(path.join(projectDir, 'neo-agent.config.json'), 'utf8');
+  assertIncludes(projectConfig, '"maxToolRounds": 9');
+
+  const invalid = await run(['config', 'set', 'web.maxToolRounds', '0', '--scope', 'project'], { cwd: projectDir, expectCode: 1 });
+  assertIncludes(invalid.stderr, 'Invalid neo-agent config');
+});
+
 test('联网工具定义符合 tool loop 入口', async () => {
   const { createWebToolDefinitions } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webTools.js')).href);
   const tools = createWebToolDefinitions();

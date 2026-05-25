@@ -35,6 +35,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP resource 工具：`ListMcpResources` / `ReadMcpResource`
 - MCP deferred ToolSearch：MCP 工具过多时延迟加载 schema
 - MCP 高风险工具 REPL 一次性权限确认，非交互入口继续默认拒绝
+- 配置管理命令：`neo config show` 默认脱敏显示 merged/user/project 配置，`neo config set` 写入 user/project 配置并做 schema 校验
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -98,7 +99,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 M1 后续对齐债务：
 
-- [ ] 配置体系补 `neo config show --redacted`、`neo config set`、配置 schema 校验和结构化错误码，参考 CC-Source settings/config/doctor。
+- [x] 配置体系补 `neo config show` 默认脱敏、`neo config set`、配置 schema 校验，参考 CC-Source settings/config/doctor。
 - [ ] 模型客户端补请求超时、重试退避、用量统计、成本统计和速率限制提示，参考 CC-Source api、cost-tracker、rateLimitMessages。
 - [ ] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
 - [ ] doctor 补上下文体积、MCP、skill、配置权限、版本/更新、路径可写性等更细诊断，参考 CC-Source Doctor/context warnings。
@@ -206,7 +207,7 @@ M4 后续硬化项：
 - [x] M3：实现 `neo skill install/validate/export`，支持 `.md`、目录和 `.zip`，带路径穿越、zip-slip、覆盖保护、非法格式测试。
 - [x] M3：实现 skill `--scope user|project`，加载时合并全局和项目 skill，并显示来源。
 - [x] M3：把 Skill tool 接入 `QueryEngine`，让模型显式调用 skill，system prompt 只放预算化 skill 列表。
-- [ ] M1：添加 `neo config show --redacted` 和 `neo config set`，并补配置 schema 校验、结构化错误码和敏感字段脱敏。
+- [x] M1：添加 `neo config show` 默认脱敏和 `neo config set`，并补配置 schema 校验和敏感字段脱敏。
 - [ ] M1：为模型请求添加超时、重试退避、取消分类、速率限制提示和用量统计。
 - [ ] M4：将 `Grep` 工具后端从 JS 遍历升级为 `rg`，并增加超时、最大输出、二进制跳过和错误分类。
 - [ ] M4：为 `QueryEngine` 增强长运行工具真实 kill、并发执行安全策略和 orphan tool result 处理。
@@ -395,6 +396,12 @@ neo 本阶段支持 `neo skill install <pluginDir|plugin.json>` 和 `neo skill v
 继续测试发现，neo 把 CC/Codex 常见 skill 包误报为“缺少 triggers/when_to_use”和“包含 shell 执行片段”。这不符合 CC-Source 的实际设计：`description` 本身就是模型发现 skill 的主要依据之一，`triggers` 不是必填项；skill 文档里出现命令示例也不代表安装风险，因为 neo 不会在安装或加载 skill 时自动执行命令。
 
 已调整校验器：只把缺少 `description`、空 `SKILL.md`、文件过大、路径安全等作为安装校验问题；不再把缺少 triggers 或存在命令示例作为 warning 返回给模型。执行安全继续放在工具权限层处理，而不是在安装阶段制造噪音。
+
+### 2026-05-25：配置命令先做轻量 user/project 分层和脱敏输出
+
+参考 CC-Source `utils/settings/settings.ts`、`utils/settings/types.ts` 和 doctor/status notice 对配置来源与校验的处理，neo 先补最小可用配置闭环：`neo config show` 默认输出 merged 配置并脱敏 API key、token、secret、password 等敏感字段；可用 `--source user|project|merged` 查看不同来源；`neo config set <path> <value>` 默认写入用户配置，也支持 `--scope project` 写入 `neo-agent.config.json`。
+
+没有直接照搬 CC-Source 的 managed settings、MDM/policy、drop-in 目录和复杂 setting source 优先级。原因是 neo 当前是个人 agent，先需要简单、可审计、不会泄露密钥的配置管理。写入前会把 defaults/user/project 合并后过完整 schema 校验，非法值不会落盘；后续如果补企业/团队共享配置，再按 CC-Source 的 setting source 和 policy 体系升级。
 
 ### 2026-05-24：开发过程以 CC-Source 对应功能为核心参考
 

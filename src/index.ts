@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { initConfigFile, loadConfig } from './config.js';
+import { setConfigValue, showConfig } from './configCommands.js';
 import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
 import { startRepl } from './terminal/repl.js';
@@ -39,6 +40,40 @@ program
   .action(async () => {
     const filePath = await initConfigFile();
     console.log(filePath);
+  });
+
+const configCommand = program
+  .command('config')
+  .description('查看和修改 neo-agent 配置');
+
+configCommand
+  .command('show')
+  .description('显示配置，默认脱敏输出')
+  .option('--source <merged|user|project>', '配置来源，默认 merged', 'merged')
+  .option('--show-secrets', '显示未脱敏配置，请谨慎使用')
+  .action(async (options: { source: string; showSecrets?: boolean }) => {
+    const source = parseConfigSource(options.source);
+    const result = await showConfig({
+      source,
+      redacted: !options.showSecrets
+    });
+    if (result.path) console.error(chalk.gray(`${result.source}: ${result.path}`));
+    else console.error(chalk.gray('source=merged'));
+    console.log(JSON.stringify(result.config, null, 2));
+  });
+
+configCommand
+  .command('set')
+  .description('设置用户或项目配置，例如 neo config set web.maxToolRounds 8')
+  .argument('<keyPath>', '点号分隔的配置路径')
+  .argument('<value>', '配置值，支持 true/false/数字/JSON 数组或对象/字符串')
+  .option('--scope <user|project>', '写入位置，默认 user', 'user')
+  .action(async (keyPath: string, value: string, options: { scope: string }) => {
+    const scope = parseConfigScope(options.scope);
+    const result = await setConfigValue({ keyPath, rawValue: value, scope });
+    console.log(chalk.green(`已更新配置：${result.keyPath}`));
+    console.log(chalk.gray(`scope=${result.scope}`));
+    console.log(chalk.gray(result.path));
   });
 
 program
@@ -613,6 +648,16 @@ function parseSkillScope(input: string | undefined): SkillScope | undefined {
   if (!input) return undefined;
   if (input === 'user' || input === 'project') return input;
   throw new Error(`无效 scope：${input}，只能是 user 或 project。`);
+}
+
+function parseConfigScope(input: string): 'user' | 'project' {
+  if (input === 'user' || input === 'project') return input;
+  throw new Error(`无效 scope：${input}，只能是 user 或 project。`);
+}
+
+function parseConfigSource(input: string): 'merged' | 'user' | 'project' {
+  if (input === 'merged' || input === 'user' || input === 'project') return input;
+  throw new Error(`无效 source：${input}，只能是 merged、user 或 project。`);
 }
 
 async function openEditorOrPrintPath(filePath: string): Promise<void> {
