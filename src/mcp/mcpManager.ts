@@ -1,10 +1,30 @@
 import type { AppConfig } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 
+export type McpToolDetail = {
+  serverName: string;
+  toolName: string;
+  fullName: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+};
+
 type ConnectedServer = {
   name: string;
   client: {
-    listTools: () => Promise<{ tools?: Array<{ name: string; description?: string }> }>;
+    listTools: () => Promise<{ tools?: Array<{
+      name: string;
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+      annotations?: {
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        openWorldHint?: boolean;
+      };
+    }> }>;
     callTool: (input: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown>;
     close?: () => Promise<void>;
   };
@@ -54,11 +74,26 @@ export class McpManager {
   }
 
   async listTools(): Promise<string[]> {
-    const output: string[] = [];
+    const details = await this.listToolDetails();
+    const output = details.map(tool => `${tool.serverName}.${tool.toolName}${tool.description ? ` - ${tool.description}` : ''}`);
+    return output;
+  }
+
+  async listToolDetails(): Promise<McpToolDetail[]> {
+    const output: McpToolDetail[] = [];
     for (const server of this.servers.values()) {
       const result = await server.client.listTools();
       for (const tool of result.tools ?? []) {
-        output.push(`${server.name}.${tool.name}${tool.description ? ` - ${tool.description}` : ''}`);
+        output.push({
+          serverName: server.name,
+          toolName: tool.name,
+          fullName: buildMcpToolName(server.name, tool.name),
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          readOnlyHint: tool.annotations?.readOnlyHint,
+          destructiveHint: tool.annotations?.destructiveHint,
+          openWorldHint: tool.annotations?.openWorldHint
+        });
       }
     }
     this.logger?.debug('mcp.tools.list', { connectedServers: this.servers.size, toolCount: output.length });
@@ -79,4 +114,12 @@ export class McpManager {
     }
     this.servers.clear();
   }
+}
+
+export function buildMcpToolName(serverName: string, toolName: string): string {
+  return `mcp__${normalizeNameForMCP(serverName)}__${normalizeNameForMCP(toolName)}`;
+}
+
+function normalizeNameForMCP(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 }

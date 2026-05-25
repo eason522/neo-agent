@@ -101,11 +101,12 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
   ) {}
 
   definitions(): ChatToolDefinition[] {
+    if (!this.isEnabled()) return [];
     return createWebToolDefinitions();
   }
 
   canExecute(name: string): boolean {
-    return name === WEB_SEARCH_TOOL_NAME || name === WEB_FETCH_TOOL_NAME;
+    return this.isEnabled() && (name === WEB_SEARCH_TOOL_NAME || name === WEB_FETCH_TOOL_NAME);
   }
 
   async execute(call: ChatToolCall): Promise<WebToolResult> {
@@ -189,6 +190,10 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
         failedCount: response.failedResults.length
       }
     };
+  }
+
+  private isEnabled(): boolean {
+    return this.config.web.autoSearch && this.config.web.toolLoopEnabled && Boolean(this.config.web.apiKey);
   }
 }
 

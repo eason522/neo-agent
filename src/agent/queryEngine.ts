@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolDefinition, TextModelKind, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolDefinition, McpToolCallRecord, TextModelKind, ToolCallRecord, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
@@ -6,6 +6,7 @@ import type { ToolRunner } from '../tools/tool.js';
 export type QueryEngineResult = {
   text: string;
   webToolCalls: WebToolCallRecord[];
+  mcpToolCalls: McpToolCallRecord[];
 };
 
 type QueryEngineOptions = {
@@ -15,7 +16,7 @@ type QueryEngineOptions = {
 export class QueryEngine {
   constructor(
     private readonly models: ModelRegistry,
-    private readonly tools: ToolRunner<WebToolCallRecord>[],
+    private readonly tools: ToolRunner<ToolCallRecord>[],
     private readonly logger: Logger,
     private readonly options: QueryEngineOptions
   ) {}
@@ -27,13 +28,16 @@ export class QueryEngine {
   async run(modelKind: TextModelKind, messages: ChatMessage[]): Promise<QueryEngineResult> {
     const model = this.models.get(modelKind);
     const loopMessages = messages.map(message => ({ ...message }));
+    await Promise.all(this.tools.map(tool => tool.refresh?.() ?? Promise.resolve()));
     const toolDefinitions = this.toolDefinitions();
     const webToolCalls: WebToolCallRecord[] = [];
+    const mcpToolCalls: McpToolCallRecord[] = [];
 
     if (toolDefinitions.length === 0) {
       return {
         text: await model.chat({ messages: loopMessages }),
-        webToolCalls
+        webToolCalls,
+        mcpToolCalls
       };
     }
 
@@ -45,7 +49,7 @@ export class QueryEngine {
       });
 
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls };
+        return { text: response.content, webToolCalls, mcpToolCalls };
       }
 
       loopMessages.push({
@@ -75,7 +79,10 @@ export class QueryEngine {
 
         try {
           const result = await runner.execute(toolCall);
-          if (result.record) webToolCalls.push(result.record);
+          if (result.record) {
+            if (isMcpRecord(result.record)) mcpToolCalls.push(result.record);
+            else webToolCalls.push(result.record);
+          }
           loopMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -103,7 +110,7 @@ export class QueryEngine {
 
     this.logger.warn('tool.max_rounds_reached', {
       maxToolRounds: this.options.maxToolRounds,
-      toolCallCount: webToolCalls.length
+      toolCallCount: webToolCalls.length + mcpToolCalls.length
     });
     const finalResponse = await model.chatWithTools({
       messages: [
@@ -115,10 +122,14 @@ export class QueryEngine {
       ],
       toolChoice: 'none'
     });
-    return { text: finalResponse.content, webToolCalls };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls };
   }
 
-  private findRunner(name: string): ToolRunner<WebToolCallRecord> | undefined {
+  private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
     return this.tools.find(tool => tool.canExecute(name));
   }
+}
+
+function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
+  return 'serverName' in record && 'toolName' in record;
 }

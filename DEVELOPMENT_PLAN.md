@@ -22,7 +22,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MiMo 图片识别预分析，再交给文本模型推理
 - 本地记忆存储，并支持 OpenViking 检索回退
 - skill 发现和自动创建的基础框架
-- MCP stdio server 连接基础框架
+- MCP stdio server 连接基础框架，已连接工具会以 `mcp__server__tool` 形式进入 `QueryEngine`
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 严格参考 CC-Source 分层结构重写的 system prompt
@@ -118,7 +118,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 从 `NeoAgent` 中拆出最小 `QueryEngine` 和通用 `ToolRunner` 接口，避免工具循环继续散落在 agent 外壳里
 - [ ] 为联网工具补齐更完整的权限/域名策略：允许/拒绝域名、私有地址保护、可持久化规则
 - [ ] 为 tool loop 添加更完整的工具结果摘要、失败恢复和 UI 可见状态
-- [ ] 为 MCP 工具执行添加安全调用协议
+- [x] 将已连接 MCP 工具接入 `QueryEngine` 标准 tool loop，并采用 CC-Source 风格 `mcp__server__tool` 命名
+- [ ] 为 MCP 工具执行添加安全调用协议和权限确认
 - [ ] 针对高风险工具添加权限确认
 - [ ] 添加 MCP 配置命令：添加、删除、列表、测试
 - [ ] 添加工具结果日志，并做好脱敏
@@ -164,7 +165,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，但还缺 token 估算和 auto compact。 | M5 添加自动 compact，避免只靠字符预算裁剪。 |
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌。 | 继续补权限/域名策略、工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
-| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool` | 不充分。当前只连接和列出 MCP，尚未纳入标准 tool loop 和权限流。 | M4 必须把 MCP 调用接入 `ToolRunner`，并参考 CC-Source 的权限与 deferred tool 设计。 |
+| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，但还缺权限确认、deferred ToolSearch、资源读取工具和更完整的安全策略。 | M4 继续补权限与 deferred tool 设计。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
@@ -172,7 +173,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏，但缺工具结果摘要、成本/usage、结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
 | vision | 附件处理、图片消息、文件读取限制 | 部分符合。MiMo 预分析适合 neo-agent 模型组合，但不是 CC-Source 原生多模态路径。 | 后续补附件大小限制、缓存、截断说明和测试。 |
 
-审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层。仍不充分的模块主要是 MCP、sub-agent、REPL、自动 compact 和 skill 生命周期，它们已经进入 M3/M4/M5 的后续校正任务；开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
+审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具接入该 loop。仍不充分的模块主要是 sub-agent、REPL、自动 compact 和 skill 生命周期；MCP 仍需继续补权限确认、deferred ToolSearch 和资源读取工具。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
 
 ## 决策记录
 
@@ -261,6 +262,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：主 agent loop 拆出最小 QueryEngine / ToolRunner
 
 回顾已开发模块时发现，联网 tool loop 虽然行为上接近 CC-Source，但实现仍放在 `NeoAgent` 内部，和 CC-Source 的 `QueryEngine.ts`、`query.ts`、`Tool.ts` 分层不一致。已立即拆出 `src/agent/queryEngine.ts` 和 `src/tools/tool.ts`：`NeoAgent` 负责组装记忆、skill、vision、system prompt 和 transcript；`QueryEngine` 负责模型循环、工具调用、工具结果回灌和轮次上限；具体工具通过 `ToolRunner` 暴露 schema 和执行逻辑。后续 MCP、文件系统、skill 工具都应进入这个工具循环，不再散落在 `NeoAgent` 主流程里。
+
+### 2026-05-25：MCP 工具进入 QueryEngine，但权限系统仍未完成
+
+参考 CC-Source 的 `MCPTool`、`services/mcp/client.ts` 和 `services/mcp/mcpStringUtils.ts`，neo 已把 MCP 工具从“只能列出/手动调用”推进到标准 tool loop：连接后的 MCP tools 会被转换为 OpenAI-compatible function tools，命名采用 `mcp__server__tool`，输入 schema 来自 MCP `listTools()`，模型可在 `QueryEngine` 中直接调用，结果作为 `role=tool` 回灌。当前仍是最小实现：还没有 CC-Source 那套权限确认、always allow/deny/ask 规则、deferred ToolSearch、MCP resource 工具和 URL elicitation retry。所以下一阶段仍要继续完善 MCP 安全调用协议。
 
 ## 恢复开发检查清单
 

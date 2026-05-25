@@ -5,6 +5,7 @@ import { VisionAnalyzer } from './vision/visionAnalyzer.js';
 import { MemoryService } from './memory/memoryService.js';
 import { SkillManager } from './skills/skillManager.js';
 import { McpManager } from './mcp/mcpManager.js';
+import { getMcpToolPrompt, McpToolRunner } from './mcp/mcpToolRunner.js';
 import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
 import { loadSoul } from './prompts/soul.js';
@@ -32,6 +33,7 @@ export class NeoAgent {
   private readonly vision: VisionAnalyzer;
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
+  private readonly mcpToolRunner: McpToolRunner;
   private readonly queryEngine: QueryEngine;
 
   constructor(readonly config: AppConfig) {
@@ -41,11 +43,12 @@ export class NeoAgent {
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
+    this.mcpToolRunner = new McpToolRunner(this.mcp);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.webToolRunner = new WebToolRunner(config, this.web);
-    this.queryEngine = new QueryEngine(this.models, [this.webToolRunner], this.logger, {
+    this.queryEngine = new QueryEngine(this.models, [this.webToolRunner, this.mcpToolRunner], this.logger, {
       maxToolRounds: config.web.maxToolRounds
     });
     this.router = new ModelRouter(config);
@@ -104,13 +107,14 @@ export class NeoAgent {
       hasWebContext: Boolean(webContext),
       webToolLoop: useWebToolLoop
     });
-    const systemPrompt = this.withWebToolPrompt(buildSystemPrompt({
+    const useToolLoop = useWebToolLoop || mcpTools.length > 0;
+    const systemPrompt = this.withToolPrompt(buildSystemPrompt({
       memories,
       skills: matchedSkills,
       mcpTools,
       soul,
       modelName: this.config.models[decision.modelKind].model
-    }), useWebToolLoop);
+    }), useToolLoop);
     const userContent = [
       visionContext ? `Vision context:\n${visionContext}` : '',
       webContext ? `Web context:\n${formatWebContext(webContext, this.config.web.maxContextChars)}\n\n使用要求：如果你使用了 Web context，请在回答末尾列出“来源”，包含关键 URL 和联网时间 ${webContext.searchedAt}。不要编造来源。` : '',
@@ -124,9 +128,9 @@ export class NeoAgent {
     const historyStats = this.conversationHistory.stats();
 
     try {
-      const { text, webToolCalls } = useWebToolLoop
+      const { text, webToolCalls, mcpToolCalls } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages)
-        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [], mcpToolCalls: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -151,6 +155,13 @@ export class NeoAgent {
           resultCount: call.resultCount,
           failedCount: call.failedCount,
           searchedAt: call.searchedAt
+        })),
+        mcpToolCalls: mcpToolCalls.map(call => ({
+          name: call.name,
+          serverName: call.serverName,
+          toolName: call.toolName,
+          resultChars: call.resultChars,
+          durationMs: call.durationMs
         }))
       });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
@@ -172,6 +183,7 @@ export class NeoAgent {
         historyChars: historyStats.charCount,
         hasWebContext: Boolean(webContext),
         webToolCallCount: webToolCalls.length,
+        mcpToolCallCount: mcpToolCalls.length,
         durationMs: Date.now() - start
       });
       return {
@@ -181,7 +193,8 @@ export class NeoAgent {
         memories,
         skills: matchedSkills,
         webContext,
-        webToolCalls
+        webToolCalls,
+        mcpToolCalls
       };
     } catch (error) {
       this.logger.error('agent.ask.error', error, { durationMs: Date.now() - start });
@@ -204,11 +217,12 @@ export class NeoAgent {
     return this.config.web.autoSearch && this.config.web.toolLoopEnabled && Boolean(this.config.web.apiKey);
   }
 
-  private withWebToolPrompt(systemPrompt: string, enabled: boolean): string {
+  private withToolPrompt(systemPrompt: string, enabled: boolean): string {
     if (!enabled) return systemPrompt;
     return [
       systemPrompt,
-      getWebToolPrompt()
+      getWebToolPrompt(),
+      getMcpToolPrompt()
     ].join('\n\n');
   }
 

@@ -176,6 +176,7 @@ export type AgentResponse = {
   visionContext?: string;
   webContext?: WebContext;
   webToolCalls?: WebToolCallRecord[];
+  mcpToolCalls?: McpToolCallRecord[];
   memories: MemoryHit[];
   skills: Skill[];
 };
@@ -188,6 +189,16 @@ export type WebToolCallRecord = {
   resultCount: number;
   failedCount?: number;
 };
+
+export type McpToolCallRecord = {
+  name: string;
+  serverName: string;
+  toolName: string;
+  resultChars: number;
+  durationMs: number;
+};
+
+export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord;
 
 export type WebSearchResult = {
   title: string;

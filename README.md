@@ -8,7 +8,7 @@
 - 图片智能路由：输入包含 `@image:/path/a.png` 或 `@/path/a.png` 时，先调用 `mimo-v2.5` 生成视觉 primitives，再交给 DeepSeek 推理。
 - 记忆功能：本地 `~/.neo-agent/memory/memories.json` 为默认可靠存储，按 `preference/project_fact/workflow/session_summary` 分类，并可在 `hybrid/openviking` 模式下尝试读取 OpenViking。
 - skill 功能：`~/.neo-agent/skills/*/SKILL.md`，会按触发词匹配；重复任务达到阈值后会自动创建 skill。
-- MCP：支持在配置中声明 stdio MCP server，并列出/调用工具的基础能力。
+- MCP：支持在配置中声明 stdio MCP server；已连接 MCP 工具会以 `mcp__server__tool` 形式进入模型 tool loop。
 - sub-agent：`/agent <task>` 用小模型执行聚焦子任务。
 - 灵魂设定：`SOUL.md` 定义 neo 的长期人格、风格和与你的协作关系，并会进入 system prompt。
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。

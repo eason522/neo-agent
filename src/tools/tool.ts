@@ -6,6 +6,7 @@ export type ToolExecutionResult<TRecord = unknown> = {
 };
 
 export type ToolRunner<TRecord = unknown> = {
+  refresh?(): Promise<void>;
   definitions(): ChatToolDefinition[];
   canExecute(name: string): boolean;
   execute(call: ChatToolCall): Promise<ToolExecutionResult<TRecord>>;

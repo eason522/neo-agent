@@ -56,6 +56,12 @@ test('联网工具定义符合 tool loop 入口', async () => {
   }
 });
 
+test('MCP 工具命名沿用 CC-Source 风格', async () => {
+  const { buildMcpToolName } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpManager.js')).href);
+  const name = buildMcpToolName('github server', 'create issue');
+  assertIncludes(name, 'mcp__github_server__create_issue');
+});
+
 test('自动联网规划能识别时效问题和追问', async () => {
   const { planWebUse } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webPlanner.js')).href);
   const visitPlan = planWebUse('普京何时来我国访问呢？结束访问了吗？', true);
