@@ -9,6 +9,14 @@ import { Logger } from './logging/logger.js';
 import { TranscriptService, tailFile } from './transcript/transcriptService.js';
 import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch, TavilyClient } from './web/tavilyClient.js';
+import {
+  addConfiguredMcpServer,
+  formatMcpServerEntry,
+  listConfiguredMcpServers,
+  parseEnvPairs,
+  removeConfiguredMcpServer,
+  testConfiguredMcpServers
+} from './mcp/mcpConfigCommands.js';
 
 const program = new Command();
 
@@ -157,6 +165,84 @@ webCommand
     }
   });
 
+const mcpCommand = program
+  .command('mcp')
+  .description('管理 MCP server 配置');
+
+mcpCommand
+  .command('list')
+  .description('列出已配置的 MCP server')
+  .option('--json', '输出 JSON')
+  .action(async (options: { json?: boolean }) => {
+    const { filePath, entries } = await listConfiguredMcpServers();
+    if (options.json) {
+      console.log(JSON.stringify({ filePath, servers: entries }, null, 2));
+      return;
+    }
+    console.log(chalk.gray(filePath));
+    if (entries.length === 0) {
+      console.log(chalk.gray('没有配置 MCP server。使用 `neo mcp add <name> <command> [args...]` 添加。'));
+      return;
+    }
+    for (const entry of entries) console.log(formatMcpServerEntry(entry));
+  });
+
+mcpCommand
+  .command('add')
+  .description('添加 stdio MCP server')
+  .argument('<name>', 'server 名称')
+  .argument('<command>', '启动命令')
+  .argument('[args...]', '启动参数')
+  .allowUnknownOption(true)
+  .option('-e, --env <pair>', '环境变量 KEY=VALUE，可重复', collectOption, [])
+  .option('--disabled', '添加后先禁用')
+  .action(async (name: string, command: string, args: string[], options: { env: string[]; disabled?: boolean }) => {
+    const result = await addConfiguredMcpServer({
+      name,
+      command,
+      args,
+      env: parseEnvPairs(options.env),
+      disabled: options.disabled
+    });
+    console.log(chalk.green(`已添加 MCP server：${name}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(formatMcpServerEntry({ name, server: result.server }));
+  });
+
+mcpCommand
+  .command('remove')
+  .description('删除 MCP server 配置')
+  .argument('<name>', 'server 名称')
+  .action(async (name: string) => {
+    const result = await removeConfiguredMcpServer(name);
+    if (!result.removed) {
+      console.log(chalk.yellow(`没有找到 MCP server：${name}`));
+      return;
+    }
+    console.log(chalk.green(`已删除 MCP server：${name}`));
+    console.log(chalk.gray(result.filePath));
+  });
+
+mcpCommand
+  .command('test')
+  .description('测试已配置 MCP server 连接')
+  .argument('[name]', 'server 名称；不填则测试所有启用的 server')
+  .action(async (name?: string) => {
+    const results = await testConfiguredMcpServers(name);
+    if (results.length === 0) {
+      console.log(chalk.gray('没有启用的 MCP server。'));
+      return;
+    }
+    for (const result of results) {
+      if (result.status === 'connected') {
+        console.log(`${chalk.green('✓')} ${result.name} connected, tools=${result.toolCount ?? 0}`);
+      } else {
+        console.log(`${chalk.red('x')} ${result.name} failed: ${result.error}`);
+      }
+    }
+    if (results.some(result => result.status === 'failed')) process.exitCode = 1;
+  });
+
 webCommand
   .command('extract')
   .description('使用 Tavily 提取网页正文')
@@ -273,4 +359,9 @@ function parseListOption(input: string | undefined): string[] | undefined {
   if (!input) return undefined;
   const items = input.split(',').map(item => item.trim()).filter(Boolean);
   return items.length > 0 ? items : undefined;
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
 }

@@ -23,6 +23,7 @@ test('显示帮助', async () => {
   assertIncludes(result.stdout, 'doctor');
   assertIncludes(result.stdout, 'dream');
   assertIncludes(result.stdout, 'web');
+  assertIncludes(result.stdout, 'mcp');
   assertIncludes(result.stdout, 'transcripts');
 });
 
@@ -181,6 +182,25 @@ test('doctor 缺 key 时失败并给出建议', async () => {
   assertIncludes(result.stdout, 'neo doctor 诊断结果');
   assertIncludes(result.stdout, '缺少 API key');
   assertIncludes(result.stdout, '设置 DEEPSEEK_API_KEY');
+});
+
+test('MCP 配置命令能添加、列出和删除 server', async () => {
+  const add = await run(['mcp', 'add', '--env', 'TOKEN=secret', 'demo', '--', 'node', 'server.js', '--flag']);
+  assertIncludes(add.stdout, '已添加 MCP server：demo');
+  assertIncludes(add.stdout, 'env=1');
+
+  const list = await run(['mcp', 'list']);
+  assertIncludes(list.stdout, 'demo: node server.js --flag env=1');
+
+  const json = await run(['mcp', 'list', '--json']);
+  assertIncludes(json.stdout, '"name": "demo"');
+  assertIncludes(json.stdout, '"TOKEN": "secret"');
+
+  const remove = await run(['mcp', 'remove', 'demo']);
+  assertIncludes(remove.stdout, '已删除 MCP server：demo');
+
+  const empty = await run(['mcp', 'list']);
+  assertIncludes(empty.stdout, '没有配置 MCP server');
 });
 
 test('REPL 常用命令不触发模型也能运行', async () => {

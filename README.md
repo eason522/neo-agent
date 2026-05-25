@@ -170,6 +170,16 @@ npm run smoke
 
 ## MCP 配置示例
 
+可以用命令管理用户级 MCP 配置：
+
+```bash
+neo mcp list
+neo mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /home/eason
+neo mcp add --env GITHUB_TOKEN=xxx github -- npx -y @modelcontextprotocol/server-github
+neo mcp test filesystem
+neo mcp remove filesystem
+```
+
 在 `~/.neo-agent/config.json` 里添加：
 
 ```json
