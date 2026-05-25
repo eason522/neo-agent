@@ -708,7 +708,7 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   const parts = [
     `模型=${turn.modelKind}`,
     `工具=${toolCount}`,
-    `耗时=${turn.durationMs}ms`
+    `耗时=${formatElapsedTime(turn.durationMs)}`
   ];
   const detail = [
     turn.webToolCalls > 0 ? `web=${turn.webToolCalls}` : '',
@@ -718,6 +718,24 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   ].filter(Boolean);
   if (detail.length > 0) parts.push(detail.join(','));
   return chalk.gray(`status ${parts.join(' ')}`);
+}
+
+function formatElapsedTime(durationMs: number): string {
+  const safeMs = Math.max(0, Math.round(durationMs));
+  if (safeMs < 1000) return `${safeMs}ms`;
+
+  const hours = Math.floor(safeMs / 3_600_000);
+  const minutes = Math.floor((safeMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((safeMs % 60_000) / 1000);
+  const milliseconds = safeMs % 1000;
+  const parts: string[] = [];
+
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || hours > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  if (hours === 0 && minutes === 0 && milliseconds > 0) parts.push(`${milliseconds}ms`);
+
+  return parts.join('');
 }
 
 function printReplStatus(agent: NeoAgent, state: ReplState): void {
