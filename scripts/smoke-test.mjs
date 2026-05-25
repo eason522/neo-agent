@@ -63,6 +63,40 @@ test('初始化配置', async () => {
   assertIncludes(config, '"retryBaseDelayMs"');
 });
 
+test('图片附件解析会校验本地文件并推断 mime', async () => {
+  const { extractImageAttachments } = await import(pathToFileURL(path.join(root, 'dist', 'input', 'attachments.js')));
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-attachments-'));
+  const jpegPath = path.join(projectDir, 'photo.png');
+  const fakeImagePath = path.join(projectDir, 'fake.png');
+  const hugeImagePath = path.join(projectDir, 'huge.png');
+
+  await writeFile(jpegPath, Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00]));
+  await writeFile(fakeImagePath, 'not an image', 'utf8');
+  await writeFile(hugeImagePath, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(4 * 1024 * 1024)
+  ]));
+
+  const previousCwd = process.cwd();
+  process.chdir(projectDir);
+  try {
+    const local = extractImageAttachments('请看 @photo.png 并说明');
+    if (local.attachments.length !== 1) throw new Error('应解析出一个本地图片附件');
+    if (local.attachments[0].mimeType !== 'image/jpeg') throw new Error(`应根据文件头推断 jpeg，实际 ${local.attachments[0].mimeType}`);
+    assertIncludes(local.text, '请看');
+
+    const remote = extractImageAttachments('读取 @https://example.com/a.webp?token=secret');
+    if (remote.attachments[0].mimeType !== 'image/webp') throw new Error(`URL mime 推断错误：${remote.attachments[0].mimeType}`);
+
+    assertThrows(() => extractImageAttachments('坏图 @fake.png'), '文件不是支持的图片格式');
+    assertThrows(() => extractImageAttachments('缺图 @missing.png'), '图片文件不存在');
+    assertThrows(() => extractImageAttachments('大图 @huge.png'), '图片文件过大');
+  } finally {
+    process.chdir(previousCwd);
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   await run(['config:init']);
   const setKey = await run(['config', 'set', 'models.main.apiKey', 'test-secret-123456']);

@@ -526,12 +526,12 @@ async function runAgentTurn(
   state: ReplState,
   setActiveController: (controller: AbortController | undefined) => void
 ): Promise<void> {
-  const { text, attachments } = extractImageAttachments(line);
-  output.write(chalk.gray('thinking...\n'));
   const startedAt = Date.now();
   const turnController = new AbortController();
   setActiveController(turnController);
   try {
+    const { text, attachments } = extractImageAttachments(line);
+    output.write(chalk.gray('thinking...\n'));
     const response = await agent.ask(text, attachments, { signal: turnController.signal });
     const durationMs = Date.now() - startedAt;
     state.lastTurn = {

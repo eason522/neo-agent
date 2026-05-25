@@ -222,7 +222,7 @@ M4 后续硬化项：
 
 ### P1：稳定性、安全和可调试性
 
-- [ ] 为 `extractImageAttachments` 添加测试，覆盖不存在文件、非图片、大小限制和 mime 推断。
+- [x] 为 `extractImageAttachments` 添加测试，覆盖不存在文件、非图片、大小限制和 mime 推断。
 - [ ] 为 `Logger` 脱敏逻辑添加测试，覆盖 API key、URL query、MCP 参数、工具结果摘要。
 - [ ] 为记忆搜索排序添加测试，并改进相关性评分。
 - [ ] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
@@ -547,6 +547,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 用户测试发现两类问题：启动 banner 输出了过多终端协议说明；粘贴两行长文本时出现 prompt 重复刷屏，并且粘贴末尾换行会被当成提交。修复前对照 CC-Source `parse-keypress.ts`、`hooks/useTextInput.ts`、`utils/Cursor.ts` 和 Ink 渲染层：CC-Source 会把 bracketed paste 汇总为一次 paste key，普通多字符 paste 中的 `\r` 会转为 `\n`，同时按终端列宽和 wrap 后屏幕行数管理光标与重绘。neo 已按这个方向修正：启动 banner 只保留简短入口提示，终端细节移到 `/status`/`/help`；bracketed paste 支持跨 chunk 汇总，非 bracketed 的多字符粘贴会归一化换行并去掉末尾单个换行，避免自动提交；输入重绘按 `stdout.columns` 估算实际屏幕行数，防止长行 wrap 后旧内容残留。验证方式：`npm run smoke`、真实 TTY bracketed paste 两行长文本、真实 TTY 普通 CR 分隔粘贴，两者均未自动提交且未重复刷 prompt。
 
 继续参考 CC-Source `hooks/usePasteHandler.ts`、`components/PromptInput/PromptInput.tsx` 和 `history.ts` 的大段粘贴处理：CC-Source 超过 `PASTE_THRESHOLD=800` 或行数超过输入框展示预算时，会在输入框里插入粘贴引用，旁路保存完整内容，提交时再展开。neo 已加入同类机制：大段粘贴或超过两处换行的粘贴在输入框里显示为 `[Pasted Content N chars]`，但回车提交、slash command、transcript 和模型输入拿到的都是完整原文。验证方式：真实 TTY 中 `/remember ` 后粘贴四行文本，输入框只显示 `[Pasted Content 203 chars]`，提交后的 transcript 和 memory 均保存完整四行内容。
+
+### 2026-05-25：P1 附件解析测试和图片校验前移
+
+参考 CC-Source `utils/imagePaste.ts`、`utils/imageResizer.ts`、`utils/imageValidation.ts` 和 `bridge/inboundAttachments.ts`，图片附件不应只靠扩展名进入后续模型链路。neo 的 `extractImageAttachments` 现在会对本地图片做存在性、普通文件、大小和文件头格式校验，并根据文件头推断 `mimeType`；URL 图片仍按 URL pathname 推断 mime，避免查询参数影响扩展名判断。大小限制按 CC-Source API 图片 base64 5MB 上限折算为约 3.75MB 原始文件预算。REPL 的附件解析错误已移入单轮错误处理范围，错误只结束当前请求，不退出 REPL。新增 smoke 测试覆盖：不存在文件、伪装成图片的非图片、本地大图、文件头 mime 推断和带 query 的远程 URL mime 推断。
 
 ## 恢复开发检查清单
 

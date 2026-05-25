@@ -86,11 +86,11 @@ program
     if (options.web === false) config.web.autoSearch = false;
     const agent = new NeoAgent(config);
     await agent.initialize({ scheduledDreams: false });
-    const { text, attachments } = extractImageAttachments(promptParts.join(' '));
     const controller = new AbortController();
     const onSigint = (): void => controller.abort(createAbortError());
     process.once('SIGINT', onSigint);
     try {
+      const { text, attachments } = extractImageAttachments(promptParts.join(' '));
       const response = await agent.ask(text, attachments, { signal: controller.signal });
       console.log(response.text);
       console.error(chalk.gray(`model=${response.modelKind}`));
