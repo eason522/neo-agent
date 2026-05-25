@@ -307,9 +307,14 @@ function buildMarkdownPlan(body: string, overrideName?: string, fallbackName?: s
 function buildZipPlans(bytes: Uint8Array, overrideName?: string): SkillInstallPlan[] {
   if (bytes.byteLength > maxPackageBytes) throw new Error(`skill zip 过大：${bytes.byteLength} bytes，最多 ${maxPackageBytes} bytes。`);
   const unzipped = unzipSync(bytes);
-  const entries = Object.entries(unzipped)
-    .map(([name, data]) => ({ name: normalizeArchivePath(name), data }))
-    .filter(entry => !entry.name.endsWith('/'));
+  const rawEntries = Object.entries(unzipped)
+    .map(([rawName, data]) => ({ rawName, name: normalizeArchivePath(rawName), data }));
+  const normalizedNames = rawEntries.map(entry => entry.name);
+  const entries = rawEntries
+    .filter(entry => entry.name.length > 0)
+    .filter(entry => !entry.rawName.replaceAll('\\', '/').endsWith('/'))
+    .filter(entry => !normalizedNames.some(other => other !== entry.name && other.startsWith(`${entry.name}/`)))
+    .map(entry => ({ name: entry.name, data: entry.data }));
   if (entries.length > maxPackageFiles) throw new Error(`skill zip 文件过多：${entries.length}，最多 ${maxPackageFiles}`);
   for (const entry of entries) {
     if (entry.data.byteLength > maxSinglePackageFileBytes) throw new Error(`skill zip 内文件过大：${entry.name}`);

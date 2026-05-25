@@ -658,6 +658,7 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   const multiZip = path.join(tempHome, 'multi-skills.zip');
   await writeFile(multiZip, Buffer.from(zipSync({
     'skills-main/alpha/SKILL.md': strToU8('---\nname: alpha-skill\ndescription: Alpha skill\ntriggers: alpha\n---\n\n# alpha-skill\n'),
+    'skills-main/alpha/examples/': new Uint8Array(),
     'skills-main/alpha/examples/a.md': strToU8('alpha resource'),
     'skills-main/beta/SKILL.md': strToU8('---\nname: beta-skill\ndescription: Beta skill\ntriggers: beta\n---\n\n# beta-skill\n')
   })));
@@ -667,6 +668,10 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   assertIncludes(installMultiZip.stdout, '已安装 skill：alpha-skill');
   assertIncludes(installMultiZip.stdout, '已安装 skill：beta-skill');
   assertIncludes(installMultiZip.stdout, '共 2 个 skill');
+  const reinstallMultiZip = await run(['skill', 'install', multiZip, '--scope', 'project'], { cwd: multiProject });
+  assertIncludes(reinstallMultiZip.stdout, '已跳过已存在 skill：alpha-skill');
+  assertIncludes(reinstallMultiZip.stdout, '已跳过已存在 skill：beta-skill');
+  assertIncludes(reinstallMultiZip.stdout, '已跳过：共 2 个已存在 skill');
 
   const { buildSkillInstallPlan } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillPackage.js')).href);
   const evilZip = zipSync({
@@ -909,6 +914,9 @@ test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () =>
       if (calls === 1) {
         const installTool = options.tools.find(tool => tool.function.name === 'InstallSkillPackage');
         if (!installTool) throw new Error(`应该暴露 InstallSkillPackage 工具：${JSON.stringify(options.tools)}`);
+        if ('dry_run' in installTool.function.parameters.properties) {
+          throw new Error(`对话内安装工具不应该向模型暴露 dry_run：${JSON.stringify(installTool)}`);
+        }
         return {
           content: '',
           toolCalls: [{
@@ -944,9 +952,10 @@ test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () =>
   const repeated = await runner.execute({
     id: 'call_install_skill_package_again',
     type: 'function',
-    function: { name: 'InstallSkillPackage', arguments: JSON.stringify({ source: 'skills-main.zip' }) }
+    function: { name: 'InstallSkillPackage', arguments: JSON.stringify({ source: 'skills-main.zip', dry_run: true }) }
   });
   assertIncludes(repeated.content, 'already_installed');
+  assertIncludes(repeated.content, '"installedCount": 0');
   assertIncludes(repeated.content, 'zip-one');
   if (!repeated.terminal) throw new Error('重复安装已存在 skill 时也应该是终止型工具结果。');
 });

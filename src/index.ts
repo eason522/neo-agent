@@ -238,7 +238,13 @@ skillCommand
     const plans = await buildSkillInstallPlans({ source, name: options.name });
     for (const plan of plans) printSkillValidation(plan.validation);
     const results = [];
+    const skipped = [];
     for (const plan of plans) {
+      const existing = !options.overwrite ? await manager.getSkill(plan.name, scope) : undefined;
+      if (existing) {
+        skipped.push(existing);
+        continue;
+      }
       results.push(await installSkillPlan({
         plan,
         targetRoot: manager.skillRoot(scope),
@@ -252,7 +258,13 @@ skillCommand
       console.log(chalk.gray(`scope=${scope} source=${result.sourceType}`));
       console.log(chalk.gray(result.skillFilePath));
     }
+    for (const skill of skipped) {
+      console.log(chalk.yellow(`已跳过已存在 skill：${skill.name}`));
+      console.log(chalk.gray(`scope=${scope}`));
+      console.log(chalk.gray(skill.filePath));
+    }
     if (results.length > 1) console.log(chalk.green(`${action}：共 ${results.length} 个 skill`));
+    if (skipped.length > 0) console.log(chalk.yellow(`已跳过：共 ${skipped.length} 个已存在 skill`));
   });
 
 skillCommand

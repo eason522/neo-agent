@@ -31,8 +31,7 @@ const skillInputSchema = z.object({
 const installSkillPackageInputSchema = z.object({
   source: z.string().min(1),
   scope: z.enum(['project', 'user']).optional(),
-  overwrite: z.boolean().optional(),
-  dry_run: z.boolean().optional()
+  overwrite: z.boolean().optional()
 });
 
 export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
@@ -89,6 +88,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
           '从当前项目目录内的本地 .md、skill 目录、plugin 目录或 .zip 包安装 skill。',
           '当用户明确要求安装、导入、注册 skill 包或 zip 中所有 skill 时使用。',
           '默认安装到项目 scope；除非用户明确要求全局安装，否则不要使用 user scope。',
+          '这是实际安装工具，不是预览工具；用户说“安装”时直接调用，不要先 dry-run。',
           '这个工具会写入 skill 目录，但不会执行 skill 内 shell、hook 或命令片段。'
         ].join('\n'),
         parameters: {
@@ -107,10 +107,6 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
             overwrite: {
               type: 'boolean',
               description: '是否覆盖已有同名 skill。默认 false。'
-            },
-            dry_run: {
-              type: 'boolean',
-              description: '只校验和预览，不写入。默认 false。'
             }
           },
           required: ['source']
@@ -238,7 +234,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
         plan,
         targetRoot,
         overwrite: input.overwrite,
-        dryRun: input.dry_run
+        dryRun: false
       }));
     }
     this.manager.invalidateCache();
@@ -248,7 +244,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
       tool: INSTALL_SKILL_PACKAGE_TOOL_NAME,
       source: path.relative(this.projectRootRealPath!, sourcePath).replaceAll(path.sep, '/'),
       scope,
-      dryRun: Boolean(input.dry_run),
+      dryRun: false,
       status: conflicts.length > 0 && !input.overwrite ? 'installed_missing_skipped_existing' : 'installed',
       installedCount: results.length,
       skippedCount: conflicts.length,
@@ -319,8 +315,8 @@ export function getSkillToolPrompt(skills: Skill[]): string {
     '- 不要只提到某个 skill 却不调用它；不要为内置 CLI 命令调用 Skill。',
     '- 如果当前轮次的工具结果已经返回某个 skill 的正文，直接遵循正文，不要重复调用同一个 skill。',
     '- Skill 工具只读取说明，不执行 shell、hook 或外部动作。',
-    '- 如果用户明确要求安装本地 skill 包、目录、`.md` 或 `.zip`，使用 `InstallSkillPackage` 工具；不要尝试用 Read 读取 zip。',
-    '- `InstallSkillPackage` 默认安装到项目 scope，只有用户明确说全局/用户级安装时才使用 user scope；安装不会执行 skill 内 shell、hook 或命令片段。',
+    '- 如果用户明确要求安装本地 skill 包、目录、`.md` 或 `.zip`，使用 `InstallSkillPackage` 工具；不要尝试用 Read 读取 zip，也不要先做预览。',
+    '- `InstallSkillPackage` 是实际安装工具，默认安装到项目 scope，只有用户明确说全局/用户级安装时才使用 user scope；安装不会执行 skill 内 shell、hook 或命令片段。',
     '',
     '可用 skill：',
     formatSkillsWithinBudget(callableSkills)

@@ -143,6 +143,8 @@ M1 后续对齐债务：
 - [x] 支持对话内通过 `InstallSkillPackage` 工具安装项目目录内 `.md`、目录、plugin 目录和 `.zip` skill 包，zip 可批量安装多个 skill
 - [x] 安装类工具结果标记为终止型结果，成功后直接进入最终回答，避免模型重复调用同一安装工具
 - [x] skill 自动沉淀排除一次性安装、导入、删除、查看等操作型任务；安装工具调用后不触发“创建 skill”建议
+- [x] 对话内安装不再向模型暴露 dry-run，用户说“安装”就真实安装；CLI 和对话安装都支持跳过已存在 skill
+- [x] zip 安装识别并跳过目录占位项，避免资源目录被当作文件导致后续安装失败
 
 ### M4：工具和 MCP 执行
 
@@ -381,6 +383,12 @@ neo 本阶段支持 `neo skill install <pluginDir|plugin.json>` 和 `neo skill v
 继续测试发现，`InstallSkillPackage` 第一次已经成功安装 17 个 skill，但模型又重复调用安装工具，后续因为目录已存在而失败，最终回答误判为安装失败。修复方式不是继续增加重试，而是在 `ToolExecutionResult` 中加入 `terminal` 标记：安装类工具成功或确认已安装后，`QueryEngine` 直接以 `toolChoice=none` 要求模型总结结果，不再开放下一轮工具调用。
 
 同时，`InstallSkillPackage` 在安装前会检查目标 scope 中已存在的 skill。若全部已存在，返回 `already_installed`；若部分已存在，则跳过已有项并安装缺失项，避免用户上次半安装后需要手动清理。skill 自动沉淀也增加了操作型任务过滤：安装、导入、删除、查看、解压、同步这类一次性动作不会触发“创建 skill”建议；如果工具调用中包含 `InstallSkillPackage`，本轮也不会做自动沉淀建议。
+
+### 2026-05-25：用户说安装就安装，不让模型自作主张 dry-run
+
+继续测试发现，模型在用户明确说“安装”时仍自行传入 `dry_run=true`，导致 neo 只预览不写入。修复方式是从对话内 `InstallSkillPackage` 的模型可见 schema 中移除 `dry_run`，并在工具实现中强制真实安装；dry-run 只保留在 CLI `neo skill install --dry-run` 入口。这样自然语言入口符合直觉：用户说安装就是安装，只有命令行显式传 `--dry-run` 才预览。
+
+真实 `skills-main.zip` 还暴露了 zip 目录项兼容问题：部分资源目录会以目录占位项进入 zip，如果先当文件写入，后续创建同名目录会失败。zip 解析现在会在 normalize 前识别并跳过目录项和目录占位项。CLI 安装也统一为“跳过已存在、安装缺失项”，和对话工具保持一致。
 
 ### 2026-05-24：开发过程以 CC-Source 对应功能为核心参考
 
