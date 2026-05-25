@@ -64,7 +64,7 @@ export class NeoAgent {
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.fileToolRunner = new FileToolRunner(process.cwd());
-    this.skillToolRunner = new SkillToolRunner(this.skills);
+    this.skillToolRunner = new SkillToolRunner(this.skills, process.cwd());
     this.webToolRunner = new WebToolRunner(config, this.web);
     this.queryEngine = new QueryEngine(this.models, [this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
       maxToolRounds: config.web.maxToolRounds,
@@ -224,6 +224,7 @@ export class NeoAgent {
           skillName: call.skillName,
           scope: call.scope,
           bodyChars: call.bodyChars,
+          installedCount: call.installedCount,
           resultChars: call.resultChars,
           durationMs: call.durationMs
         })),

@@ -140,6 +140,7 @@ M1 后续对齐债务：
 - [x] 针对重复任务提出 skill 更新建议，支持人工采纳
 - [x] 支持 skill 中引用本目录资源，例如 `${NEO_SKILL_DIR}` / `${CLAUDE_SKILL_DIR}`，并限制可访问范围
 - [x] 明确 skill 安全边界：默认不执行 skill 内 shell 片段；如果后续支持 hooks/命令，必须走权限确认
+- [x] 支持对话内通过 `InstallSkillPackage` 工具安装项目目录内 `.md`、目录、plugin 目录和 `.zip` skill 包，zip 可批量安装多个 skill
 
 ### M4：工具和 MCP 执行
 
@@ -366,6 +367,12 @@ neo 本阶段支持 `neo skill install <pluginDir|plugin.json>` 和 `neo skill v
 参考 CC-Source `tools/SkillTool/SkillTool.ts` 和 `skills/loadSkillsDir.ts`，neo 在 `Skill` tool 返回完整正文时注入 `Base directory for this skill: <skillDir>`，并把 `${NEO_SKILL_DIR}` 和 `${CLAUDE_SKILL_DIR}` 都替换为当前 skill 根目录。这样从 CC-Source 导入的 skill 可以继续使用 `${CLAUDE_SKILL_DIR}`，neo 原生 skill 则使用 `${NEO_SKILL_DIR}`。
 
 本阶段采用“青出于蓝”的保守边界：工具结果只列出 skill 根目录内的非隐藏资源相对路径和大小，不直接读取资源正文，也不允许模型把 skill 目录当作绕过项目文件权限的通道。skill 内 shell、hook 或命令片段仍只是说明文字，不会自动执行；如果未来支持 hooks、命令或专门的 skill resource 读取工具，必须接入 `QueryEngine` 的标准工具事件、权限确认和日志脱敏。
+
+### 2026-05-25：对话内安装 skill 包必须走工具，而不是让模型读 zip
+
+用户测试 `@skills-main.zip 安装这个包里所有skill` 时，neo 只暴露了 `Read` / `Glob` / `Grep`，导致模型尝试读取 zip 文本并失败。根因是 CLI 已有 `neo skill install`，但能力没有进入统一 `QueryEngine` 工具层，违反“功能入口统一 tool 化”的原则。
+
+已补 `InstallSkillPackage` 工具，复用现有 `buildSkillInstallPlans` / `installSkillPlan`，默认只允许读取当前项目目录内的本地来源，默认安装到 project scope，不执行 skill 内 shell/hook。zip 解析也从“只支持单个 `SKILL.md`”升级为“按每个 `SKILL.md` 生成一个安装计划”，支持仓库包里批量安装所有 skill。包级文件数量上限从 100 提高到 1000，以适配 skills 仓库类 zip，同时继续保留包大小、单文件大小、路径穿越和 zip-slip 校验。
 
 ### 2026-05-24：开发过程以 CC-Source 对应功能为核心参考
 

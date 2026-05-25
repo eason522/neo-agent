@@ -270,12 +270,13 @@ export type FileToolCallRecord = {
 };
 
 export type SkillToolCallRecord = {
-  name: 'Skill';
+  name: 'Skill' | 'InstallSkillPackage';
   skillName: string;
   scope: SkillScope;
   bodyChars: number;
   resultChars: number;
   durationMs: number;
+  installedCount?: number;
 };
 
 export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord | SkillToolCallRecord;

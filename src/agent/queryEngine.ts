@@ -198,5 +198,5 @@ function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
 }
 
 function isSkillRecord(record: ToolCallRecord): record is SkillToolCallRecord {
-  return record.name === 'Skill' && 'skillName' in record;
+  return 'skillName' in record && 'scope' in record;
 }

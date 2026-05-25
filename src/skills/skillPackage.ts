@@ -33,7 +33,7 @@ export type SkillInstallResult = SkillInstallPlan & {
 
 const maxSkillFileBytes = 512 * 1024;
 const maxPackageBytes = 5 * 1024 * 1024;
-const maxPackageFiles = 100;
+const maxPackageFiles = 1000;
 const maxSinglePackageFileBytes = 1024 * 1024;
 
 export async function buildSkillInstallPlan(input: {
@@ -55,7 +55,7 @@ export async function buildSkillInstallPlans(input: {
     if (!response.ok) throw new Error(`下载 skill 失败：${response.status} ${response.statusText}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     const pathname = new URL(source).pathname.toLowerCase();
-    if (pathname.endsWith('.zip')) return [buildZipPlan(bytes, input.name)];
+    if (pathname.endsWith('.zip')) return buildZipPlans(bytes, input.name);
     const nameHint = path.basename(pathname, path.extname(pathname)) || undefined;
     return [buildMarkdownPlan(strFromU8(bytes), input.name, nameHint)];
   }
@@ -63,7 +63,7 @@ export async function buildSkillInstallPlans(input: {
   const sourceStat = await stat(source);
   if (sourceStat.isDirectory()) return buildDirectoryOrPluginPlans(source, input.name);
   const bytes = await readFile(source);
-  if (source.toLowerCase().endsWith('.zip')) return [buildZipPlan(new Uint8Array(bytes), input.name)];
+  if (source.toLowerCase().endsWith('.zip')) return buildZipPlans(new Uint8Array(bytes), input.name);
   if (path.basename(source).toLowerCase() === 'plugin.json') return buildPluginPlans(path.dirname(source), input.name);
   return [buildMarkdownPlan(bytes.toString('utf8'), input.name, path.basename(source, path.extname(source)))];
 }
@@ -304,7 +304,7 @@ function buildMarkdownPlan(body: string, overrideName?: string, fallbackName?: s
   };
 }
 
-function buildZipPlan(bytes: Uint8Array, overrideName?: string): SkillInstallPlan {
+function buildZipPlans(bytes: Uint8Array, overrideName?: string): SkillInstallPlan[] {
   if (bytes.byteLength > maxPackageBytes) throw new Error(`skill zip 过大：${bytes.byteLength} bytes，最多 ${maxPackageBytes} bytes。`);
   const unzipped = unzipSync(bytes);
   const entries = Object.entries(unzipped)
@@ -314,12 +314,17 @@ function buildZipPlan(bytes: Uint8Array, overrideName?: string): SkillInstallPla
   for (const entry of entries) {
     if (entry.data.byteLength > maxSinglePackageFileBytes) throw new Error(`skill zip 内文件过大：${entry.name}`);
   }
-  const skillEntry = chooseSkillEntry(entries.map(entry => entry.name));
+  const skillEntries = chooseSkillEntries(entries.map(entry => entry.name), overrideName);
+  return skillEntries.map(skillEntry => buildZipPlanFromEntries(entries, skillEntry, overrideName));
+}
+
+function buildZipPlanFromEntries(entries: Array<{ name: string; data: Uint8Array }>, skillEntry: string, overrideName?: string): SkillInstallPlan {
   const prefix = skillEntry === 'SKILL.md' ? '' : skillEntry.slice(0, -'SKILL.md'.length);
   const body = strFromU8(entries.find(entry => entry.name === skillEntry)!.data);
-  const validation = withOverrideName(validateSkillContent(body, prefix ? prefix.split('/')[0] : undefined), overrideName);
+  const nameHint = prefix ? path.basename(prefix.slice(0, -1)) : undefined;
+  const validation = withOverrideName(validateSkillContent(body, nameHint), overrideName);
   const files = entries
-    .filter(entry => prefix ? entry.name.startsWith(prefix) : !entry.name.includes('/') || entry.name === 'SKILL.md')
+    .filter(entry => prefix ? entry.name.startsWith(prefix) : isRootZipSkillFile(entry.name))
     .map(entry => ({
       relativePath: prefix ? entry.name.slice(prefix.length) : entry.name,
       data: entry.data
@@ -350,14 +355,15 @@ async function findDirectorySkillFile(sourceDir: string): Promise<string> {
   throw new Error('目录中没有找到 SKILL.md。');
 }
 
-function chooseSkillEntry(paths: string[]): string {
+function chooseSkillEntries(paths: string[], overrideName?: string): string[] {
   const matches = paths.filter(item => item === 'SKILL.md' || item.endsWith('/SKILL.md'));
   if (matches.length === 0) throw new Error('zip 中没有找到 SKILL.md。');
-  if (matches.includes('SKILL.md')) return 'SKILL.md';
-  const topLevel = matches.filter(item => item.split('/').length === 2);
-  if (topLevel.length === 1) return topLevel[0]!;
-  if (matches.length === 1) return matches[0]!;
-  throw new Error('zip 中包含多个 SKILL.md，请只打包一个 skill。');
+  if (overrideName && matches.length > 1) throw new Error('zip 中包含多个 SKILL.md，批量安装时不能使用 --name 覆盖名称。');
+  return matches.sort((a, b) => a.localeCompare(b));
+}
+
+function isRootZipSkillFile(input: string): boolean {
+  return !input.includes('/') || input === 'SKILL.md';
 }
 
 function withOverrideName(validation: SkillValidationResult, overrideName?: string): SkillValidationResult {

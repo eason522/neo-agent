@@ -1,4 +1,4 @@
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, Skill, SkillToolCallRecord } from '../types.js';
@@ -6,9 +6,11 @@ import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import { sanitizeName } from '../utils/fs.js';
 import type { SkillManager } from './skillManager.js';
+import { buildSkillInstallPlans, installSkillPlan } from './skillPackage.js';
 import { skillUsageScore } from './skillUsage.js';
 
 export const SKILL_TOOL_NAME = 'Skill';
+export const INSTALL_SKILL_PACKAGE_TOOL_NAME = 'InstallSkillPackage';
 
 const skillListingBudgetChars = 8000;
 const maxListingDescriptionChars = 250;
@@ -26,52 +28,106 @@ const skillInputSchema = z.object({
   args: z.string().optional()
 });
 
+const installSkillPackageInputSchema = z.object({
+  source: z.string().min(1),
+  scope: z.enum(['project', 'user']).optional(),
+  overwrite: z.boolean().optional(),
+  dry_run: z.boolean().optional()
+});
+
 export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
   private skills: Skill[] = [];
+  private projectRootRealPath: string | undefined;
 
-  constructor(private readonly manager: SkillManager) {}
+  constructor(private readonly manager: SkillManager, private readonly projectRoot = process.cwd()) {}
 
   async refresh(): Promise<void> {
-    this.skills = await this.manager.loadSkills();
+    const [skills, projectRootRealPath] = await Promise.all([
+      this.manager.loadSkills(),
+      realpath(this.projectRoot)
+    ]);
+    this.skills = skills;
+    this.projectRootRealPath = projectRootRealPath;
   }
 
   definitions(): ChatToolDefinition[] {
     const callableSkills = this.callableSkills();
-    if (callableSkills.length === 0) return [];
-    return [{
+    const definitions: ChatToolDefinition[] = [];
+    if (callableSkills.length > 0) {
+      definitions.push({
+        type: 'function',
+        function: {
+          name: SKILL_TOOL_NAME,
+          description: [
+            '加载一个已安装 skill 的完整说明，让你在主对话中按该 skill 的流程完成任务。',
+            '当用户任务匹配可用 skill 时，必须先调用这个工具，再基于返回的 SKILL.md 内容继续回答。',
+            '这个工具只读取 skill 内容，不执行 shell、hook 或外部动作。'
+          ].join('\n'),
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              skill: {
+                type: 'string',
+                description: 'skill 名称，可带或不带开头的 /。例如 writer-helper。'
+              },
+              args: {
+                type: 'string',
+                description: '可选。用户给这个 skill 的额外参数或当前任务摘要。'
+              }
+            },
+            required: ['skill']
+          }
+        }
+      });
+    }
+    definitions.push({
       type: 'function',
       function: {
-        name: SKILL_TOOL_NAME,
+        name: INSTALL_SKILL_PACKAGE_TOOL_NAME,
         description: [
-          '加载一个已安装 skill 的完整说明，让你在主对话中按该 skill 的流程完成任务。',
-          '当用户任务匹配可用 skill 时，必须先调用这个工具，再基于返回的 SKILL.md 内容继续回答。',
-          '这个工具只读取 skill 内容，不执行 shell、hook 或外部动作。'
+          '从当前项目目录内的本地 .md、skill 目录、plugin 目录或 .zip 包安装 skill。',
+          '当用户明确要求安装、导入、注册 skill 包或 zip 中所有 skill 时使用。',
+          '默认安装到项目 scope；除非用户明确要求全局安装，否则不要使用 user scope。',
+          '这个工具会写入 skill 目录，但不会执行 skill 内 shell、hook 或命令片段。'
         ].join('\n'),
         parameters: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            skill: {
+            source: {
               type: 'string',
-              description: 'skill 名称，可带或不带开头的 /。例如 writer-helper。'
+              description: '当前项目目录内的来源路径。支持 @skills.zip 或 skills.zip。'
             },
-            args: {
+            scope: {
               type: 'string',
-              description: '可选。用户给这个 skill 的额外参数或当前任务摘要。'
+              enum: ['project', 'user'],
+              description: '安装位置。默认 project；只有用户明确要求全局安装时才用 user。'
+            },
+            overwrite: {
+              type: 'boolean',
+              description: '是否覆盖已有同名 skill。默认 false。'
+            },
+            dry_run: {
+              type: 'boolean',
+              description: '只校验和预览，不写入。默认 false。'
             }
           },
-          required: ['skill']
+          required: ['source']
         }
       }
-    }];
+    });
+    return definitions;
   }
 
   canExecute(name: string): boolean {
-    return name === SKILL_TOOL_NAME && this.callableSkills().length > 0;
+    return (name === SKILL_TOOL_NAME && this.callableSkills().length > 0) || name === INSTALL_SKILL_PACKAGE_TOOL_NAME;
   }
 
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: SkillToolCallRecord }> {
     throwIfAborted(options.signal);
+    if (call.function.name === INSTALL_SKILL_PACKAGE_TOOL_NAME) return this.installSkillPackage(call, options);
+    if (call.function.name !== SKILL_TOOL_NAME) throw new Error(`未知 skill 工具：${call.function.name}`);
     const start = Date.now();
     const input = skillInputSchema.parse(parseJsonObject(call.function.arguments));
     const normalizedName = normalizeSkillName(input.skill);
@@ -134,6 +190,78 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     const safeName = sanitizeName(name);
     return this.skills.find(skill => skill.name === safeName || skill.name === name);
   }
+
+  private async installSkillPackage(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: SkillToolCallRecord }> {
+    throwIfAborted(options.signal);
+    const start = Date.now();
+    const input = installSkillPackageInputSchema.parse(parseJsonObject(call.function.arguments));
+    const sourcePath = await this.resolveProjectSource(input.source);
+    throwIfAborted(options.signal);
+    const plans = await buildSkillInstallPlans({ source: sourcePath });
+    const scope = input.scope ?? 'project';
+    const results = [];
+    for (const plan of plans) {
+      throwIfAborted(options.signal);
+      results.push(await installSkillPlan({
+        plan,
+        targetRoot: this.manager.skillRoot(scope),
+        overwrite: input.overwrite,
+        dryRun: input.dry_run
+      }));
+    }
+    this.manager.invalidateCache();
+    this.skills = await this.manager.loadSkills();
+    const installedNames = results.map(result => result.name);
+    const content = JSON.stringify({
+      tool: INSTALL_SKILL_PACKAGE_TOOL_NAME,
+      source: path.relative(this.projectRootRealPath!, sourcePath).replaceAll(path.sep, '/'),
+      scope,
+      dryRun: Boolean(input.dry_run),
+      installedCount: results.length,
+      skills: results.map(result => ({
+        name: result.name,
+        sourceType: result.sourceType,
+        installed: result.installed,
+        targetDir: result.targetDir,
+        skillFilePath: result.skillFilePath,
+        warnings: result.validation.warnings,
+        errors: result.validation.errors
+      })),
+      instruction: [
+        '安装完成后，请向用户汇总安装了哪些 skill、安装 scope 和是否有 warning。',
+        '不要声称执行了 skill 内 shell、hook 或命令片段；安装只写入文件。'
+      ].join(' ')
+    }, null, 2);
+
+    return {
+      content,
+      record: {
+        name: INSTALL_SKILL_PACKAGE_TOOL_NAME,
+        skillName: installedNames.join(',') || 'none',
+        scope,
+        bodyChars: 0,
+        resultChars: content.length,
+        durationMs: Date.now() - start,
+        installedCount: results.length
+      }
+    };
+  }
+
+  private async resolveProjectSource(input: string): Promise<string> {
+    const source = input.trim().replace(/^@+/, '');
+    if (/^https?:\/\//i.test(source)) {
+      throw new Error('对话内安装 skill 只允许当前项目目录内的本地文件；URL 安装请使用 CLI `neo skill install <url>`。');
+    }
+    const root = this.projectRootRealPath ?? await realpath(this.projectRoot);
+    const absolutePath = path.isAbsolute(source) ? source : path.resolve(this.projectRoot, source);
+    const sourceStat = await stat(absolutePath);
+    if (!sourceStat.isFile() && !sourceStat.isDirectory()) throw new Error(`skill 来源必须是文件或目录：${source}`);
+    const realSource = await realpath(absolutePath);
+    if (!isInside(root, realSource)) {
+      throw new Error('对话内安装 skill 只允许读取当前项目目录内的来源路径。');
+    }
+    return realSource;
+  }
 }
 
 export function getSkillToolPrompt(skills: Skill[]): string {
@@ -142,7 +270,8 @@ export function getSkillToolPrompt(skills: Skill[]): string {
     return [
       '# Skill 工具',
       '- 当前没有可由模型调用的 skill。',
-      '- 如果发现任务会重复出现，或用户明确要求沉淀流程，可以建议创建 skill。'
+      '- 如果发现任务会重复出现，或用户明确要求沉淀流程，可以建议创建 skill。',
+      '- 如果用户明确要求安装本地 skill 包、目录、`.md` 或 `.zip`，使用 `InstallSkillPackage` 工具。'
     ].join('\n');
   }
 
@@ -153,6 +282,8 @@ export function getSkillToolPrompt(skills: Skill[]): string {
     '- 不要只提到某个 skill 却不调用它；不要为内置 CLI 命令调用 Skill。',
     '- 如果当前轮次的工具结果已经返回某个 skill 的正文，直接遵循正文，不要重复调用同一个 skill。',
     '- Skill 工具只读取说明，不执行 shell、hook 或外部动作。',
+    '- 如果用户明确要求安装本地 skill 包、目录、`.md` 或 `.zip`，使用 `InstallSkillPackage` 工具；不要尝试用 Read 读取 zip。',
+    '- `InstallSkillPackage` 默认安装到项目 scope，只有用户明确说全局/用户级安装时才使用 user scope；安装不会执行 skill 内 shell、hook 或命令片段。',
     '',
     '可用 skill：',
     formatSkillsWithinBudget(callableSkills)
@@ -189,6 +320,11 @@ function formatSkillListing(skill: Skill): string {
 
 function normalizeSkillName(input: string): string {
   return input.trim().replace(/^\/+/, '');
+}
+
+function isInside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function parseJsonObject(rawArguments: string): unknown {

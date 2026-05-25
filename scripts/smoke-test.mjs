@@ -655,6 +655,19 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   assertIncludes(showRenamed.stdout, 'Help write concise Chinese project updates');
 
   const { zipSync, strToU8 } = await import('fflate');
+  const multiZip = path.join(tempHome, 'multi-skills.zip');
+  await writeFile(multiZip, Buffer.from(zipSync({
+    'skills-main/alpha/SKILL.md': strToU8('---\nname: alpha-skill\ndescription: Alpha skill\ntriggers: alpha\n---\n\n# alpha-skill\n'),
+    'skills-main/alpha/examples/a.md': strToU8('alpha resource'),
+    'skills-main/beta/SKILL.md': strToU8('---\nname: beta-skill\ndescription: Beta skill\ntriggers: beta\n---\n\n# beta-skill\n')
+  })));
+  const multiProject = path.join(tempHome, 'multi-project');
+  await mkdir(multiProject, { recursive: true });
+  const installMultiZip = await run(['skill', 'install', multiZip, '--scope', 'project'], { cwd: multiProject });
+  assertIncludes(installMultiZip.stdout, '已安装 skill：alpha-skill');
+  assertIncludes(installMultiZip.stdout, '已安装 skill：beta-skill');
+  assertIncludes(installMultiZip.stdout, '共 2 个 skill');
+
   const { buildSkillInstallPlan } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillPackage.js')).href);
   const evilZip = zipSync({
     '../evil/SKILL.md': strToU8('# evil\n\nDescription: bad\n')
@@ -864,6 +877,56 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
   if (!events.some(event => event.phase === 'success' && event.name === 'Skill')) {
     throw new Error(`应该产生 Skill 成功事件：${JSON.stringify(events)}`);
   }
+});
+
+test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () => {
+  const projectRoot = path.join(tempHome, 'skill-install-tool-project');
+  await mkdir(projectRoot, { recursive: true });
+  const { zipSync, strToU8 } = await import('fflate');
+  await writeFile(path.join(projectRoot, 'skills-main.zip'), Buffer.from(zipSync({
+    'skills-main/one/SKILL.md': strToU8('---\nname: zip-one\ndescription: Zip one skill\ntriggers: one\n---\n\n# zip-one\n'),
+    'skills-main/two/SKILL.md': strToU8('---\nname: zip-two\ndescription: Zip two skill\ntriggers: two\n---\n\n# zip-two\n')
+  })));
+  const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
+  const { SkillToolRunner } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillToolRunner.js')).href);
+  const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+  const manager = new SkillManager({ homeDir: tempHome, skills: { autoCreate: false, autoCreateThreshold: 3 } }, projectRoot);
+  const runner = new SkillToolRunner(manager, projectRoot);
+  let calls = 0;
+  const model = {
+    chatWithTools: async options => {
+      calls += 1;
+      if (calls === 1) {
+        const installTool = options.tools.find(tool => tool.function.name === 'InstallSkillPackage');
+        if (!installTool) throw new Error(`应该暴露 InstallSkillPackage 工具：${JSON.stringify(options.tools)}`);
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_install_skill_package',
+            type: 'function',
+            function: { name: 'InstallSkillPackage', arguments: JSON.stringify({ source: '@skills-main.zip' }) }
+          }]
+        };
+      }
+      const last = options.messages.at(-1);
+      if (last?.role !== 'tool') throw new Error(`第二轮模型调用前应该收到安装工具结果：${JSON.stringify(last)}`);
+      assertIncludes(last.content, '"installedCount": 2');
+      assertIncludes(last.content, 'zip-one');
+      assertIncludes(last.content, 'zip-two');
+      return { content: '已安装 zip-one 和 zip-two', toolCalls: [] };
+    },
+    chat: async () => 'unused'
+  };
+  const logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const engine = new QueryEngine({ get: () => model }, [runner], logger, { maxToolRounds: 3 });
+  const result = await engine.run('main', [{ role: 'user', content: '@skills-main.zip 安装这个包里所有skill' }]);
+  assertIncludes(result.text, '已安装');
+  if (result.skillToolCalls.length !== 1 || result.skillToolCalls[0].installedCount !== 2) {
+    throw new Error(`应该记录一次批量安装 Skill 调用：${JSON.stringify(result.skillToolCalls)}`);
+  }
+  const installed = await manager.loadSkills();
+  assertIncludes(installed.map(skill => skill.name).join(','), 'zip-one');
+  assertIncludes(installed.map(skill => skill.name).join(','), 'zip-two');
 });
 
 test('REPL 常用命令不触发模型也能运行', async () => {
