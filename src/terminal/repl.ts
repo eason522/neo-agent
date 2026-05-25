@@ -40,6 +40,8 @@ const enableModifyOtherKeys = '\x1b[>4;2m';
 const disableModifyOtherKeys = '\x1b[>4m';
 const enableBracketedPaste = '\x1b[?2004h';
 const disableBracketedPaste = '\x1b[?2004l';
+const largePasteThreshold = 800;
+const largePasteMaxVisibleLines = 2;
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
   const isInteractiveSession = Boolean(input.isTTY);
@@ -199,6 +201,8 @@ async function readInteractiveInput(options: {
   let renderedLines = 0;
   let renderedCursorRow = 0;
   let pasteBuffer: string | undefined;
+  let nextPasteId = 1;
+  const pastedContents = new Map<string, string>();
 
   const render = (): void => {
     if (renderedLines > 0) {
@@ -233,7 +237,7 @@ async function readInteractiveInput(options: {
     const finish = (value: string): void => {
       cleanup();
       output.write('\n');
-      resolve(value);
+      resolve(expandPastedContentPlaceholders(value, pastedContents));
     };
     const onAbort = (): void => {
       cleanup();
@@ -245,6 +249,17 @@ async function readInteractiveInput(options: {
       render();
     };
     const insert = (value: string): void => setText(`${text.slice(0, cursor)}${value}${text.slice(cursor)}`, cursor + value.length);
+    const insertPaste = (value: string): void => {
+      const normalized = normalizePastedText(value);
+      if (!shouldFoldPastedText(normalized)) {
+        insert(normalized);
+        return;
+      }
+      const placeholder = createPastedContentPlaceholder(normalized, nextPasteId, text, pastedContents);
+      nextPasteId += 1;
+      pastedContents.set(placeholder, normalized);
+      insert(placeholder);
+    };
     const backspace = (): void => {
       if (cursor <= 0) return;
       setText(`${text.slice(0, cursor - 1)}${text.slice(cursor)}`, cursor - 1);
@@ -260,11 +275,13 @@ async function readInteractiveInput(options: {
     const previousHistory = (): void => {
       if (options.history.length === 0) return;
       historyIndex = Math.max(0, historyIndex - 1);
+      pastedContents.clear();
       setText(options.history[historyIndex] ?? '');
     };
     const nextHistory = (): void => {
       if (options.history.length === 0) return;
       historyIndex = Math.min(options.history.length, historyIndex + 1);
+      pastedContents.clear();
       setText(historyIndex >= options.history.length ? '' : options.history[historyIndex] ?? '');
     };
     const onData = (chunk: Buffer | string): void => {
@@ -275,7 +292,7 @@ async function readInteractiveInput(options: {
           pasteBuffer += data;
           return;
         }
-        insert(normalizePastedText(`${pasteBuffer}${data.slice(0, end)}`));
+        insertPaste(`${pasteBuffer}${data.slice(0, end)}`);
         pasteBuffer = undefined;
         const restAfterPaste = data.slice(end + 6);
         if (!restAfterPaste) return;
@@ -283,7 +300,7 @@ async function readInteractiveInput(options: {
         return;
       }
       if (looksLikePlainTextPaste(data)) {
-        insert(normalizePastedText(data));
+        insertPaste(data);
         return;
       }
       for (let index = 0; index < data.length;) {
@@ -291,7 +308,7 @@ async function readInteractiveInput(options: {
         if (rest.startsWith('\x1b[200~')) {
           const end = rest.indexOf('\x1b[201~');
           if (end >= 0) {
-            insert(normalizePastedText(rest.slice(6, end)));
+            insertPaste(rest.slice(6, end));
             index += end + 6;
             continue;
           }
@@ -381,6 +398,7 @@ async function readInteractiveInput(options: {
         }
         if (char === '\x03') {
           if (text) {
+            pastedContents.clear();
             setText('');
             index += 1;
             continue;
@@ -449,8 +467,41 @@ function looksLikePlainTextPaste(value: string): boolean {
 }
 
 function normalizePastedText(value: string): string {
-  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const normalized = stripAnsi(value)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replaceAll('\t', '    ');
   return normalized.replace(/\n$/, '');
+}
+
+function shouldFoldPastedText(value: string): boolean {
+  if (value.length > largePasteThreshold) return true;
+  return getPastedTextLineBreakCount(value) > largePasteMaxVisibleLines;
+}
+
+function getPastedTextLineBreakCount(value: string): number {
+  return value.match(/\n/g)?.length ?? 0;
+}
+
+function createPastedContentPlaceholder(
+  value: string,
+  pasteId: number,
+  currentInput: string,
+  pastedContents: Map<string, string>
+): string {
+  const base = `[Pasted Content ${value.length} chars]`;
+  if (!currentInput.includes(base) && !pastedContents.has(base)) return base;
+  return `[Pasted Content #${pasteId} ${value.length} chars]`;
+}
+
+function expandPastedContentPlaceholders(value: string, pastedContents: Map<string, string>): string {
+  if (pastedContents.size === 0) return value;
+  const pattern = new RegExp([...pastedContents.keys()].map(escapeRegExp).join('|'), 'g');
+  return value.replace(pattern, placeholder => pastedContents.get(placeholder) ?? placeholder);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function displayWidth(value: string): number {

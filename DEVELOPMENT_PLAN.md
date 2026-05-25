@@ -546,6 +546,8 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 用户测试发现两类问题：启动 banner 输出了过多终端协议说明；粘贴两行长文本时出现 prompt 重复刷屏，并且粘贴末尾换行会被当成提交。修复前对照 CC-Source `parse-keypress.ts`、`hooks/useTextInput.ts`、`utils/Cursor.ts` 和 Ink 渲染层：CC-Source 会把 bracketed paste 汇总为一次 paste key，普通多字符 paste 中的 `\r` 会转为 `\n`，同时按终端列宽和 wrap 后屏幕行数管理光标与重绘。neo 已按这个方向修正：启动 banner 只保留简短入口提示，终端细节移到 `/status`/`/help`；bracketed paste 支持跨 chunk 汇总，非 bracketed 的多字符粘贴会归一化换行并去掉末尾单个换行，避免自动提交；输入重绘按 `stdout.columns` 估算实际屏幕行数，防止长行 wrap 后旧内容残留。验证方式：`npm run smoke`、真实 TTY bracketed paste 两行长文本、真实 TTY 普通 CR 分隔粘贴，两者均未自动提交且未重复刷 prompt。
 
+继续参考 CC-Source `hooks/usePasteHandler.ts`、`components/PromptInput/PromptInput.tsx` 和 `history.ts` 的大段粘贴处理：CC-Source 超过 `PASTE_THRESHOLD=800` 或行数超过输入框展示预算时，会在输入框里插入粘贴引用，旁路保存完整内容，提交时再展开。neo 已加入同类机制：大段粘贴或超过两处换行的粘贴在输入框里显示为 `[Pasted Content N chars]`，但回车提交、slash command、transcript 和模型输入拿到的都是完整原文。验证方式：真实 TTY 中 `/remember ` 后粘贴四行文本，输入框只显示 `[Pasted Content 203 chars]`，提交后的 transcript 和 memory 均保存完整四行内容。
+
 ## 恢复开发检查清单
 
 开始新的开发任务前：
