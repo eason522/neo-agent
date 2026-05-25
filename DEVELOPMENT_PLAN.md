@@ -70,6 +70,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 状态：已完成
 
+说明：M1 的“已完成”表示 neo-agent 已具备可启动、可对话、可配置、可诊断、可记录日志和 transcript 的 MVP 核心，不表示这些基础设施已经完全达到 CC-Source 成熟度。M1 后续对齐债务继续放入待办池和 M5/M6，不再回滚 M1 状态。
+
 - [x] 创建 TypeScript CLI 项目
 - [x] 注册简单启动命令 `neo`
 - [x] 配置 DeepSeek 和 MiMo 模型客户端
@@ -86,6 +88,15 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 添加配置诊断命令：`neo doctor`
 - [x] 添加日志轮转和保留策略
 - [x] 添加 CLI 命令冒烟测试
+
+M1 后续对齐债务：
+
+- [ ] 配置体系补 `neo config show --redacted`、`neo config set`、配置 schema 校验和结构化错误码，参考 CC-Source settings/config/doctor。
+- [ ] 模型客户端补请求超时、重试退避、用量统计、成本统计和速率限制提示，参考 CC-Source api、cost-tracker、rateLimitMessages。
+- [ ] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
+- [ ] doctor 补上下文体积、MCP、skill、配置权限、版本/更新、路径可写性等更细诊断，参考 CC-Source Doctor/context warnings。
+- [ ] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级，参考 CC-Source debug/log/analytics 思路。
+- [ ] sub-agent 从“一次性小模型调用”升级为任务状态模型，参考 CC-Source AgentTool、LocalAgentTask、任务 transcript 和停止/前后台能力。
 
 ### M2：更好的记忆和个性化
 
@@ -126,6 +137,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 状态：已完成
 
+说明：M4 的“已完成”表示联网、MCP、文件工具已经进入统一 `QueryEngine` / `ToolRunner` 路径，并具备最小安全边界和可见状态；但工具系统距离 CC-Source 的权限、并发、后台任务、完整文件能力、远程 MCP 和 hook 生态仍有差距。M4 后续硬化项必须继续按 CC-Source 工具体系推进。
+
 - [x] 添加联网能力配置：搜索、网页提取、超时、结果数量、脱敏日志
 - [x] 添加站点 map/crawl 配置：最大深度、最大页面数、费用保护
 - [x] 添加站点 map/crawl 路径过滤：select_paths、exclude_paths、select_domains、exclude_domains
@@ -150,6 +163,15 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 添加工具结果日志，并做好脱敏
 - [x] 添加项目感知的文件系统工具支持
 
+M4 后续硬化项：
+
+- [ ] `Grep` 后端升级为 `rg`，补超时、最大输出、二进制跳过、错误分类和取消信号，参考 CC-Source `utils/ripgrep.ts` 和 `GrepTool`。
+- [ ] 文件工具补完整权限模型、项目/额外目录 scope、图片/PDF/二进制处理、读取预算和结果落盘，参考 CC-Source FileRead/Glob/Grep/filesystem permissions。
+- [ ] QueryEngine 补并发工具策略、orphan tool result 处理、长运行工具真实 kill、工具结果预算和可恢复 transcript pairing，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
+- [ ] MCP 补 always allow/deny/ask 持久化、权限建议、远程 HTTP/SSE/OAuth、项目级 `.mcp.json`、企业 allow/deny 策略和更完整权限 UI，参考 CC-Source MCP manager、permission rules、settings schema。
+- [ ] Web 工具补缓存、来源去重、跨来源冲突标注、robots/站点限制策略、下载内容预算和失败分类，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
+- [ ] Tool hooks 预留：PostToolUse、PermissionRequest、Stop/Notification 等 hook 点暂不实现执行，但 QueryEngine 结构要避免后续难以接入。
+
 ### M5：终端体验向 CC-Source 设计靠拢
 
 状态：计划中
@@ -164,21 +186,38 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 ## 待办池
 
-- 为 `extractImageAttachments` 添加测试。
-- 为 `Logger` 脱敏逻辑添加测试。
-- 为记忆搜索排序添加测试。
-- 为 skill install/export/validate 添加路径穿越、zip-slip、覆盖保护和非法格式测试。
-- 将 `Grep` 工具后端从 JS 遍历升级为 `rg`，并增加超时、最大输出、二进制跳过和错误分类。
-- 为 `QueryEngine` 增强长运行工具真实 kill、并发执行安全策略和 orphan tool result 处理。
-- 为 MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
-- 添加 `neo config show --redacted`。
-- 添加 `neo config set`，用于修改常见配置。
-- 添加模型流式输出。
-- 为模型请求添加重试和退避。
-- 添加请求超时配置。
-- 添加模型用量和成本统计。
-- 为常见配置问题添加结构化错误码。
-- 添加发布脚本和版本策略。
+待办池按优先级管理。P0 是“真正可用”必须补齐的能力；P1 是稳定性和体验；P2 是发布、生态和长期增强。新增待办时必须归类，不再追加散乱列表。
+
+### P0：核心可用闭环
+
+- [ ] M3：实现 `neo skill install/validate/export`，支持 `.md`、目录和 `.zip`，带路径穿越、zip-slip、覆盖保护、非法格式测试。
+- [ ] M3：实现 skill `--scope user|project`，加载时合并全局和项目 skill，并显示来源。
+- [ ] M3：把 Skill tool 接入 `QueryEngine`，让模型显式调用 skill，system prompt 只放预算化 skill 列表。
+- [ ] M1：添加 `neo config show --redacted` 和 `neo config set`，并补配置 schema 校验、结构化错误码和敏感字段脱敏。
+- [ ] M1：为模型请求添加超时、重试退避、取消分类、速率限制提示和用量统计。
+- [ ] M4：将 `Grep` 工具后端从 JS 遍历升级为 `rg`，并增加超时、最大输出、二进制跳过和错误分类。
+- [ ] M4：为 `QueryEngine` 增强长运行工具真实 kill、并发执行安全策略和 orphan tool result 处理。
+- [ ] M5：补输入历史、多行编辑、状态行和轻量 debug 视图，让日常 REPL 可用性接近 CC-Source。
+
+### P1：稳定性、安全和可调试性
+
+- [ ] 为 `extractImageAttachments` 添加测试，覆盖不存在文件、非图片、大小限制和 mime 推断。
+- [ ] 为 `Logger` 脱敏逻辑添加测试，覆盖 API key、URL query、MCP 参数、工具结果摘要。
+- [ ] 为记忆搜索排序添加测试，并改进相关性评分。
+- [ ] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
+- [ ] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
+- [ ] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
+- [ ] M1/M5：transcript/session 增加 resume、compact boundary、tool result pairing、会话标题和恢复校验。
+- [ ] M1：模型用量和成本统计落盘，支持 `neo usage` 或 debug 视图查看。
+
+### P2：生态、发布和长期能力
+
+- [ ] 添加模型流式输出，并让 tool progress 与流式文本共存。
+- [ ] 添加发布脚本、版本策略、变更日志和安装自检。
+- [ ] 添加轻量 plugin/skill marketplace 规划，兼容 CC-Source plugin manifest 的 `skillsPath/skillsPaths`，但先不引入完整插件生态。
+- [ ] sub-agent 升级为可恢复任务系统，支持状态、停止、前后台、任务 transcript 和工具隔离。
+- [ ] 文件工具后续补编辑/写入能力，但必须先完成权限模型和用户确认 UI。
+- [ ] hooks 生态预留：PostToolUse、PermissionRequest、Stop、Notification 等，不在权限模型成熟前执行外部 hook。
 
 ## CC-Source 对齐审查
 
@@ -198,6 +237,14 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - plugin/marketplace/zip cache：zip 下载和解压必须有缓存目录边界、原子替换、zip 解析错误分类和路径安全保护。
 
 neo 当前只完成了全局 `~/.neo-agent/skills/<name>/SKILL.md` 的基础管理命令。缺失的核心可用能力是：从 `.md`/`.zip` 安装、导出分享、校验、项目级 scope、显式 Skill tool、上下文预算化 listing、usage tracking、热加载和安装安全边界。这些已补入 M3，下一步优先实现 install/validate/export，而不是继续扩大自动创建逻辑。
+
+### 2026-05-25：M1/M4 和待办池专项梳理
+
+用户指出不能只梳理 M3，已完成的 M1/M4 和待办池也要重新对齐 CC-Source。结论：
+
+- M1 已交付 MVP 核心，但仍缺 CC-Source 级别的配置 schema、redacted config、请求重试/超时、usage/cost、resume、compact boundary、结构化错误和 sub-agent 任务模型。M1 保持“已完成”，这些进入 M1 后续对齐债务和 P0/P1。
+- M4 已完成统一 tool loop 的第一阶段，但仍缺 CC-Source 的完整权限体系、ripgrep 后端、长运行工具 kill、工具并发/orphan result、远程 MCP、Web 结果缓存和 hook 接入点。M4 保持“已完成”，这些进入 M4 后续硬化项和 P0/P1。
+- 待办池从散乱列表改为 P0/P1/P2。后续开发优先级以 P0 为准；P0 完成前，除非用户明确要求，不应跳去做 P2 生态或发布类能力。
 
 M4 完成后复盘结论：主方向符合最高指导思想，联网、MCP、文件工具已经收敛到 `QueryEngine` / `ToolRunner`，工具结果通过同一 loop 回灌，权限和状态事件也进入统一链路。已立即修复两个安全收口点：transcript 不再记录完整 Web query 或完整 URL，只记录 query 长度和 URL 域名；Web/File 工具参数解析错误不再回显原始参数片段，只记录参数长度。剩余增强已放入待办池：`Grep` 后端改 `rg`、工具取消/并发/orphan result、MCP 持久化权限和远程 MCP。
 
