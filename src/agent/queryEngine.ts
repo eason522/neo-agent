@@ -1,18 +1,31 @@
-import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, TextModelKind, ToolCallRecord, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
-import { summarizeToolArguments, summarizeToolError, summarizeToolResult } from '../tools/toolLog.js';
+import {
+  buildToolErrorResult,
+  buildUnknownToolResult,
+  createMaxRoundsEvent,
+  createToolErrorEvent,
+  createToolStartEvent,
+  createToolSuccessEvent,
+  createUnknownToolEvent,
+  summarizeToolArguments,
+  summarizeToolError,
+  summarizeToolResult
+} from '../tools/toolLog.js';
 
 export type QueryEngineResult = {
   text: string;
   webToolCalls: WebToolCallRecord[];
   mcpToolCalls: McpToolCallRecord[];
   fileToolCalls: FileToolCallRecord[];
+  toolEvents: ToolProgressEvent[];
 };
 
 type QueryEngineOptions = {
   maxToolRounds: number;
+  onToolEvent?: (event: ToolProgressEvent) => void;
 };
 
 export class QueryEngine {
@@ -34,6 +47,7 @@ export class QueryEngine {
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
     const fileToolCalls: FileToolCallRecord[] = [];
+    const toolEvents: ToolProgressEvent[] = [];
     const initialToolDefinitions = this.toolDefinitions();
 
     if (initialToolDefinitions.length === 0) {
@@ -41,7 +55,8 @@ export class QueryEngine {
         text: await model.chat({ messages: loopMessages }),
         webToolCalls,
         mcpToolCalls,
-        fileToolCalls
+        fileToolCalls,
+        toolEvents
       };
     }
 
@@ -55,7 +70,7 @@ export class QueryEngine {
       });
 
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls };
+        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
       }
 
       loopMessages.push({
@@ -67,16 +82,20 @@ export class QueryEngine {
 
       for (const toolCall of response.toolCalls) {
         const runner = this.findRunner(toolCall.function.name);
+        const startEvent = createToolStartEvent(toolCall, round);
+        emitToolEvent(startEvent, toolEvents, this.options.onToolEvent);
         this.logger.info('tool.start', {
           ...summarizeToolArguments(toolCall),
           round
         });
 
         if (!runner) {
+          const unknownEvent = createUnknownToolEvent(toolCall.function.name, round);
+          emitToolEvent(unknownEvent, toolEvents, this.options.onToolEvent);
           loopMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify({ error: `未知工具：${toolCall.function.name}` })
+            content: buildUnknownToolResult(toolCall.function.name, round)
           });
           this.logger.warn('tool.unknown', { name: toolCall.function.name, round });
           continue;
@@ -94,18 +113,21 @@ export class QueryEngine {
             tool_call_id: toolCall.id,
             content: result.content
           });
+          const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, result.content, round);
+          emitToolEvent(successEvent, toolEvents, this.options.onToolEvent);
           this.logger.info('tool.success', {
             name: toolCall.function.name,
             ...summarizeToolResult(result.record, result.content),
             round
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
           loopMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify({ error: message })
+            content: buildToolErrorResult(toolCall.function.name, error, round)
           });
+          const errorEvent = createToolErrorEvent(toolCall.function.name, error, round);
+          emitToolEvent(errorEvent, toolEvents, this.options.onToolEvent);
           this.logger.warn('tool.error', {
             name: toolCall.function.name,
             ...summarizeToolError(error),
@@ -119,6 +141,8 @@ export class QueryEngine {
       maxToolRounds: this.options.maxToolRounds,
       toolCallCount: webToolCalls.length + mcpToolCalls.length + fileToolCalls.length
     });
+    const maxRoundsEvent = createMaxRoundsEvent(this.options.maxToolRounds, toolEvents.filter(event => event.phase === 'start').length);
+    emitToolEvent(maxRoundsEvent, toolEvents, this.options.onToolEvent);
     const finalResponse = await model.chatWithTools({
       messages: [
         ...loopMessages,
@@ -129,12 +153,21 @@ export class QueryEngine {
       ],
       toolChoice: 'none'
     });
-    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
   }
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
     return this.tools.find(tool => tool.canExecute(name));
   }
+}
+
+function emitToolEvent(
+  event: ToolProgressEvent,
+  events: ToolProgressEvent[],
+  handler: ((event: ToolProgressEvent) => void) | undefined
+): void {
+  events.push(event);
+  handler?.(event);
 }
 
 function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {

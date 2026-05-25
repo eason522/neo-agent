@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
-import type { MemoryCategory, MemoryRecord } from '../types.js';
+import type { MemoryCategory, MemoryRecord, ToolProgressEvent } from '../types.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
@@ -12,6 +12,9 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   agent.setMcpPermissionAsker(isInteractive ? async request => {
     const answer = await rl.question(formatMcpPermissionPrompt(request));
     return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
+  } : undefined);
+  agent.setToolEventHandler(isInteractive ? event => {
+    output.write(`${formatToolProgressEvent(event)}\n`);
   } : undefined);
   printBanner();
 
@@ -40,6 +43,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       if (isInteractive) rl.prompt();
     }
   } finally {
+    agent.setToolEventHandler(undefined);
     rl.close();
     await agent.close();
   }
@@ -287,6 +291,18 @@ function formatMcpPermissionPrompt(request: {
     `参数：${request.argumentChars} 字符；字段：${keys}`,
     '允许本次执行吗？输入 y/yes/允许 允许，其他输入拒绝：'
   ].filter(Boolean).join('\n');
+}
+
+function formatToolProgressEvent(event: ToolProgressEvent): string {
+  const prefix = event.phase === 'start'
+    ? chalk.gray('tool>')
+    : event.phase === 'success'
+      ? chalk.green('tool✓')
+      : event.phase === 'max_rounds'
+        ? chalk.yellow('tool!')
+        : chalk.red('tool!');
+  const round = event.phase === 'max_rounds' ? '上限' : `round ${event.round + 1}`;
+  return `${prefix} ${chalk.gray(round)} ${event.summary}`;
 }
 
 function parseRememberArgs(arg: string): { content: string; category: MemoryCategory; tags: string[]; pinned: boolean } {

@@ -30,6 +30,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
+- tool loop 运行时状态事件：REPL 可见工具开始/成功/失败/达到上限，失败结果带恢复提示
 - 严格参考 CC-Source 分层结构重写的 system prompt
 - `SOUL.md` 长期人格设定
 - 对话 transcript 持久化
@@ -109,7 +110,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 ### M4：工具和 MCP 执行
 
-状态：进行中
+状态：已完成
 
 - [x] 添加联网能力配置：搜索、网页提取、超时、结果数量、脱敏日志
 - [x] 添加站点 map/crawl 配置：最大深度、最大页面数、费用保护
@@ -126,7 +127,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 添加联网工具 schema、工具 prompt、只读语义、结果预算、来源要求和日志脱敏
 - [x] 从 `NeoAgent` 中拆出最小 `QueryEngine` 和通用 `ToolRunner` 接口，避免工具循环继续散落在 agent 外壳里
 - [x] 为联网工具补齐更完整的权限/域名策略：允许/拒绝域名、私有地址保护、可持久化规则
-- [ ] 为 tool loop 添加更完整的工具结果摘要、失败恢复和 UI 可见状态
+- [x] 为 tool loop 添加更完整的工具结果摘要、失败恢复和 UI 可见状态
 - [x] 将已连接 MCP 工具接入 `QueryEngine` 标准 tool loop，并采用 CC-Source 风格 `mcp__server__tool` 命名
 - [x] 为 MCP 工具执行添加安全调用协议和权限确认
 - [x] 针对高风险 MCP 工具添加 REPL 一次性权限确认
@@ -173,14 +174,14 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | doctor | `commands/doctor` | 基本符合。采用分项诊断和可执行修复建议。 | 后续补 `config show --redacted` 和更细错误码。 |
 | transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 部分符合。已有 JSONL transcript、会话列表和 compact 事件记录，但 resume、compact boundary 链接、tool result pairing 还没有。 | M5 继续补可恢复 resume 和更完整 compact boundary。 |
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，并加入自动 compact 摘要；但还缺 token 估算、手动 `/compact`、可恢复 boundary 和更精细的消息分组。 | M5 继续按 CC-Source compact/session 机制补齐。 |
-| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
+| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护、Tavily map/crawl 路径过滤、工具状态事件和失败恢复提示。 | 后续继续补流式输出和更细粒度进度。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
 | 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、filesystem permissions | 部分符合。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内，带读取/搜索上限和默认忽略目录。 | 后续补完整 permission rules、二进制/图片/PDF 支持、ripgrep 后端和 UI 状态。 |
 | MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio 配置命令、resource 工具、deferred ToolSearch 和 REPL 一次性权限确认；但还缺 always allow/deny 持久化选择、HTTP/SSE/OAuth 和更完整的安全策略。 | M4/M5 继续补持久化权限规则、远程 MCP 和更完整权限 UI。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
-| terminal REPL | `components/App.tsx`、commands、permission UI、message rendering | 不充分。当前 readline REPL 简洁可用，但离 CC-Source TUI、状态行、中断、权限确认、消息渲染差距明显。 | M5 按 CC-Source 终端体验分阶段校正。 |
+| terminal REPL | `components/App.tsx`、commands、permission UI、message rendering | 部分符合。当前 readline REPL 简洁可用，已有 MCP 一次性权限确认和工具状态行；但离 CC-Source TUI、状态行、中断、消息渲染差距仍明显。 | M5 按 CC-Source 终端体验分阶段校正。 |
 | logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏和工具结果摘要，但缺成本/usage、retry 统计和结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
 | vision | 附件处理、图片消息、文件读取限制 | 部分符合。MiMo 预分析适合 neo-agent 模型组合，但不是 CC-Source 原生多模态路径。 | 后续补附件大小限制、缓存、截断说明和测试。 |
 
@@ -297,6 +298,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：工具结果日志只记录脱敏摘要
 
 参考 CC-Source 对工具执行状态、权限和 sandbox 规则的处理方式，neo 的 `QueryEngine` 现在会在 `tool.start`、`tool.success`、`tool.error` 中记录统一摘要：参数字符数、参数 key、Web URL 域名、查询字符数、结果字符数、MCP server/tool、耗时和错误类别。日志不记录完整查询词、完整 URL query、MCP 参数或工具返回正文，避免调试日志变成敏感数据仓库。
+
+### 2026-05-25：tool loop 状态进入 REPL，并给失败结果恢复提示
+
+参考 CC-Source 各工具的 `renderToolUseMessage`、`renderToolResultMessage`、progress message 和失败 UI 思路，neo 在 `QueryEngine` 中加入统一 `ToolProgressEvent`。每次工具开始、成功、失败、未知工具和达到轮次上限，都会产生脱敏事件；交互式 REPL 会实时显示简短状态行，transcript 也会记录这些事件摘要。工具失败时不再只回灌裸错误字符串，而是回灌结构化 JSON，包含错误类别和 `recoveryHint`，提醒模型不要伪造执行结果、可换工具或明确说明限制。UI 摘要仍只展示查询长度、域名、结果数、字符数、server/tool 名等元数据，不显示完整查询、完整 URL query 或 MCP 参数值。
 
 ### 2026-05-25：MCP resources 进入 QueryEngine
 

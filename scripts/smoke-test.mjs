@@ -150,6 +150,62 @@ test('ConversationHistory 超过阈值时生成自动 compact 摘要并保留近
   if (messages[0].content.includes('<analysis>')) throw new Error(`compact 摘要不应保留 analysis：${messages[0].content}`);
 });
 
+test('QueryEngine 会产出工具状态事件并把失败恢复提示回灌给模型', async () => {
+  const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+  const events = [];
+  let modelCalls = 0;
+  let recovered = false;
+  const model = {
+    chatWithTools: async options => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'ThrowTool', arguments: JSON.stringify({ query: '不应显示在工具事件摘要里的完整查询' }) }
+          }]
+        };
+      }
+      const last = options.messages.at(-1);
+      if (last?.role !== 'tool') throw new Error(`第二轮模型调用前应该收到 tool 结果：${JSON.stringify(last)}`);
+      assertIncludes(last.content, 'recoveryHint');
+      assertIncludes(last.content, '工具超时');
+      recovered = true;
+      return { content: '已根据工具失败结果继续回答', toolCalls: [] };
+    },
+    chat: async () => 'unused'
+  };
+  const runner = {
+    definitions: () => [{
+      type: 'function',
+      function: {
+        name: 'ThrowTool',
+        description: 'Throw for test',
+        parameters: { type: 'object', properties: {} }
+      }
+    }],
+    canExecute: name => name === 'ThrowTool',
+    execute: async () => {
+      throw new Error('timeout while calling external service');
+    }
+  };
+  const logger = { info() {}, warn() {}, debug() {}, error() {} };
+  const engine = new QueryEngine({ get: () => model }, [runner], logger, {
+    maxToolRounds: 2,
+    onToolEvent: event => events.push(event)
+  });
+  const result = await engine.run('main', [{ role: 'user', content: '触发工具失败' }]);
+  assertIncludes(result.text, '工具失败');
+  if (!recovered) throw new Error('模型没有收到结构化失败恢复提示。');
+  assertIncludes(events.map(event => event.phase).join(','), 'start,error');
+  assertIncludes(result.toolEvents.map(event => event.phase).join(','), 'start,error');
+  if (events.some(event => event.summary.includes('完整查询'))) {
+    throw new Error(`工具 UI 摘要泄露完整查询：${JSON.stringify(events)}`);
+  }
+});
+
 test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-files-'));
   await mkdir(path.join(projectDir, 'src'), { recursive: true });

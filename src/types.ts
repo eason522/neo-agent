@@ -196,6 +196,7 @@ export type AgentResponse = {
   webToolCalls?: WebToolCallRecord[];
   mcpToolCalls?: McpToolCallRecord[];
   fileToolCalls?: FileToolCallRecord[];
+  toolEvents?: ToolProgressEvent[];
   memories: MemoryHit[];
   skills: Skill[];
 };
@@ -227,6 +228,14 @@ export type FileToolCallRecord = {
 };
 
 export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord;
+
+export type ToolProgressEvent = {
+  phase: 'start' | 'success' | 'error' | 'unknown' | 'max_rounds';
+  round: number;
+  name: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+};
 
 export type WebSearchResult = {
   title: string;

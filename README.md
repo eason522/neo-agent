@@ -161,6 +161,8 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --select-paths "/docum
 
 普通自然语言提问默认使用 CC-Source 风格的 tool loop：模型先回答或发起 `WebSearch` / `WebFetch` 工具调用，工具结果作为 `tool` 消息回灌给模型，再继续推理直到最终回答。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。默认最多允许 4 轮联网工具调用，可通过 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 调整。若设置 `NEO_AGENT_WEB_TOOL_LOOP_ENABLED=0`，neo 会回落到过渡版小模型 planner；可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭 planner，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
 
+交互式 REPL 会显示工具开始、成功、失败和达到上限的简短状态行。状态行和日志只展示查询长度、域名、结果数、字符数、MCP server/tool 名等元数据，不展示完整查询词、完整 URL query 或 MCP 参数值。工具失败时，neo 会把结构化错误和恢复提示回灌给模型，让它继续换路径或明确说明未执行。
+
 REPL 会保留当前 session 的对话上下文，默认最多约 300000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS` 调整。单条消息默认最多保留 50000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS` 调整。接近上下文预算时，neo 会参考 CC-Source compact 思路，用小模型把较早对话压缩成“自动压缩的历史摘要”，再保留近期原文；可用 `NEO_AGENT_CONVERSATION_COMPACT_ENABLED=0` 关闭，或用 `NEO_AGENT_CONVERSATION_COMPACT_THRESHOLD_RATIO`、`NEO_AGENT_CONVERSATION_COMPACT_KEEP_RECENT_CHARS`、`NEO_AGENT_CONVERSATION_COMPACT_MAX_SUMMARY_CHARS` 调整阈值和摘要大小。
 
 普通 ask/REPL 会向模型提供只读项目文件工具：`Read` 读取文件片段，`Glob` 按文件名查找文件，`Grep` 搜索文件内容。这些工具只能访问启动 neo 时所在目录内的路径，并默认跳过 `.git`、`node_modules`、`dist` 等噪声目录。

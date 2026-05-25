@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage, WebContext } from './types.js';
+import type { AgentResponse, AppConfig, Attachment, ChatMessage, ToolProgressEvent, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -41,6 +41,7 @@ export class NeoAgent {
   private readonly mcpToolRunner: McpToolRunner;
   private readonly mcpResourceRunner: McpResourceRunner;
   private readonly queryEngine: QueryEngine;
+  private toolEventHandler?: (event: ToolProgressEvent) => void;
 
   constructor(readonly config: AppConfig) {
     this.logger = new Logger(config);
@@ -58,7 +59,8 @@ export class NeoAgent {
     this.fileToolRunner = new FileToolRunner(process.cwd());
     this.webToolRunner = new WebToolRunner(config, this.web);
     this.queryEngine = new QueryEngine(this.models, [this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
-      maxToolRounds: config.web.maxToolRounds
+      maxToolRounds: config.web.maxToolRounds,
+      onToolEvent: event => this.toolEventHandler?.(event)
     });
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
@@ -88,6 +90,10 @@ export class NeoAgent {
 
   setMcpPermissionAsker(permissionAsker: McpPermissionAsker | undefined): void {
     this.mcpToolRunner.setPermissionAsker(permissionAsker);
+  }
+
+  setToolEventHandler(handler: ((event: ToolProgressEvent) => void) | undefined): void {
+    this.toolEventHandler = handler;
   }
 
   async ask(input: string, attachments: Attachment[] = []): Promise<AgentResponse> {
@@ -151,9 +157,9 @@ export class NeoAgent {
     const historyStats = this.conversationHistory.stats();
 
     try {
-      const { text, webToolCalls, mcpToolCalls, fileToolCalls } = useToolLoop
+      const { text, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages)
-        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], toolEvents: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -193,6 +199,13 @@ export class NeoAgent {
           resultCount: call.resultCount,
           resultChars: call.resultChars,
           durationMs: call.durationMs
+        })),
+        toolEvents: toolEvents.map(event => ({
+          phase: event.phase,
+          name: event.name,
+          round: event.round,
+          summary: event.summary,
+          metadata: event.metadata
         }))
       });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
@@ -229,6 +242,7 @@ export class NeoAgent {
         webToolCallCount: webToolCalls.length,
         mcpToolCallCount: mcpToolCalls.length,
         fileToolCallCount: fileToolCalls.length,
+        toolEventCount: toolEvents.length,
         durationMs: Date.now() - start
       });
       return {
@@ -240,7 +254,8 @@ export class NeoAgent {
         webContext,
         webToolCalls,
         mcpToolCalls,
-        fileToolCalls
+        fileToolCalls,
+        toolEvents
       };
     } catch (error) {
       this.logger.error('agent.ask.error', error, { durationMs: Date.now() - start });
