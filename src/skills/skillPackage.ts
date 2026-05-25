@@ -151,8 +151,6 @@ export function validateSkillContent(body: string, nameHint?: string): SkillVali
   if (!description) errors.push('缺少 description。请在 frontmatter 中写 description，或使用 Description:。');
   if (!body.trim()) errors.push('SKILL.md 不能为空。');
   if (bytes > maxSkillFileBytes) errors.push(`SKILL.md 过大：${bytes} bytes，最多 ${maxSkillFileBytes} bytes。`);
-  if (triggers.length === 0) warnings.push('没有 triggers/when_to_use，模型可能不容易发现这个 skill。');
-  if (/```!|!`/.test(body)) warnings.push('检测到 shell 执行片段。neo 当前不会自动执行 skill 内 shell；后续如支持必须走权限确认。');
 
   return {
     valid: errors.length === 0,
