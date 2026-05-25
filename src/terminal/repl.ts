@@ -1,4 +1,5 @@
 import readline from 'node:readline/promises';
+import { emitKeypressEvents } from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -39,6 +40,29 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   };
   let multilineBuffer: string[] | undefined;
   let activeController: AbortController | undefined;
+  const continueMultilineFromShortcut = (): void => {
+    const mutableRl = rl as ReturnType<typeof readline.createInterface> & {
+      line?: string;
+      write?: (data: string | null, key?: { ctrl?: boolean; name?: string }) => void;
+    };
+    const currentLine = String(mutableRl.line ?? '').trimEnd();
+    if (!multilineBuffer) {
+      multilineBuffer = [];
+      rl.setPrompt(chalk.gray('neo… '));
+    }
+    multilineBuffer.push(currentLine);
+    mutableRl.write?.(null, { ctrl: true, name: 'u' });
+    output.write('\n');
+    if (isInteractive) rl.prompt();
+  };
+  const handleKeypress = (sequence: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } = {}): void => {
+    if (!isMultilineShortcut(sequence, key)) return;
+    continueMultilineFromShortcut();
+  };
+  if (isInteractive && input.isTTY) {
+    emitKeypressEvents(input);
+    input.on('keypress', handleKeypress);
+  }
   agent.setMcpPermissionAsker(isInteractive ? async request => {
     const answer = activeController
       ? await rl.question(formatMcpPermissionPrompt(request), { signal: activeController.signal })
@@ -124,6 +148,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     }
   } finally {
     rl.off('SIGINT', handleSigint);
+    input.off('keypress', handleKeypress);
     agent.setToolEventHandler(undefined);
     rl.close();
     await agent.close();
@@ -201,6 +226,18 @@ async function saveReplHistory(filePath: string, line: string): Promise<void> {
 
 function shouldPersistHistory(line: string): boolean {
   return !/(api[-_ ]?key|sk-[A-Za-z0-9]{12,}|tp-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9_-]{12,})/i.test(line);
+}
+
+function isMultilineShortcut(sequence: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }): boolean {
+  const name = key.name ?? '';
+  if ((name === 'return' || name === 'enter') && (key.ctrl || key.meta)) return true;
+  if (name === 'j' && key.ctrl) return true;
+  return [
+    '\u001b[13;5u',
+    '\u001b[13;6u',
+    '\u001b[13;3u',
+    '\u001b[13;7u'
+  ].includes(sequence);
 }
 
 function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
@@ -558,7 +595,7 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
 
 function printBanner(): void {
   console.log(chalk.bold('neo-agent'));
-  console.log(chalk.gray('输入 /help 查看命令。图片输入可使用 @image:/path/to/file.png 或 @/path/file.png。\n'));
+  console.log(chalk.gray('输入 /help 查看命令。多行输入可用 /multi；部分终端支持 Ctrl+Enter/Alt+Enter/Ctrl+J 换行。\n'));
 }
 
 function printHelp(): void {
@@ -567,7 +604,7 @@ function printHelp(): void {
     '/exit                 退出',
     '/status               查看当前 REPL 状态',
     '/debug [on|off|last]  开关轻量 debug 视图',
-    '/multi                多行输入，. 或 /end 提交',
+    '/multi                多行输入，. 或 /end 提交；部分终端可用 Ctrl+Enter/Alt+Enter/Ctrl+J 换行',
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
     '/memory [查询词]      查看或搜索记忆，支持 --type',
     '/memory-update <id|uri> <新内容>',
