@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AppConfig, ChatToolCall, ChatToolDefinition, WebToolCallRecord } from '../types.js';
+import type { ToolRunner } from '../tools/tool.js';
 import { TavilyClient } from './tavilyClient.js';
 
 export const WEB_SEARCH_TOOL_NAME = 'WebSearch';
@@ -82,11 +83,30 @@ export function createWebToolDefinitions(): ChatToolDefinition[] {
   ];
 }
 
-export class WebToolRunner {
+export function getWebToolPrompt(): string {
+  return [
+    '# 联网工具',
+    '- 你可以使用 WebSearch 搜索互联网，使用 WebFetch 读取公开网页正文。它们是只读工具。',
+    '- 当用户的问题涉及最新、当前、今天、近期、新闻、价格、天气、政策法规、软件版本、API 文档、体育赛程、公司职位、政治人物行程，或用户明确要求搜索/验证/打开链接时，主动使用联网工具。',
+    '- 如果用户说“你搜一下”“联网验证一下”“查一下这个”，要结合当前会话历史判断它指向的上一轮问题，不要搜索追问句本身。',
+    '- 如果使用了联网工具，最终回答必须列出来源 URL 和联网时间；不要编造来源。',
+    '- 联网结果也可能错误或冲突。重要事实要交叉检查，冲突时直接说明。'
+  ].join('\n');
+}
+
+export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
   constructor(
     private readonly config: AppConfig,
     private readonly tavily: TavilyClient
   ) {}
+
+  definitions(): ChatToolDefinition[] {
+    return createWebToolDefinitions();
+  }
+
+  canExecute(name: string): boolean {
+    return name === WEB_SEARCH_TOOL_NAME || name === WEB_FETCH_TOOL_NAME;
+  }
 
   async execute(call: ChatToolCall): Promise<WebToolResult> {
     if (call.function.name === WEB_SEARCH_TOOL_NAME) {

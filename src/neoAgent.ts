@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage, ChatToolDefinition, TextModelKind, WebContext, WebToolCallRecord } from './types.js';
+import type { AgentResponse, AppConfig, Attachment, ChatMessage, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -13,8 +13,9 @@ import { TranscriptService } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
 import { planWebUseWithModel } from './web/webPlanner.js';
-import { createWebToolDefinitions, WebToolRunner } from './web/webTools.js';
+import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
 import { ConversationHistory } from './conversation/history.js';
+import { QueryEngine } from './agent/queryEngine.js';
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -31,6 +32,7 @@ export class NeoAgent {
   private readonly vision: VisionAnalyzer;
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
+  private readonly queryEngine: QueryEngine;
 
   constructor(readonly config: AppConfig) {
     this.logger = new Logger(config);
@@ -43,6 +45,9 @@ export class NeoAgent {
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.webToolRunner = new WebToolRunner(config, this.web);
+    this.queryEngine = new QueryEngine(this.models, [this.webToolRunner], this.logger, {
+      maxToolRounds: config.web.maxToolRounds
+    });
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
     this.conversationHistory = new ConversationHistory(config.conversation.maxHistoryChars, config.conversation.maxMessageChars);
@@ -117,10 +122,11 @@ export class NeoAgent {
       { role: 'user', content: userContent }
     ];
     const historyStats = this.conversationHistory.stats();
-    const webTools = useWebToolLoop ? createWebToolDefinitions() : [];
 
     try {
-      const { text, webToolCalls } = await this.runModelLoop(decision.modelKind, messages, webTools);
+      const { text, webToolCalls } = useWebToolLoop
+        ? await this.queryEngine.run(decision.modelKind, messages)
+        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -202,100 +208,8 @@ export class NeoAgent {
     if (!enabled) return systemPrompt;
     return [
       systemPrompt,
-      '# 联网工具',
-      '- 你可以使用 WebSearch 搜索互联网，使用 WebFetch 读取公开网页正文。它们是只读工具。',
-      '- 当用户的问题涉及最新、当前、今天、近期、新闻、价格、天气、政策法规、软件版本、API 文档、体育赛程、公司职位、政治人物行程，或用户明确要求搜索/验证/打开链接时，主动使用联网工具。',
-      '- 如果用户说“你搜一下”“联网验证一下”“查一下这个”，要结合当前会话历史判断它指向的上一轮问题，不要搜索追问句本身。',
-      '- 如果使用了联网工具，最终回答必须列出来源 URL 和联网时间；不要编造来源。',
-      '- 联网结果也可能错误或冲突。重要事实要交叉检查，冲突时直接说明。'
+      getWebToolPrompt()
     ].join('\n\n');
-  }
-
-  private async runModelLoop(
-    modelKind: TextModelKind,
-    messages: ChatMessage[],
-    tools: ChatToolDefinition[]
-  ): Promise<{ text: string; webToolCalls: WebToolCallRecord[] }> {
-    const model = this.models.get(modelKind);
-    const loopMessages = messages.map(message => ({ ...message }));
-    const webToolCalls: WebToolCallRecord[] = [];
-
-    if (tools.length === 0) {
-      return {
-        text: await model.chat({ messages: loopMessages }),
-        webToolCalls
-      };
-    }
-
-    for (let round = 0; round < this.config.web.maxToolRounds; round += 1) {
-      const response = await model.chatWithTools({
-        messages: loopMessages,
-        tools,
-        toolChoice: 'auto'
-      });
-
-      if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls };
-      }
-
-      loopMessages.push({
-        role: 'assistant',
-        content: response.content,
-        tool_calls: response.toolCalls,
-        ...(response.reasoningContent ? { reasoning_content: response.reasoningContent } : {})
-      });
-
-      for (const toolCall of response.toolCalls) {
-        this.logger.info('web.tool.start', {
-          name: toolCall.function.name,
-          argumentChars: toolCall.function.arguments.length,
-          round
-        });
-        try {
-          const result = await this.webToolRunner.execute(toolCall);
-          webToolCalls.push(result.record);
-          loopMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: result.content
-          });
-          this.logger.info('web.tool.success', {
-            name: result.record.name,
-            resultCount: result.record.resultCount,
-            failedCount: result.record.failedCount ?? 0,
-            round
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          loopMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: JSON.stringify({ error: message })
-          });
-          this.logger.warn('web.tool.error', {
-            name: toolCall.function.name,
-            error: message,
-            round
-          });
-        }
-      }
-    }
-
-    this.logger.warn('web.tool.max_rounds_reached', {
-      maxToolRounds: this.config.web.maxToolRounds,
-      webToolCallCount: webToolCalls.length
-    });
-    const finalResponse = await model.chatWithTools({
-      messages: [
-        ...loopMessages,
-        {
-          role: 'user',
-          content: '联网工具调用轮次已达到上限。请基于已有工具结果直接给出最终回答；如果信息不足，要明确说明。'
-        }
-      ],
-      toolChoice: 'none'
-    });
-    return { text: finalResponse.content, webToolCalls };
   }
 
   private async buildWebContext(input: string): Promise<WebContext | undefined> {
