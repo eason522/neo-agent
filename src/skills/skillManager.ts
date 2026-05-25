@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig, Skill } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
@@ -25,7 +25,25 @@ export class SkillManager {
       const body = await readFile(skillPath, 'utf8');
       skills.push(parseSkill(entry.name, path.dirname(skillPath), body));
     }
-    return skills;
+    return skills.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getSkill(name: string): Promise<Skill | undefined> {
+    const skills = await this.loadSkills();
+    const safeName = sanitizeName(name);
+    return skills.find(skill => skill.name === safeName || skill.name === name);
+  }
+
+  async skillFilePath(name: string): Promise<string | undefined> {
+    const skill = await this.getSkill(name);
+    return skill ? path.join(skill.path, 'SKILL.md') : undefined;
+  }
+
+  async deleteSkill(name: string): Promise<Skill | undefined> {
+    const skill = await this.getSkill(name);
+    if (!skill) return undefined;
+    await rm(skill.path, { recursive: true, force: true });
+    return skill;
   }
 
   async match(input: string, limit = 4): Promise<Skill[]> {

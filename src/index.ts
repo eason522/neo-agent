@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { spawn } from 'node:child_process';
 import { initConfigFile, loadConfig } from './config.js';
 import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
@@ -18,6 +19,8 @@ import {
   testConfiguredMcpServers
 } from './mcp/mcpConfigCommands.js';
 import { createAbortError, isAbortError } from './utils/abort.js';
+import { SkillManager } from './skills/skillManager.js';
+import type { Skill } from './types.js';
 
 const program = new Command();
 
@@ -149,6 +152,90 @@ program
     } finally {
       await agent.close();
     }
+  });
+
+const skillCommand = program
+  .command('skill')
+  .description('管理 skill 生命周期');
+
+skillCommand
+  .command('list')
+  .description('列出已加载的 skill')
+  .option('--json', '输出 JSON')
+  .action(async (options: { json?: boolean }) => {
+    const config = await loadConfig();
+    const skills = await new SkillManager(config).loadSkills();
+    if (options.json) {
+      console.log(JSON.stringify(skills.map(toSkillSummary), null, 2));
+      return;
+    }
+    printSkillList(skills);
+  });
+
+skillCommand
+  .command('show')
+  .description('查看 skill 内容')
+  .argument('<name>', 'skill 名称')
+  .option('--json', '输出 JSON')
+  .action(async (name: string, options: { json?: boolean }) => {
+    const config = await loadConfig();
+    const skill = await new SkillManager(config).getSkill(name);
+    if (!skill) {
+      console.log(chalk.yellow(`没有找到 skill：${name}`));
+      process.exitCode = 1;
+      return;
+    }
+    if (options.json) console.log(JSON.stringify(toSkillSummary(skill), null, 2));
+    else printSkillDetail(skill);
+  });
+
+skillCommand
+  .command('create')
+  .description('创建 skill')
+  .argument('<name>', 'skill 名称')
+  .argument('[description...]', '描述')
+  .option('-t, --trigger <trigger>', '触发词，可重复', collectOption, [])
+  .action(async (name: string, descriptionParts: string[], options: { trigger: string[] }) => {
+    const config = await loadConfig();
+    const description = descriptionParts.join(' ').trim() || 'Manual skill';
+    const triggers = options.trigger.length > 0 ? options.trigger : name.split(/[-_\s]+/).filter(Boolean);
+    const skill = await new SkillManager(config).createSkill(name, description, triggers, [
+      'Confirm the task matches this skill.',
+      'Apply the remembered workflow and adapt only where the current request differs.'
+    ]);
+    console.log(chalk.green(`已创建 skill：${skill.name}`));
+    console.log(chalk.gray(`${skill.path}/SKILL.md`));
+  });
+
+skillCommand
+  .command('edit')
+  .description('用 $VISUAL 或 $EDITOR 编辑 skill')
+  .argument('<name>', 'skill 名称')
+  .action(async (name: string) => {
+    const config = await loadConfig();
+    const filePath = await new SkillManager(config).skillFilePath(name);
+    if (!filePath) {
+      console.log(chalk.yellow(`没有找到 skill：${name}`));
+      process.exitCode = 1;
+      return;
+    }
+    await openEditorOrPrintPath(filePath);
+  });
+
+skillCommand
+  .command('delete')
+  .alias('remove')
+  .description('删除 skill')
+  .argument('<name>', 'skill 名称')
+  .action(async (name: string) => {
+    const config = await loadConfig();
+    const deleted = await new SkillManager(config).deleteSkill(name);
+    if (!deleted) {
+      console.log(chalk.yellow(`没有找到 skill：${name}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(chalk.green(`已删除 skill：${deleted.name}`));
   });
 
 const webCommand = program
@@ -376,4 +463,50 @@ function parseListOption(input: string | undefined): string[] | undefined {
 function collectOption(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
+}
+
+function toSkillSummary(skill: Skill): Pick<Skill, 'name' | 'path' | 'description' | 'triggers'> {
+  return {
+    name: skill.name,
+    path: skill.path,
+    description: skill.description,
+    triggers: skill.triggers
+  };
+}
+
+function printSkillList(skills: Skill[]): void {
+  if (skills.length === 0) {
+    console.log(chalk.gray('没有找到 skill'));
+    return;
+  }
+  for (const skill of skills) {
+    const triggers = skill.triggers.length > 0 ? ` 触发词=${skill.triggers.join(',')}` : '';
+    console.log(`${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(triggers)}`);
+    console.log(chalk.gray(`${skill.path}/SKILL.md`));
+  }
+}
+
+function printSkillDetail(skill: Skill): void {
+  console.log(`${chalk.cyan(skill.name)} - ${skill.description}`);
+  console.log(chalk.gray(`${skill.path}/SKILL.md`));
+  if (skill.triggers.length > 0) console.log(chalk.gray(`触发词：${skill.triggers.join(', ')}`));
+  console.log('');
+  console.log(skill.body.trimEnd());
+}
+
+async function openEditorOrPrintPath(filePath: string): Promise<void> {
+  const editor = process.env.VISUAL || process.env.EDITOR;
+  if (!editor || !process.stdin.isTTY) {
+    console.log(chalk.gray(filePath));
+    console.log(chalk.yellow(editor ? '当前不是交互式终端，已输出 skill 文件路径。' : '未设置 VISUAL 或 EDITOR，已输出 skill 文件路径。'));
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(editor, [filePath], { stdio: 'inherit', shell: true });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(`编辑器退出码：${code ?? 'unknown'}`));
+    });
+  });
 }

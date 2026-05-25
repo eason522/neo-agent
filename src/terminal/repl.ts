@@ -150,14 +150,44 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       await agent.transcripts.append('command', line, { command });
       const skills = await agent.skills.loadSkills();
       if (skills.length === 0) console.log(chalk.gray('没有找到 skill'));
-      for (const skill of skills) console.log(`${chalk.cyan(skill.name)} - ${skill.description}`);
+      for (const skill of skills) console.log(formatSkillSummary(skill));
       return true;
     }
     case '/skill': {
       await agent.transcripts.append('command', line, { command, argsChars: arg.length });
       const [subCommand, ...skillRest] = rest;
+      if (!subCommand || subCommand === 'list') {
+        const skills = await agent.skills.loadSkills();
+        if (skills.length === 0) console.log(chalk.gray('没有找到 skill'));
+        for (const skill of skills) console.log(formatSkillSummary(skill));
+        return true;
+      }
+      if ((subCommand === 'show' || subCommand === 'path' || subCommand === 'edit' || subCommand === 'delete' || subCommand === 'remove') && skillRest.length === 0) {
+        console.log('用法：/skill list | show <名称> | path <名称> | edit <名称> | delete <名称> | create <名称> :: <描述>');
+        return true;
+      }
+      if (subCommand === 'show') {
+        const skill = await agent.skills.getSkill(skillRest.join(' '));
+        if (!skill) console.log(chalk.yellow(`没有找到 skill：${skillRest.join(' ')}`));
+        else console.log(formatSkillDetail(skill));
+        return true;
+      }
+      if (subCommand === 'path' || subCommand === 'edit') {
+        const filePath = await agent.skills.skillFilePath(skillRest.join(' '));
+        if (!filePath) console.log(chalk.yellow(`没有找到 skill：${skillRest.join(' ')}`));
+        else {
+          console.log(chalk.gray(filePath));
+          if (subCommand === 'edit') console.log(chalk.yellow('REPL 中不直接打开编辑器；请使用上面的路径，或运行 `neo skill edit <名称>`。'));
+        }
+        return true;
+      }
+      if (subCommand === 'delete' || subCommand === 'remove') {
+        const deleted = await agent.skills.deleteSkill(skillRest.join(' '));
+        console.log(deleted ? `${chalk.green('已删除 skill')} ${deleted.name}` : chalk.yellow(`没有找到 skill：${skillRest.join(' ')}`));
+        return true;
+      }
       if (subCommand !== 'create' || skillRest.length === 0) {
-        console.log('用法：/skill create <名称> :: <描述>');
+        console.log('用法：/skill list | show <名称> | path <名称> | edit <名称> | delete <名称> | create <名称> :: <描述>');
         return true;
       }
       const [name, description = 'Manual skill'] = skillRest.join(' ').split(/\s+::\s+/, 2);
@@ -278,7 +308,7 @@ function printHelp(): void {
     '/memory-pin <id|uri>',
     '/memory-export [数量]',
     '/skills               查看已加载的 skill',
-    '/skill create <名称> :: <描述>',
+    '/skill list/show/path/edit/delete/create',
     '/mcp                  查看已连接的 MCP 工具',
     '/logs [行数]          查看最近的 JSONL 日志',
     '/transcript [行数]    查看当前会话 transcript',
@@ -291,6 +321,24 @@ function printHelp(): void {
     '/web crawl <url>      有限深度爬取站点正文',
     '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
+}
+
+function formatSkillSummary(skill: { name: string; description: string; triggers: string[]; path: string }): string {
+  const triggers = skill.triggers.length > 0 ? ` 触发词=${skill.triggers.join(',')}` : '';
+  return [
+    `${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(triggers)}`,
+    chalk.gray(`${skill.path}/SKILL.md`)
+  ].join('\n');
+}
+
+function formatSkillDetail(skill: { name: string; description: string; triggers: string[]; path: string; body: string }): string {
+  return [
+    `${chalk.cyan(skill.name)} - ${skill.description}`,
+    chalk.gray(`${skill.path}/SKILL.md`),
+    skill.triggers.length > 0 ? chalk.gray(`触发词：${skill.triggers.join(', ')}`) : '',
+    '',
+    skill.body.trimEnd()
+  ].filter(line => line !== '').join('\n');
 }
 
 function formatMcpPermissionPrompt(request: {

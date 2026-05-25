@@ -24,6 +24,7 @@ test('显示帮助', async () => {
   assertIncludes(result.stdout, 'dream');
   assertIncludes(result.stdout, 'web');
   assertIncludes(result.stdout, 'mcp');
+  assertIncludes(result.stdout, 'skill');
   assertIncludes(result.stdout, 'transcripts');
 });
 
@@ -577,6 +578,32 @@ test('MCP 配置命令能添加、列出和删除 server', async () => {
   assertIncludes(empty.stdout, '没有配置 MCP server');
 });
 
+test('skill 生命周期命令能创建、查看、编辑路径和删除 skill', async () => {
+  const create = await run(['skill', 'create', '--trigger', 'demo', 'demo-skill', 'Demo skill description']);
+  assertIncludes(create.stdout, '已创建 skill：demo-skill');
+  assertIncludes(create.stdout, 'SKILL.md');
+
+  const list = await run(['skill', 'list']);
+  assertIncludes(list.stdout, 'demo-skill');
+  assertIncludes(list.stdout, 'Demo skill description');
+  assertIncludes(list.stdout, '触发词=demo');
+
+  const show = await run(['skill', 'show', 'demo-skill']);
+  assertIncludes(show.stdout, '# demo-skill');
+  assertIncludes(show.stdout, 'Description: Demo skill description');
+  assertIncludes(show.stdout, 'Triggers: demo');
+
+  const edit = await run(['skill', 'edit', 'demo-skill']);
+  assertIncludes(edit.stdout, 'SKILL.md');
+  assertIncludes(edit.stdout, '已输出 skill 文件路径');
+
+  const remove = await run(['skill', 'delete', 'demo-skill']);
+  assertIncludes(remove.stdout, '已删除 skill：demo-skill');
+
+  const missing = await run(['skill', 'show', 'demo-skill'], { expectCode: 1 });
+  assertIncludes(missing.stdout, '没有找到 skill：demo-skill');
+});
+
 test('REPL 常用命令不触发模型也能运行', async () => {
   const result = await run([], {
     input: [
@@ -584,6 +611,10 @@ test('REPL 常用命令不触发模型也能运行', async () => {
       '/remember --type workflow --tag cli --pin 我喜欢简洁直接的回答',
       '/memory --type workflow 简洁',
       '/memory-export 5',
+      '/skill create repl-skill :: REPL skill description',
+      '/skill show repl-skill',
+      '/skill path repl-skill',
+      '/skill delete repl-skill',
       '/logs 5',
       '/transcript 20',
       '/transcripts 5',
@@ -596,6 +627,8 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, '置顶 workflow');
   assertIncludes(result.stdout, '我喜欢简洁直接的回答');
   assertIncludes(result.stdout, '"category": "workflow"');
+  assertIncludes(result.stdout, 'REPL skill description');
+  assertIncludes(result.stdout, '已删除 skill');
   assertIncludes(result.stdout, 'transcripts');
 });
 
