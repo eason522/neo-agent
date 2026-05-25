@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AppConfig, ChatToolCall, ChatToolDefinition, WebToolCallRecord } from '../types.js';
-import type { ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
+import { throwIfAborted } from '../utils/abort.js';
 import { TavilyClient } from './tavilyClient.js';
 import { normalizeAndValidateWebUrl } from './urlPolicy.js';
 
@@ -111,12 +112,13 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
     return this.isEnabled() && (name === WEB_SEARCH_TOOL_NAME || name === WEB_FETCH_TOOL_NAME);
   }
 
-  async execute(call: ChatToolCall): Promise<WebToolResult> {
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<WebToolResult> {
+    throwIfAborted(options.signal);
     if (call.function.name === WEB_SEARCH_TOOL_NAME) {
-      return this.search(call.function.arguments);
+      return this.search(call.function.arguments, options.signal);
     }
     if (call.function.name === WEB_FETCH_TOOL_NAME) {
-      return this.fetch(call.function.arguments);
+      return this.fetch(call.function.arguments, options.signal);
     }
     return {
       content: JSON.stringify({
@@ -131,7 +133,7 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
     };
   }
 
-  private async search(rawArguments: string): Promise<WebToolResult> {
+  private async search(rawArguments: string, signal?: AbortSignal): Promise<WebToolResult> {
     const input = webSearchInputSchema.parse(parseToolArguments(rawArguments));
     if (input.allowed_domains?.length && input.blocked_domains?.length) {
       throw new Error('WebSearch 不能同时指定 allowed_domains 和 blocked_domains。');
@@ -141,8 +143,10 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
       maxResults: this.config.web.maxResults,
       includeAnswer: true,
       allowedDomains: input.allowed_domains,
-      blockedDomains: input.blocked_domains
+      blockedDomains: input.blocked_domains,
+      signal
     });
+    throwIfAborted(signal);
     return {
       content: truncate(JSON.stringify({
         tool: WEB_SEARCH_TOOL_NAME,
@@ -166,11 +170,12 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
     };
   }
 
-  private async fetch(rawArguments: string): Promise<WebToolResult> {
+  private async fetch(rawArguments: string, signal?: AbortSignal): Promise<WebToolResult> {
     const input = webFetchInputSchema.parse(parseToolArguments(rawArguments));
     const url = normalizeAndValidateWebUrl(input.url, this.config.web, WEB_FETCH_TOOL_NAME);
     const searchedAt = new Date().toISOString();
-    const response = await this.tavily.extract([url]);
+    const response = await this.tavily.extract([url], { signal });
+    throwIfAborted(signal);
     return {
       content: truncate(JSON.stringify({
         tool: WEB_FETCH_TOOL_NAME,

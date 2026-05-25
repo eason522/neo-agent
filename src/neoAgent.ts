@@ -20,6 +20,11 @@ import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
 import { ConversationHistory } from './conversation/history.js';
 import { QueryEngine } from './agent/queryEngine.js';
 import { getToolSearchPrompt, ToolSearchRunner } from './tools/toolSearchRunner.js';
+import { createAbortError } from './utils/abort.js';
+
+export type AskOptions = {
+  signal?: AbortSignal;
+};
 
 export class NeoAgent {
   readonly models: ModelRegistry;
@@ -96,7 +101,7 @@ export class NeoAgent {
     this.toolEventHandler = handler;
   }
 
-  async ask(input: string, attachments: Attachment[] = []): Promise<AgentResponse> {
+  async ask(input: string, attachments: Attachment[] = [], options: AskOptions = {}): Promise<AgentResponse> {
     const start = Date.now();
     this.logger.info('agent.ask.start', {
       inputChars: input.length,
@@ -117,7 +122,7 @@ export class NeoAgent {
       this.mcp.listTools().catch(() => []),
       this.vision.analyze(attachments, input),
       loadSoul(),
-      useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input)
+      useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);
 
     const decision = this.router.decide(input, attachments);
@@ -158,8 +163,8 @@ export class NeoAgent {
 
     try {
       const { text, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents } = useToolLoop
-        ? await this.queryEngine.run(decision.modelKind, messages)
-        : { text: await this.models.get(decision.modelKind).chat({ messages }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], toolEvents: [] };
+        ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
+        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], toolEvents: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -258,6 +263,15 @@ export class NeoAgent {
         toolEvents
       };
     } catch (error) {
+      if (options.signal?.aborted) {
+        const abortError = createAbortError();
+        this.logger.info('agent.ask.cancelled', { durationMs: Date.now() - start });
+        await this.transcripts.append('cancel', abortError.message, {
+          stage: 'agent.ask',
+          durationMs: Date.now() - start
+        });
+        throw abortError;
+      }
       this.logger.error('agent.ask.error', error, { durationMs: Date.now() - start });
       await this.transcripts.append('error', error instanceof Error ? error.message : String(error), {
         stage: 'agent.ask',
@@ -289,7 +303,7 @@ export class NeoAgent {
     ].filter(Boolean).join('\n\n');
   }
 
-  private async buildWebContext(input: string): Promise<WebContext | undefined> {
+  private async buildWebContext(input: string, signal?: AbortSignal): Promise<WebContext | undefined> {
     const previousUserInput = this.conversationHistory.lastUserInput();
     if (!this.config.web.autoSearch) {
       this.logger.info('web.plan', {
@@ -318,6 +332,7 @@ export class NeoAgent {
       model: this.models.get(this.config.web.plannerModelKind),
       timeoutMs: Math.min(this.config.web.timeoutMs, 12000)
     });
+    if (signal?.aborted) throw createAbortError();
     this.logger.info('web.plan', {
       shouldUseWeb: plan.shouldUseWeb,
       reason: plan.reason,
@@ -348,14 +363,16 @@ export class NeoAgent {
       if (plan.query) {
         context.search = await this.web.search(plan.query, {
           maxResults: this.config.web.maxResults,
-          includeAnswer: true
+          includeAnswer: true,
+          signal
         });
       }
       if (plan.urls.length > 0) {
-        context.extracts = await this.web.extract(plan.urls);
+        context.extracts = await this.web.extract(plan.urls, { signal });
       } else if (context.search?.results.length) {
         const urls = context.search.results.slice(0, 2).map(result => result.url);
-        context.extracts = await this.web.extract(urls).catch(error => {
+        context.extracts = await this.web.extract(urls, { signal }).catch(error => {
+          if (signal?.aborted) throw createAbortError();
           this.logger.warn('web.auto_extract.error', {
             error: error instanceof Error ? error.message : String(error),
             urlCount: urls.length

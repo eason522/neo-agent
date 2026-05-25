@@ -2,7 +2,8 @@ import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../types.js';
-import type { ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
+import { throwIfAborted } from '../utils/abort.js';
 
 export const READ_TOOL_NAME = 'Read';
 export const GLOB_TOOL_NAME = 'Glob';
@@ -110,17 +111,20 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return name === READ_TOOL_NAME || name === GLOB_TOOL_NAME || name === GREP_TOOL_NAME;
   }
 
-  async execute(call: ChatToolCall): Promise<{ content: string; record: FileToolCallRecord }> {
-    if (call.function.name === READ_TOOL_NAME) return this.read(call.function.arguments);
-    if (call.function.name === GLOB_TOOL_NAME) return this.glob(call.function.arguments);
-    if (call.function.name === GREP_TOOL_NAME) return this.grep(call.function.arguments);
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: FileToolCallRecord }> {
+    throwIfAborted(options.signal);
+    if (call.function.name === READ_TOOL_NAME) return this.read(call.function.arguments, options.signal);
+    if (call.function.name === GLOB_TOOL_NAME) return this.glob(call.function.arguments, options.signal);
+    if (call.function.name === GREP_TOOL_NAME) return this.grep(call.function.arguments, options.signal);
     throw new Error(`未知文件工具：${call.function.name}`);
   }
 
-  private async read(rawArguments: string): Promise<{ content: string; record: FileToolCallRecord }> {
+  private async read(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
     const input = readInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
+    throwIfAborted(signal);
     const filePath = await this.resolveInsideProject(input.file_path);
+    throwIfAborted(signal);
     const fileStat = await stat(filePath);
     if (!fileStat.isFile()) throw new Error(`Read 只能读取文件：${input.file_path}`);
     if (fileStat.size > maxReadBytes) throw new Error(`文件过大：${formatBytes(fileStat.size)}。请先用 Grep 定位，或后续实现分块读取。`);
@@ -145,14 +149,16 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     };
   }
 
-  private async glob(rawArguments: string): Promise<{ content: string; record: FileToolCallRecord }> {
+  private async glob(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
     const input = globInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
+    throwIfAborted(signal);
     const base = await this.resolveInsideProject(input.path ?? '.');
     const baseStat = await stat(base);
     if (!baseStat.isDirectory()) throw new Error(`Glob path 必须是目录：${input.path ?? '.'}`);
     const matcher = globToRegExp(input.pattern);
-    const files = await this.walkFiles(base, maxSearchFiles);
+    const files = await this.walkFiles(base, maxSearchFiles, signal);
+    throwIfAborted(signal);
     const matches = files
       .map(file => relativeToRoot(file, this.rootRealPath!))
       .filter(relative => matcher.test(relative) || matcher.test(path.basename(relative)))
@@ -173,21 +179,22 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     };
   }
 
-  private async grep(rawArguments: string): Promise<{ content: string; record: FileToolCallRecord }> {
+  private async grep(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
     const input = grepInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
+    throwIfAborted(signal);
     const target = await this.resolveInsideProject(input.path ?? '.');
     const targetStat = await stat(target);
     const regex = new RegExp(input.pattern, input['-i'] ? 'i' : '');
     const globMatcher = input.glob ? globToRegExp(input.glob) : undefined;
-    const files = targetStat.isFile() ? [target] : await this.walkFiles(target, maxSearchFiles);
+    const files = targetStat.isFile() ? [target] : await this.walkFiles(target, maxSearchFiles, signal);
     const filteredFiles = globMatcher
       ? files.filter(file => globMatcher.test(relativeToRoot(file, this.rootRealPath!)) || globMatcher.test(path.basename(file)))
       : files;
     const mode = input.output_mode ?? 'files_with_matches';
     const offset = input.offset ?? 0;
     const limit = input.head_limit === 0 ? 1000 : input.head_limit ?? defaultGrepLimit;
-    const result = await this.searchFiles(filteredFiles, regex, mode, offset, limit);
+    const result = await this.searchFiles(filteredFiles, regex, mode, offset, limit, signal);
     const content = formatGrepResult(result, mode);
     return {
       content: truncate(content, 100_000),
@@ -207,11 +214,13 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     regex: RegExp,
     mode: 'content' | 'files_with_matches' | 'count',
     offset: number,
-    limit: number
+    limit: number,
+    signal?: AbortSignal
   ): Promise<{ lines: string[]; count: number; truncated: boolean }> {
     const lines: string[] = [];
     let count = 0;
     for (const file of files) {
+      throwIfAborted(signal);
       const fileStat = await stat(file).catch(() => undefined);
       if (!fileStat?.isFile() || fileStat.size > maxReadBytes) continue;
       const raw = await readFile(file, 'utf8').catch(() => undefined);
@@ -236,10 +245,11 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return { lines: sliced, count, truncated: lines.length > offset + limit };
   }
 
-  private async walkFiles(directory: string, limit: number): Promise<string[]> {
+  private async walkFiles(directory: string, limit: number, signal?: AbortSignal): Promise<string[]> {
     const output: string[] = [];
     const queue = [directory];
     while (queue.length > 0 && output.length < limit) {
+      throwIfAborted(signal);
       const current = queue.shift()!;
       const entries = await readdir(current, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {

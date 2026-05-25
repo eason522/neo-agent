@@ -2,6 +2,7 @@ import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRe
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
+import { createAbortError, throwIfAborted } from '../utils/abort.js';
 import {
   buildToolErrorResult,
   buildUnknownToolResult,
@@ -28,6 +29,10 @@ type QueryEngineOptions = {
   onToolEvent?: (event: ToolProgressEvent) => void;
 };
 
+type QueryEngineRunOptions = {
+  signal?: AbortSignal;
+};
+
 export class QueryEngine {
   constructor(
     private readonly models: ModelRegistry,
@@ -40,10 +45,12 @@ export class QueryEngine {
     return this.tools.flatMap(tool => tool.definitions());
   }
 
-  async run(modelKind: TextModelKind, messages: ChatMessage[]): Promise<QueryEngineResult> {
+  async run(modelKind: TextModelKind, messages: ChatMessage[], runOptions: QueryEngineRunOptions = {}): Promise<QueryEngineResult> {
     const model = this.models.get(modelKind);
     const loopMessages = messages.map(message => ({ ...message }));
+    throwIfAborted(runOptions.signal);
     await Promise.all(this.tools.map(tool => tool.refresh?.() ?? Promise.resolve()));
+    throwIfAborted(runOptions.signal);
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
     const fileToolCalls: FileToolCallRecord[] = [];
@@ -52,7 +59,7 @@ export class QueryEngine {
 
     if (initialToolDefinitions.length === 0) {
       return {
-        text: await model.chat({ messages: loopMessages }),
+        text: await model.chat({ messages: loopMessages, signal: runOptions.signal }),
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
@@ -61,13 +68,16 @@ export class QueryEngine {
     }
 
     for (let round = 0; round < this.options.maxToolRounds; round += 1) {
+      throwIfAborted(runOptions.signal);
       const toolDefinitions = this.toolDefinitions();
       if (toolDefinitions.length === 0) break;
       const response = await model.chatWithTools({
         messages: loopMessages,
         tools: toolDefinitions,
-        toolChoice: 'auto'
+        toolChoice: 'auto',
+        signal: runOptions.signal
       });
+      throwIfAborted(runOptions.signal);
 
       if (response.toolCalls.length === 0) {
         return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
@@ -81,6 +91,7 @@ export class QueryEngine {
       });
 
       for (const toolCall of response.toolCalls) {
+        throwIfAborted(runOptions.signal);
         const runner = this.findRunner(toolCall.function.name);
         const startEvent = createToolStartEvent(toolCall, round);
         emitToolEvent(startEvent, toolEvents, this.options.onToolEvent);
@@ -102,7 +113,8 @@ export class QueryEngine {
         }
 
         try {
-          const result = await runner.execute(toolCall);
+          const result = await runner.execute(toolCall, { signal: runOptions.signal });
+          throwIfAborted(runOptions.signal);
           if (result.record) {
             if (isMcpRecord(result.record)) mcpToolCalls.push(result.record);
             else if (isFileRecord(result.record)) fileToolCalls.push(result.record);
@@ -121,6 +133,7 @@ export class QueryEngine {
             round
           });
         } catch (error) {
+          if (runOptions.signal?.aborted) throw createAbortError();
           loopMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -151,8 +164,10 @@ export class QueryEngine {
           content: '工具调用轮次已达到上限。请基于已有工具结果直接给出最终回答；如果信息不足，要明确说明。'
         }
       ],
-      toolChoice: 'none'
+      toolChoice: 'none',
+      signal: runOptions.signal
     });
+    throwIfAborted(runOptions.signal);
     return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
   }
 

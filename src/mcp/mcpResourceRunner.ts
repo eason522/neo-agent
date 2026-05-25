@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, McpToolCallRecord } from '../types.js';
-import type { ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
+import { throwIfAborted } from '../utils/abort.js';
 import type { McpManager } from './mcpManager.js';
 
 export const LIST_MCP_RESOURCES_TOOL_NAME = 'ListMcpResources';
@@ -79,11 +80,13 @@ export class McpResourceRunner implements ToolRunner<McpToolCallRecord> {
     return name === LIST_MCP_RESOURCES_TOOL_NAME || name === READ_MCP_RESOURCE_TOOL_NAME;
   }
 
-  async execute(call: ChatToolCall): Promise<{ content: string; record: McpToolCallRecord }> {
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: McpToolCallRecord }> {
+    throwIfAborted(options.signal);
     const start = Date.now();
     if (call.function.name === LIST_MCP_RESOURCES_TOOL_NAME) {
       const input = listInputSchema.parse(parseJsonObject(call.function.arguments));
       const resources = await this.mcp.listResources(input.server);
+      throwIfAborted(options.signal);
       const content = truncate(JSON.stringify({
         tool: LIST_MCP_RESOURCES_TOOL_NAME,
         resources,
@@ -105,6 +108,7 @@ export class McpResourceRunner implements ToolRunner<McpToolCallRecord> {
 
     const input = readInputSchema.parse(parseJsonObject(call.function.arguments));
     const contents = await this.mcp.readResource(input.server, input.uri);
+    throwIfAborted(options.signal);
     const content = truncate(JSON.stringify({
       tool: READ_MCP_RESOURCE_TOOL_NAME,
       server: input.server,

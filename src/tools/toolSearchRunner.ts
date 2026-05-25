@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, ToolCallRecord } from '../types.js';
 import type { McpToolRunner } from '../mcp/mcpToolRunner.js';
-import type { ToolExecutionResult, ToolRunner } from './tool.js';
+import type { ToolExecutionOptions, ToolExecutionResult, ToolRunner } from './tool.js';
+import { throwIfAborted } from '../utils/abort.js';
 
 export const TOOL_SEARCH_TOOL_NAME = 'ToolSearch';
 
@@ -46,7 +47,8 @@ export class ToolSearchRunner implements ToolRunner<ToolCallRecord> {
     return name === TOOL_SEARCH_TOOL_NAME && this.mcpToolRunner.hasDeferredTools();
   }
 
-  async execute(call: ChatToolCall): Promise<ToolExecutionResult<ToolCallRecord>> {
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<ToolExecutionResult<ToolCallRecord>> {
+    throwIfAborted(options.signal);
     const input = inputSchema.parse(parseJsonObject(call.function.arguments));
     const matches = this.mcpToolRunner.searchDeferredTools(input.query, input.max_results ?? 5);
     return {

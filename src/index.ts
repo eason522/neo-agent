@@ -17,6 +17,7 @@ import {
   removeConfiguredMcpServer,
   testConfiguredMcpServers
 } from './mcp/mcpConfigCommands.js';
+import { createAbortError, isAbortError } from './utils/abort.js';
 
 const program = new Command();
 
@@ -46,11 +47,22 @@ program
     const agent = new NeoAgent(config);
     await agent.initialize({ scheduledDreams: false });
     const { text, attachments } = extractImageAttachments(promptParts.join(' '));
+    const controller = new AbortController();
+    const onSigint = (): void => controller.abort(createAbortError());
+    process.once('SIGINT', onSigint);
     try {
-      const response = await agent.ask(text, attachments);
+      const response = await agent.ask(text, attachments, { signal: controller.signal });
       console.log(response.text);
       console.error(chalk.gray(`model=${response.modelKind}`));
+    } catch (error) {
+      if (isAbortError(error) || controller.signal.aborted) {
+        console.error(chalk.yellow('已取消当前请求。'));
+        process.exitCode = 130;
+      } else {
+        throw error;
+      }
     } finally {
+      process.off('SIGINT', onSigint);
       await agent.close();
     }
   });

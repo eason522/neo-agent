@@ -1,5 +1,6 @@
 import type { ChatCompletionResult, ChatMessage, ChatToolCall, ChatToolDefinition, ModelConfig } from '../types.js';
 import type { Logger } from '../logging/logger.js';
+import { isAbortError } from '../utils/abort.js';
 
 type ChatOptions = {
   messages: ChatMessage[] | unknown[];
@@ -102,6 +103,13 @@ export class OpenAICompatibleClient {
         finishReason: choice?.finish_reason
       };
     } catch (error) {
+      if (isAbortError(error) || options.signal?.aborted) {
+        this.logger?.info('model.request.cancelled', {
+          model: this.config.model,
+          durationMs: Date.now() - start
+        });
+        throw error;
+      }
       this.logger?.error('model.request.error', error, {
         model: this.config.model,
         durationMs: Date.now() - start

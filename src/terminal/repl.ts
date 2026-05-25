@@ -5,18 +5,31 @@ import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { MemoryCategory, MemoryRecord, ToolProgressEvent } from '../types.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
+import { createAbortError, isAbortError } from '../utils/abort.js';
 
 export async function startRepl(agent: NeoAgent): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: chalk.gray('neo> ') });
   const isInteractive = Boolean(input.isTTY);
+  let activeController: AbortController | undefined;
   agent.setMcpPermissionAsker(isInteractive ? async request => {
-    const answer = await rl.question(formatMcpPermissionPrompt(request));
+    const answer = activeController
+      ? await rl.question(formatMcpPermissionPrompt(request), { signal: activeController.signal })
+      : await rl.question(formatMcpPermissionPrompt(request));
     return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
   } : undefined);
   agent.setToolEventHandler(isInteractive ? event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
   } : undefined);
   printBanner();
+  const handleSigint = (): void => {
+    if (activeController && !activeController.signal.aborted) {
+      activeController.abort(createAbortError());
+      output.write(`\n${chalk.yellow('正在取消当前请求...')}\n`);
+      return;
+    }
+    rl.close();
+  };
+  rl.on('SIGINT', handleSigint);
 
   try {
     if (isInteractive) rl.prompt();
@@ -34,15 +47,24 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
 
       const { text, attachments } = extractImageAttachments(line);
       output.write(chalk.gray('thinking...\n'));
+      const turnController = new AbortController();
+      activeController = turnController;
       try {
-        const response = await agent.ask(text, attachments);
+        const response = await agent.ask(text, attachments, { signal: turnController.signal });
         output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n\n`);
       } catch (error) {
-        output.write(`${chalk.red('error')} ${error instanceof Error ? error.message : String(error)}\n\n`);
+        if (isAbortError(error) || turnController.signal.aborted) {
+          output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
+        } else {
+          output.write(`${chalk.red('error')} ${error instanceof Error ? error.message : String(error)}\n\n`);
+        }
+      } finally {
+        activeController = undefined;
       }
       if (isInteractive) rl.prompt();
     }
   } finally {
+    rl.off('SIGINT', handleSigint);
     agent.setToolEventHandler(undefined);
     rl.close();
     await agent.close();

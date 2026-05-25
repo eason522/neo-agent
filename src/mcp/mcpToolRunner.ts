@@ -1,5 +1,6 @@
 import type { AppConfig, ChatToolCall, ChatToolDefinition, McpToolCallRecord } from '../types.js';
-import type { ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
+import { throwIfAborted } from '../utils/abort.js';
 import type { McpManager, McpToolDetail } from './mcpManager.js';
 
 export type McpPermissionDecision = 'allow_once' | 'deny';
@@ -84,7 +85,8 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
     }));
   }
 
-  async execute(call: ChatToolCall): Promise<{ content: string; record: McpToolCallRecord }> {
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: McpToolCallRecord }> {
+    throwIfAborted(options.signal);
     const tool = this.tools.find(item => item.fullName === call.function.name);
     if (!tool) throw new Error(`未知 MCP 工具：${call.function.name}`);
     const initialPermission = evaluateMcpToolPermission(tool, this.permissions);
@@ -92,6 +94,7 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
     if (!initialPermission.allowed && !this.permissionAsker) throw new Error(initialPermission.reason);
     const args = parseArguments(call.function.arguments);
     const permission = await this.resolvePermission(tool, call.function.arguments, args, initialPermission);
+    throwIfAborted(options.signal);
     if (!permission.allowed) throw new Error(permission.reason);
     const start = Date.now();
     const result = await this.mcp.callTool(`${tool.serverName}.${tool.toolName}`, args);

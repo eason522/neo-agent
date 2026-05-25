@@ -17,10 +17,12 @@ type TavilySearchOptions = {
   includeAnswer?: boolean;
   allowedDomains?: string[];
   blockedDomains?: string[];
+  signal?: AbortSignal;
 };
 
 type TavilyExtractOptions = {
   depth?: WebExtractDepth;
+  signal?: AbortSignal;
 };
 
 type TavilyMapOptions = {
@@ -33,6 +35,7 @@ type TavilyMapOptions = {
   excludePaths?: string[];
   selectDomains?: string[];
   excludeDomains?: string[];
+  signal?: AbortSignal;
 };
 
 type TavilyCrawlOptions = TavilyMapOptions & {
@@ -101,7 +104,7 @@ export class TavilyClient {
       searchDepth: body.search_depth,
       maxResults: body.max_results
     });
-    const payload = await this.request<TavilySearchPayload>('search', body);
+    const payload = await this.request<TavilySearchPayload>('search', body, options.signal);
     const results = (payload.results ?? [])
       .map(item => ({
         title: item.title ?? '',
@@ -139,7 +142,7 @@ export class TavilyClient {
     const payload = await this.request<TavilyExtractPayload>('extract', {
       urls: cleanUrls,
       extract_depth: options.depth ?? this.config.web.extractDepth
-    });
+    }, options.signal);
     const results = (payload.results ?? [])
       .map(item => ({
         url: item.url ?? '',
@@ -176,7 +179,7 @@ export class TavilyClient {
       excludeDomainCount: Array.isArray(body.exclude_domains) ? body.exclude_domains.length : 0,
       hasInstructions: Boolean(body.instructions)
     });
-    const payload = await this.request<TavilyMapPayload>('map', body);
+    const payload = await this.request<TavilyMapPayload>('map', body, options.signal);
     const results = (payload.results ?? []).filter(item => typeof item === 'string' && item.length > 0);
     this.logger?.info('web.map.success', {
       provider: this.config.web.provider,
@@ -211,7 +214,7 @@ export class TavilyClient {
       excludeDomainCount: Array.isArray(crawlerBody.exclude_domains) ? crawlerBody.exclude_domains.length : 0,
       hasInstructions: Boolean(crawlerBody.instructions)
     });
-    const payload = await this.request<TavilyCrawlPayload>('crawl', body);
+    const payload = await this.request<TavilyCrawlPayload>('crawl', body, options.signal);
     const results = (payload.results ?? [])
       .map(item => ({ url: item.url ?? '', content: item.raw_content ?? item.content ?? '' }))
       .filter(item => item.url && item.content);
@@ -246,11 +249,12 @@ export class TavilyClient {
     };
   }
 
-  private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>): Promise<T> {
+  private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     if (!this.config.web.apiKey) {
       throw new Error('缺少 Tavily API key。请设置 TAVILY_API_KEY，或写入 ~/.neo-agent/config.json 的 web.apiKey。');
     }
     const url = new URL(endpoint, ensureTrailingSlash(this.config.web.apiBase));
+    const timeoutSignal = AbortSignal.timeout(this.config.web.timeoutMs);
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -258,7 +262,7 @@ export class TavilyClient {
         'content-type': 'application/json'
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.web.timeoutMs)
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
     });
     if (!response.ok) {
       const text = await response.text().catch(() => '');
