@@ -22,9 +22,16 @@ import { QueryEngine } from './agent/queryEngine.js';
 import { getToolSearchPrompt, ToolSearchRunner } from './tools/toolSearchRunner.js';
 import { getSkillToolPrompt, SkillToolRunner } from './skills/skillToolRunner.js';
 import { createAbortError } from './utils/abort.js';
+import { updateMcpToolPermission } from './mcp/mcpConfigCommands.js';
+import { stableId } from './utils/fs.js';
+import { UsageTracker } from './usage/usageTracker.js';
 
 export type AskOptions = {
   signal?: AbortSignal;
+};
+
+export type NeoAgentOptions = {
+  resumeSessionId?: string;
 };
 
 export class NeoAgent {
@@ -37,6 +44,7 @@ export class NeoAgent {
   readonly transcripts: TranscriptService;
   readonly dreams: DreamService;
   readonly web: TavilyClient;
+  readonly usage: UsageTracker;
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
@@ -50,14 +58,17 @@ export class NeoAgent {
   private readonly queryEngine: QueryEngine;
   private toolEventHandler?: (event: ToolProgressEvent) => void;
 
-  constructor(readonly config: AppConfig) {
+  constructor(readonly config: AppConfig, private readonly options: NeoAgentOptions = {}) {
     this.logger = new Logger(config);
     this.transcripts = new TranscriptService(config, this.logger);
-    this.models = new ModelRegistry(config, this.logger);
+    this.usage = new UsageTracker(config, this.logger);
+    this.models = new ModelRegistry(config, this.logger, this.usage);
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
-    this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions, config.mcp.toolSearchThreshold);
+    this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions, config.mcp.toolSearchThreshold, undefined, async (toolName, behavior) => {
+      await updateMcpToolPermission({ tool: toolName, behavior });
+    });
     this.toolSearchRunner = new ToolSearchRunner(this.mcpToolRunner);
     this.mcpResourceRunner = new McpResourceRunner(this.mcp);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
@@ -80,13 +91,33 @@ export class NeoAgent {
     });
   }
 
-  async initialize(options: { scheduledDreams?: boolean } = {}): Promise<void> {
+  async initialize(options: { scheduledDreams?: boolean; resumeSessionId?: string } = {}): Promise<void> {
     this.logger.info('agent.initialize.start', {
       homeDir: this.config.homeDir,
       logFile: this.logger.filePath,
       memoryBackend: this.config.memory.backend
     });
-    await this.transcripts.start();
+    const resumeSessionId = options.resumeSessionId ?? this.options.resumeSessionId;
+    let resumeMetadata: Record<string, unknown> = {};
+    if (resumeSessionId) {
+      const snapshot = await this.transcripts.loadConversationSnapshot(resumeSessionId);
+      if (snapshot) {
+        this.conversationHistory.hydrate(snapshot.messages, snapshot.compactSummary);
+        resumeMetadata = {
+          resumedFrom: snapshot.sessionId,
+          resumedTitle: snapshot.title,
+          resumedPath: snapshot.path,
+          resumedMessages: snapshot.messages.length,
+          resumedCompactSummaryChars: snapshot.compactSummary?.length ?? 0,
+          resumeWarnings: snapshot.warnings
+        };
+        this.logger.info('session.resume.success', resumeMetadata);
+      } else {
+        resumeMetadata = { resumeRequested: resumeSessionId, resumeStatus: 'not_found' };
+        this.logger.warn('session.resume.not_found', { resumeSessionId });
+      }
+    }
+    await this.transcripts.start(resumeMetadata);
     await this.mcp.connectAll();
     this.logger.info('agent.initialize.success');
     if (options.scheduledDreams ?? true) {
@@ -176,9 +207,9 @@ export class NeoAgent {
     const historyStats = this.conversationHistory.stats();
 
     try {
-      const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents } = useToolLoop
+      const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
-        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -234,7 +265,8 @@ export class NeoAgent {
           round: event.round,
           summary: event.summary,
           metadata: event.metadata
-        }))
+        })),
+        toolPairs
       });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
         category: 'session_summary',
@@ -286,7 +318,9 @@ export class NeoAgent {
           afterChars: compactResult.afterChars,
           summarizedMessages: compactResult.summarizedMessages,
           keptMessages: compactResult.keptMessages,
-          summaryChars: compactResult.summaryChars
+          summaryChars: compactResult.summaryChars,
+          summary: compactResult.summary,
+          compactId: stableId('compact')
         });
         this.logger.info('conversation.compact.success', compactResult);
       } else {
@@ -304,6 +338,7 @@ export class NeoAgent {
         fileToolCallCount: fileToolCalls.length,
         skillToolCallCount: skillToolCalls.length,
         toolEventCount: toolEvents.length,
+        toolPairCount: toolPairs.length,
         hasSkillSuggestion: Boolean(skillSuggestion),
         hasSkillImprovementSuggestion: Boolean(skillImprovementSuggestion),
         durationMs: Date.now() - start
@@ -320,6 +355,7 @@ export class NeoAgent {
         fileToolCalls,
         skillToolCalls,
         toolEvents,
+        toolPairs,
         skillSuggestion,
         skillImprovementSuggestion
       };
@@ -346,6 +382,7 @@ export class NeoAgent {
     await this.mcp.close();
     this.logger.info('agent.close');
     await this.transcripts.end();
+    await this.usage.flush();
     await this.logger.flush();
   }
 

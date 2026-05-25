@@ -1,5 +1,6 @@
 import type { AppConfig } from '../types.js';
 import type { Logger } from '../logging/logger.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 export type McpToolDetail = {
   serverName: string;
@@ -69,32 +70,22 @@ export class McpManager {
       return;
     }
 
-    const [{ Client }, { StdioClientTransport }] = await Promise.all([
-      import('@modelcontextprotocol/sdk/client/index.js'),
-      import('@modelcontextprotocol/sdk/client/stdio.js')
-    ]);
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 
     for (const [name, server] of enabled) {
       const start = Date.now();
       const client = new Client({ name: 'neo-agent', version: '0.1.0' });
-      const transport = new StdioClientTransport({
-        command: server.command,
-        args: server.args ?? [],
-        env: {
-          ...process.env,
-          ...(server.env ?? {})
-        } as Record<string, string>
-      });
+      const transport = await createTransport(name, server);
       try {
         await client.connect(transport);
       } catch (error) {
-        this.logger?.error('mcp.connect.error', error, { server: name, command: server.command });
+        this.logger?.error('mcp.connect.error', error, { server: name, type: server.type ?? 'stdio', command: server.command, url: server.url });
         throw error;
       }
       this.servers.set(name, { name, client });
       this.logger?.info('mcp.connect.success', {
         server: name,
-        command: server.command,
+        type: server.type ?? 'stdio',
         durationMs: Date.now() - start
       });
     }
@@ -228,4 +219,46 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
 
 function normalizeNameForMCP(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
+async function createTransport(name: string, server: AppConfig['mcp']['servers'][string]): Promise<Transport> {
+  const type = server.type ?? 'stdio';
+  if (type === 'stdio') {
+    if (!server.command?.trim()) throw new Error(`MCP stdio server 缺少 command：${name}`);
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    return new StdioClientTransport({
+      command: server.command,
+      args: server.args ?? [],
+      env: {
+        ...process.env,
+        ...(server.env ?? {})
+      } as Record<string, string>
+    });
+  }
+
+  if (!server.url?.trim()) throw new Error(`MCP ${type} server 缺少 url：${name}`);
+  const url = new URL(server.url);
+  const headers = buildRemoteHeaders(server);
+  if (type === 'http') {
+    const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    return new StreamableHTTPClientTransport(url, {
+      requestInit: Object.keys(headers).length > 0 ? { headers } : undefined
+    });
+  }
+  const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js');
+  return new SSEClientTransport(url, {
+    requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
+    eventSourceInit: Object.keys(headers).length > 0 ? { fetch: (input, init) => fetch(input, { ...init, headers: { ...(init?.headers ?? {}), ...headers } }) } : undefined
+  });
+}
+
+function buildRemoteHeaders(server: AppConfig['mcp']['servers'][string]): Record<string, string> {
+  const headers: Record<string, string> = { ...(server.headers ?? {}) };
+  const token = server.oauth?.accessTokenEnv
+    ? process.env[server.oauth.accessTokenEnv]
+    : server.oauth?.accessToken;
+  if (token && !headers.Authorization && !headers.authorization) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
 }

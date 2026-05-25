@@ -1,6 +1,6 @@
 import { appendFile, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig } from '../types.js';
+import type { AppConfig, ChatMessage } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import { redact } from '../logging/logger.js';
 import { ensureDir, stableId } from '../utils/fs.js';
@@ -21,6 +21,16 @@ export type TranscriptSessionSummary = {
   path: string;
   updatedAt: string;
   sizeBytes: number;
+  title?: string;
+};
+
+export type TranscriptConversationSnapshot = {
+  sessionId: string;
+  path: string;
+  title?: string;
+  messages: ChatMessage[];
+  compactSummary?: string;
+  warnings: string[];
 };
 
 export class TranscriptService {
@@ -36,11 +46,12 @@ export class TranscriptService {
     this.filePath = path.join(root, day, `${this.sessionId}.jsonl`);
   }
 
-  async start(): Promise<void> {
+  async start(metadata: Record<string, unknown> = {}): Promise<void> {
     await this.append('session_start', '会话开始', {
       cwd: process.cwd(),
       pid: process.pid,
-      node: process.version
+      node: process.version,
+      ...metadata
     });
   }
 
@@ -95,11 +106,13 @@ export class TranscriptService {
           if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
           const filePath = path.join(dayDir, file.name);
           const fileStat = await stat(filePath);
+          const entries = await readTranscriptEntries(filePath, 30);
           summaries.push({
             sessionId: path.basename(file.name, '.jsonl'),
             path: filePath,
             updatedAt: fileStat.mtime.toISOString(),
-            sizeBytes: fileStat.size
+            sizeBytes: fileStat.size,
+            title: inferTitle(entries)
           });
         }
       }
@@ -110,6 +123,58 @@ export class TranscriptService {
     return summaries
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, limit);
+  }
+
+  async loadConversationSnapshot(selector?: string): Promise<TranscriptConversationSnapshot | undefined> {
+    const session = await this.resolveSession(selector);
+    if (!session) return undefined;
+    const entries = await readTranscriptEntries(session.path);
+    const warnings: string[] = [];
+    const compactIndex = findLastCompactIndex(entries);
+    const compact = compactIndex >= 0 ? entries[compactIndex] : undefined;
+    const compactSummary = typeof compact?.metadata?.summary === 'string' ? compact.metadata.summary : undefined;
+    const sourceEntries = compactIndex >= 0 ? entries.slice(compactIndex + 1) : entries;
+    const messages: ChatMessage[] = [];
+    for (const entry of sourceEntries) {
+      if (entry.type === 'user' || entry.type === 'assistant') {
+        if (!entry.content.trim()) continue;
+        messages.push({ role: entry.type, content: entry.content });
+      }
+    }
+    const toolWarnings = validateToolPairMetadata(entries);
+    warnings.push(...toolWarnings);
+    return {
+      sessionId: session.sessionId,
+      path: session.path,
+      title: session.title,
+      messages,
+      compactSummary,
+      warnings
+    };
+  }
+
+  private async resolveSession(selector?: string): Promise<TranscriptSessionSummary | undefined> {
+    if (selector) {
+      const direct = path.resolve(selector);
+      try {
+        const fileStat = await stat(direct);
+        if (fileStat.isFile()) {
+          const entries = await readTranscriptEntries(direct, 30);
+          return {
+            sessionId: path.basename(direct, '.jsonl'),
+            path: direct,
+            updatedAt: fileStat.mtime.toISOString(),
+            sizeBytes: fileStat.size,
+            title: inferTitle(entries)
+          };
+        }
+      } catch {
+        // Fall through to session id lookup.
+      }
+    }
+    const sessions = await this.listSessions(200);
+    if (!selector || selector === 'latest') return sessions[0];
+    return sessions.find(session => session.sessionId === selector || path.basename(session.path) === selector || path.basename(session.path, '.jsonl') === selector);
   }
 }
 
@@ -124,4 +189,52 @@ export async function tailFile(filePath: string, lines: number): Promise<string>
 
 function redactTranscriptText(input: string): string {
   return String(redact(input));
+}
+
+async function readTranscriptEntries(filePath: string, maxEntries = Number.POSITIVE_INFINITY): Promise<TranscriptEntry[]> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    const output: TranscriptEntry[] = [];
+    for (const line of raw.trimEnd().split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as TranscriptEntry;
+        if (parsed && typeof parsed.type === 'string' && typeof parsed.content === 'string') output.push(parsed);
+      } catch {
+        // Ignore malformed transcript lines; resume should be best effort.
+      }
+      if (output.length >= maxEntries) break;
+    }
+    return output;
+  } catch {
+    return [];
+  }
+}
+
+function inferTitle(entries: TranscriptEntry[]): string | undefined {
+  const startTitle = entries.find(entry => entry.type === 'session_start' && typeof entry.metadata?.title === 'string')?.metadata?.title;
+  if (typeof startTitle === 'string' && startTitle.trim()) return startTitle.trim();
+  const firstUser = entries.find(entry => entry.type === 'user')?.content;
+  if (!firstUser) return undefined;
+  return firstUser.replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+function findLastCompactIndex(entries: TranscriptEntry[]): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.type === 'compact') return index;
+  }
+  return -1;
+}
+
+function validateToolPairMetadata(entries: TranscriptEntry[]): string[] {
+  const warnings: string[] = [];
+  for (const entry of entries) {
+    const pairs = entry.metadata?.toolPairs;
+    if (!Array.isArray(pairs)) continue;
+    const missingResult = pairs.filter(item => item && typeof item === 'object' && (item as { hasResult?: unknown }).hasResult === false);
+    if (missingResult.length > 0) {
+      warnings.push(`transcript ${entry.id} 存在 ${missingResult.length} 个未配对 tool result。`);
+    }
+  }
+  return warnings;
 }

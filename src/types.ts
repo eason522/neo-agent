@@ -56,6 +56,37 @@ export type ModelUsage = {
   totalTokens?: number;
 };
 
+export type ModelUsagePrice = {
+  inputPerMillion: number;
+  outputPerMillion: number;
+  currency: string;
+};
+
+export type ModelUsageRecord = {
+  id: string;
+  ts: string;
+  modelKind: ModelKind;
+  model: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  estimatedCost?: number;
+  currency?: string;
+  pricingConfigured: boolean;
+  durationMs?: number;
+  attempt?: number;
+};
+
+export type ModelUsageRecordInput = Omit<ModelUsageRecord, 'id' | 'ts' | 'estimatedCost' | 'currency' | 'pricingConfigured'>;
+
+export type ToolPairRecord = {
+  round: number;
+  toolCallId: string;
+  toolName: string;
+  hasResult: boolean;
+  resultChars: number;
+};
+
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 export type MemoryCategory = 'preference' | 'project_fact' | 'workflow' | 'session_summary';
@@ -67,9 +98,16 @@ export type McpPermissionMode = 'readOnly' | 'allowAll';
 export type SkillScope = 'user' | 'project';
 
 export type McpServerConfig = {
-  command: string;
+  type?: 'stdio' | 'http' | 'sse';
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  oauth?: {
+    accessTokenEnv?: string;
+    accessToken?: string;
+  };
   disabled?: boolean;
 };
 
@@ -157,6 +195,11 @@ export type AppConfig = {
     enabled: boolean;
     dir: string;
     maxTailLines: number;
+  };
+  usage: {
+    enabled: boolean;
+    file: string;
+    prices: Record<string, ModelUsagePrice>;
   };
 };
 
@@ -247,6 +290,7 @@ export type AgentResponse = {
   fileToolCalls?: FileToolCallRecord[];
   skillToolCalls?: SkillToolCallRecord[];
   toolEvents?: ToolProgressEvent[];
+  toolPairs?: ToolPairRecord[];
   skillSuggestion?: SkillSuggestion;
   skillImprovementSuggestion?: SkillImprovementSuggestion;
   memories: MemoryHit[];
@@ -311,6 +355,8 @@ export type WebSearchResponse = {
   query: string;
   answer?: string;
   results: WebSearchResult[];
+  warnings?: string[];
+  cacheHit?: boolean;
   responseTime?: number;
 };
 
@@ -321,13 +367,16 @@ export type WebExtractResult = {
 
 export type WebExtractResponse = {
   results: WebExtractResult[];
-  failedResults: Array<{ url: string; error?: string }>;
+  failedResults: Array<{ url: string; error?: string; category?: string }>;
+  warnings?: string[];
+  cacheHit?: boolean;
   responseTime?: number;
 };
 
 export type WebMapResponse = {
   baseUrl?: string;
   results: string[];
+  cacheHit?: boolean;
   responseTime?: number;
 };
 
@@ -339,6 +388,7 @@ export type WebCrawlResult = {
 export type WebCrawlResponse = {
   baseUrl?: string;
   results: WebCrawlResult[];
+  cacheHit?: boolean;
   responseTime?: number;
 };
 

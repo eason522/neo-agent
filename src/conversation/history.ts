@@ -19,6 +19,7 @@ export type ConversationCompactResult = {
   summarizedMessages: number;
   keptMessages: number;
   summaryChars: number;
+  summary?: string;
   reason?: string;
 };
 
@@ -47,6 +48,15 @@ export class ConversationHistory {
   recentMessages(): ChatMessage[] {
     this.trimToBudget();
     return this.withCompactSummary(this.messages);
+  }
+
+  hydrate(messages: ChatMessage[], compactSummary?: string): void {
+    this.messages.splice(0, this.messages.length, ...messages.map(message => ({
+      ...message,
+      content: trimMessage(message.content, this.maxMessageChars)
+    })));
+    this.compactSummary = compactSummary ? trimMessage(compactSummary, this.compactOptions.maxSummaryChars) : undefined;
+    this.trimToBudget();
   }
 
   recentMessagesForPlanning(maxChars: number): ChatMessage[] {
@@ -92,8 +102,9 @@ export class ConversationHistory {
         afterChars: this.totalChars(),
         summarizedMessages: 0,
         keptMessages: this.messages.length,
-        summaryChars: this.compactSummary?.length ?? 0,
-        reason: 'auto_compact_disabled'
+      summaryChars: this.compactSummary?.length ?? 0,
+      summary: this.compactSummary,
+      reason: 'auto_compact_disabled'
       };
     }
 
@@ -106,6 +117,7 @@ export class ConversationHistory {
         summarizedMessages: 0,
         keptMessages: this.messages.length,
         summaryChars: this.compactSummary?.length ?? 0,
+        summary: this.compactSummary,
         reason: 'below_threshold'
       };
     }
@@ -120,6 +132,7 @@ export class ConversationHistory {
         summarizedMessages: 0,
         keptMessages: this.messages.length,
         summaryChars: this.compactSummary?.length ?? 0,
+        summary: this.compactSummary,
         reason: 'no_summarizable_prefix'
       };
     }
@@ -135,7 +148,8 @@ export class ConversationHistory {
       afterChars: this.totalChars(),
       summarizedMessages: older.length,
       keptMessages: this.messages.length,
-      summaryChars: this.compactSummary.length
+      summaryChars: this.compactSummary.length,
+      summary: this.compactSummary
     };
   }
 

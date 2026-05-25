@@ -80,9 +80,16 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   }),
   mcp: z.object({
     servers: z.record(z.object({
-      command: z.string(),
+      type: z.enum(['stdio', 'http', 'sse']).optional(),
+      command: z.string().optional(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
+      url: z.string().optional(),
+      headers: z.record(z.string()).optional(),
+      oauth: z.object({
+        accessTokenEnv: z.string().optional(),
+        accessToken: z.string().optional()
+      }).optional(),
       disabled: z.boolean().optional()
     })),
     toolSearchThreshold: z.number().int().positive(),
@@ -104,6 +111,15 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
     enabled: z.boolean(),
     dir: z.string(),
     maxTailLines: z.number().int().positive()
+  }),
+  usage: z.object({
+    enabled: z.boolean(),
+    file: z.string(),
+    prices: z.record(z.object({
+      inputPerMillion: z.number().nonnegative(),
+      outputPerMillion: z.number().nonnegative(),
+      currency: z.string().min(1)
+    }))
   })
 });
 
@@ -233,8 +249,38 @@ export function defaultConfig(): AppConfig {
       enabled: process.env.NEO_AGENT_TRANSCRIPTS_ENABLED !== '0',
       dir: process.env.NEO_AGENT_TRANSCRIPTS_DIR || 'transcripts',
       maxTailLines: Number.parseInt(process.env.NEO_AGENT_TRANSCRIPTS_TAIL_LINES || '80', 10)
+    },
+    usage: {
+      enabled: process.env.NEO_AGENT_USAGE_ENABLED !== '0',
+      file: process.env.NEO_AGENT_USAGE_FILE || 'usage/model-usage.jsonl',
+      prices: parseUsagePrices(process.env.NEO_AGENT_USAGE_PRICES_JSON)
     }
   };
+}
+
+function parseUsagePrices(input: string | undefined): AppConfig['usage']['prices'] {
+  if (!input) return {};
+  try {
+    const parsed = JSON.parse(input) as Record<string, unknown>;
+    const output: AppConfig['usage']['prices'] = {};
+    for (const [model, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object') continue;
+      const record = value as Record<string, unknown>;
+      const inputPrice = Number(record.inputPerMillion);
+      const outputPrice = Number(record.outputPerMillion);
+      const currency = typeof record.currency === 'string' && record.currency.trim() ? record.currency.trim() : 'USD';
+      if (Number.isFinite(inputPrice) && Number.isFinite(outputPrice) && inputPrice >= 0 && outputPrice >= 0) {
+        output[model] = {
+          inputPerMillion: inputPrice,
+          outputPerMillion: outputPrice,
+          currency
+        };
+      }
+    }
+    return output;
+  } catch {
+    return {};
+  }
 }
 
 function getMcpPermissionMode(): AppConfig['mcp']['permissions']['mode'] {

@@ -1,4 +1,4 @@
-import type { ChatCompletionResult, ChatMessage, ChatToolCall, ChatToolDefinition, ModelConfig, ModelUsage } from '../types.js';
+import type { ChatCompletionResult, ChatMessage, ChatToolCall, ChatToolDefinition, ModelConfig, ModelKind, ModelUsage, ModelUsageRecordInput } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import { isAbortError } from '../utils/abort.js';
 
@@ -14,8 +14,13 @@ type ChatWithToolsOptions = ChatOptions & {
   toolChoice?: 'auto' | 'none';
 };
 
+export type ModelUsageSink = {
+  modelKind: ModelKind;
+  record: (event: ModelUsageRecordInput) => void;
+};
+
 export class OpenAICompatibleClient {
-  constructor(private readonly config: ModelConfig, private readonly logger?: Logger) {}
+  constructor(private readonly config: ModelConfig, private readonly logger?: Logger, private readonly usageSink?: ModelUsageSink) {}
 
   async chat(options: ChatOptions): Promise<string> {
     const result = await this.chatWithTools({ ...options, toolChoice: 'none' });
@@ -63,6 +68,15 @@ export class OpenAICompatibleClient {
           promptTokens: usage?.promptTokens,
           completionTokens: usage?.completionTokens,
           totalTokens: usage?.totalTokens
+        });
+        this.usageSink?.record({
+          modelKind: this.usageSink.modelKind,
+          model: this.config.model,
+          promptTokens: usage?.promptTokens,
+          completionTokens: usage?.completionTokens,
+          totalTokens: usage?.totalTokens,
+          durationMs: Date.now() - start,
+          attempt
         });
         return {
           content,

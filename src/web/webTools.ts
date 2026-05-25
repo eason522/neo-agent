@@ -157,6 +157,8 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
         searchedAt,
         query: response.query,
         answer: response.answer,
+        warnings: response.warnings,
+        cacheHit: response.cacheHit,
         results: response.results.map(result => ({
           title: result.title,
           url: result.url,
@@ -191,6 +193,8 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
           content: result.content
         })),
         failedResults: response.failedResults,
+        warnings: response.warnings,
+        cacheHit: response.cacheHit,
         instruction: '如果回答使用了这个网页内容，必须在回答末尾列出来源 URL 和联网时间。'
       }), this.config.web.maxContextChars),
       record: {

@@ -1,3 +1,4 @@
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig, ChatMessage, MemoryCategory, MemoryRecord, TextModelKind } from '../types.js';
 import type { Logger } from '../logging/logger.js';
@@ -9,6 +10,11 @@ import { readJsonFile, stableId, writeJsonFile } from '../utils/fs.js';
 type DreamState = {
   lastDreamedAt?: string;
   lastReportPath?: string;
+};
+
+type DreamLock = {
+  pid: number;
+  startedAt: string;
 };
 
 type DreamUpsert = {
@@ -31,6 +37,22 @@ type DreamPlan = {
   insights: string[];
 };
 
+export type DreamReport = {
+  id: string;
+  ts: string;
+  dryRun: boolean;
+  modelKind: TextModelKind;
+  reviewedSessions: TranscriptSessionSummary[];
+  reviewedMemories: number;
+  plan: DreamPlan;
+  raw: string;
+  appliedAt?: string;
+  appliedCounts?: {
+    upserts: number;
+    archives: number;
+  };
+};
+
 export type DreamRunOptions = {
   dryRun?: boolean;
   force?: boolean;
@@ -51,9 +73,34 @@ export type DreamRunResult = {
   reviewedMemories: number;
 };
 
+export type DreamReportSummary = {
+  id: string;
+  path: string;
+  ts: string;
+  dryRun: boolean;
+  summary: string;
+  upserts: number;
+  archives: number;
+  insights: number;
+  appliedAt?: string;
+};
+
+export type DreamMemoryReviewIssue = {
+  type: 'duplicate' | 'stale' | 'low_value';
+  severity: 'info' | 'warn';
+  memoryIds: string[];
+  message: string;
+};
+
+export type DreamMemoryReview = {
+  checkedMemories: number;
+  issues: DreamMemoryReviewIssue[];
+};
+
 export class DreamService {
   private readonly statePath: string;
   private readonly reportsDir: string;
+  private readonly lockPath: string;
 
   constructor(
     private readonly config: AppConfig,
@@ -63,6 +110,7 @@ export class DreamService {
   ) {
     this.statePath = path.join(config.homeDir, 'dream', 'state.json');
     this.reportsDir = path.join(config.homeDir, 'dream', 'reports');
+    this.lockPath = path.join(config.homeDir, 'dream', 'dream.lock');
   }
 
   async maybeRunScheduled(): Promise<DreamRunResult> {
@@ -91,6 +139,156 @@ export class DreamService {
   }
 
   async run(options: DreamRunOptions = {}): Promise<DreamRunResult> {
+    const lock = await this.acquireLock();
+    if (!lock.acquired) return skipped(lock.reason);
+    try {
+      return await this.runLocked(options);
+    } finally {
+      await lock.release();
+    }
+  }
+
+  async listReports(limit = 10): Promise<DreamReportSummary[]> {
+    const root = this.reportsDir;
+    const summaries: DreamReportSummary[] = [];
+    try {
+      const files = await transcriptsListFiles(root);
+      for (const filePath of files) {
+        const report = await this.readReportFile(filePath);
+        if (!report) continue;
+        summaries.push({
+          id: report.id,
+          path: filePath,
+          ts: report.ts,
+          dryRun: report.dryRun,
+          summary: report.plan.summary,
+          upserts: report.plan.upserts.length,
+          archives: report.plan.archives.length,
+          insights: report.plan.insights.length,
+          appliedAt: report.appliedAt
+        });
+      }
+    } catch {
+      return [];
+    }
+    return summaries.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, limit);
+  }
+
+  async showReport(selector?: string): Promise<DreamReportSummary & { report: DreamReport } | undefined> {
+    const resolved = await this.resolveReportPath(selector);
+    if (!resolved) return undefined;
+    const report = await this.readReportFile(resolved);
+    if (!report) return undefined;
+    return {
+      id: report.id,
+      path: resolved,
+      ts: report.ts,
+      dryRun: report.dryRun,
+      summary: report.plan.summary,
+      upserts: report.plan.upserts.length,
+      archives: report.plan.archives.length,
+      insights: report.plan.insights.length,
+      appliedAt: report.appliedAt,
+      report
+    };
+  }
+
+  async applyReport(selector?: string): Promise<DreamRunResult> {
+    const lock = await this.acquireLock();
+    if (!lock.acquired) return skipped(lock.reason);
+    try {
+      const resolved = await this.resolveReportPath(selector);
+      if (!resolved) return skipped('没有找到 dream 报告');
+      const report = await this.readReportFile(resolved);
+      if (!report) return skipped('dream 报告无法读取或格式不正确');
+      if (report.appliedAt) return skipped(`dream 报告已经采纳：${report.appliedAt}`);
+
+      for (const item of report.plan.upserts) {
+        await this.memory.remember(item.content, {
+          category: item.category,
+          tags: ['dream', ...(item.tags ?? [])],
+          pinned: item.pinned ?? false,
+          origin: 'agent',
+          metadata: { reason: item.reason, reportId: report.id }
+        });
+      }
+      for (const item of report.plan.archives) {
+        await this.memory.forget(item.id);
+      }
+      const appliedAt = new Date().toISOString();
+      const appliedReport: DreamReport = {
+        ...report,
+        appliedAt,
+        appliedCounts: {
+          upserts: report.plan.upserts.length,
+          archives: report.plan.archives.length
+        }
+      };
+      await writeJsonFile(resolved, appliedReport);
+      await this.writeState({
+        lastDreamedAt: appliedAt,
+        lastReportPath: resolved
+      });
+      return {
+        status: 'completed',
+        dryRun: false,
+        reportPath: resolved,
+        summary: report.plan.summary,
+        upserts: report.plan.upserts,
+        archives: report.plan.archives,
+        insights: report.plan.insights,
+        reviewedSessions: report.reviewedSessions.length,
+        reviewedMemories: report.reviewedMemories
+      };
+    } finally {
+      await lock.release();
+    }
+  }
+
+  async reviewMemories(limit = this.config.dreaming.maxMemories): Promise<DreamMemoryReview> {
+    const memories = await this.memory.list(limit);
+    const issues: DreamMemoryReviewIssue[] = [];
+    const byContent = new Map<string, MemoryRecord[]>();
+    for (const memory of memories) {
+      const key = compactMemoryText(memory.content);
+      const list = byContent.get(key) ?? [];
+      list.push(memory);
+      byContent.set(key, list);
+
+      if (!memory.pinned && memory.content.length < 12) {
+        issues.push({
+          type: 'low_value',
+          severity: 'warn',
+          memoryIds: [memory.id],
+          message: '记忆内容过短，可能缺少可复用上下文。'
+        });
+      }
+      const updatedAt = Date.parse(memory.updatedAt);
+      if (!memory.pinned && Number.isFinite(updatedAt) && Date.now() - updatedAt > 1000 * 60 * 60 * 24 * 180) {
+        issues.push({
+          type: 'stale',
+          severity: 'info',
+          memoryIds: [memory.id],
+          message: '记忆超过 180 天未更新，建议复查是否仍然有效。'
+        });
+      }
+    }
+    for (const duplicates of byContent.values()) {
+      if (duplicates.length < 2) continue;
+      issues.push({
+        type: 'duplicate',
+        severity: 'warn',
+        memoryIds: duplicates.map(memory => memory.id),
+        message: '发现内容高度相同的重复记忆，建议合并或归档旧版本。'
+      });
+    }
+    return {
+      checkedMemories: memories.length,
+      issues
+    };
+  }
+
+  private async runLocked(options: DreamRunOptions = {}): Promise<DreamRunResult> {
     const dryRun = options.dryRun ?? false;
     const state = await this.readState();
     const lastDreamedAt = state.lastDreamedAt ? Date.parse(state.lastDreamedAt) : 0;
@@ -218,6 +416,114 @@ export class DreamService {
     await writeJsonFile(filePath, report);
     return filePath;
   }
+
+  private async resolveReportPath(selector?: string): Promise<string | undefined> {
+    if (selector) {
+      const direct = path.resolve(selector);
+      if (await fileExists(direct)) return direct;
+      const reports = await this.listReports(100);
+      const matched = reports.find(report => report.id === selector || path.basename(report.path) === selector || path.basename(report.path, '.json') === selector);
+      return matched?.path;
+    }
+    return (await this.listReports(1))[0]?.path;
+  }
+
+  private async readReportFile(filePath: string): Promise<DreamReport | undefined> {
+    try {
+      const raw = await readFile(filePath, 'utf8');
+      const parsed = JSON.parse(raw) as Partial<DreamReport>;
+      if (!parsed || typeof parsed.id !== 'string' || typeof parsed.ts !== 'string' || !parsed.plan) return undefined;
+      return {
+        id: parsed.id,
+        ts: parsed.ts,
+        dryRun: parsed.dryRun === true,
+        modelKind: parsed.modelKind === 'small' ? 'small' : 'main',
+        reviewedSessions: Array.isArray(parsed.reviewedSessions) ? parsed.reviewedSessions : [],
+        reviewedMemories: typeof parsed.reviewedMemories === 'number' ? parsed.reviewedMemories : 0,
+        plan: parseDreamPlan(JSON.stringify(parsed.plan)),
+        raw: typeof parsed.raw === 'string' ? parsed.raw : '',
+        appliedAt: typeof parsed.appliedAt === 'string' ? parsed.appliedAt : undefined,
+        appliedCounts: parsed.appliedCounts
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async acquireLock(): Promise<{ acquired: true; release: () => Promise<void> } | { acquired: false; reason: string; release: () => Promise<void> }> {
+    await mkdir(path.dirname(this.lockPath), { recursive: true });
+    const existing = await readDreamLock(this.lockPath);
+    if (existing) {
+      const ageMs = Date.now() - Date.parse(existing.startedAt);
+      if (Number.isFinite(ageMs) && ageMs < 1000 * 60 * 60 && isProcessRunning(existing.pid)) {
+        return {
+          acquired: false,
+          reason: `另一个 dreaming 正在运行：pid=${existing.pid}`,
+          release: async () => undefined
+        };
+      }
+      await unlink(this.lockPath).catch(() => undefined);
+    }
+    const lock: DreamLock = { pid: process.pid, startedAt: new Date().toISOString() };
+    try {
+      await writeFile(this.lockPath, JSON.stringify(lock), { flag: 'wx' });
+    } catch {
+      return {
+        acquired: false,
+        reason: '另一个 dreaming 刚刚获得锁',
+        release: async () => undefined
+      };
+    }
+    return {
+      acquired: true,
+      release: async () => {
+        const current = await readDreamLock(this.lockPath);
+        if (current?.pid === process.pid) await unlink(this.lockPath).catch(() => undefined);
+      }
+    };
+  }
+}
+
+async function transcriptsListFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries.filter(entry => entry.isFile() && entry.name.endsWith('.json')).map(entry => path.join(dir, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const fileStat = await stat(filePath);
+    return fileStat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function readDreamLock(filePath: string): Promise<DreamLock | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(filePath, 'utf8')) as Partial<DreamLock>;
+    if (typeof parsed.pid !== 'number' || typeof parsed.startedAt !== 'string') return undefined;
+    return { pid: parsed.pid, startedAt: parsed.startedAt };
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function compactMemoryText(input: string): string {
+  return input.toLowerCase().replace(/\s+/g, '').replace(/[，。,.!?！？、；;：:]/g, '').trim();
 }
 
 function buildDreamPrompt(input: {

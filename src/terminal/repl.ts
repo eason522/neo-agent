@@ -69,7 +69,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     const answer = activeController
       ? await rl.question(formatMcpPermissionPrompt(request), { signal: activeController.signal })
       : await rl.question(formatMcpPermissionPrompt(request));
-    return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
+    return parseMcpPermissionAnswer(answer);
   } : undefined);
   agent.setToolEventHandler(isInteractive ? event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
@@ -134,7 +134,7 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
 
   agent.setMcpPermissionAsker(async request => {
     const answer = await askQuestion(formatMcpPermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
-    return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
+    return parseMcpPermissionAnswer(answer);
   });
   agent.setToolEventHandler(event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
@@ -1013,7 +1013,8 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
         console.log(chalk.gray('没有找到 transcript'));
       } else {
         for (const session of sessions) {
-          console.log(`${session.updatedAt}  ${session.sessionId}  ${session.sizeBytes}B`);
+          const title = session.title ? `  ${session.title}` : '';
+          console.log(`${session.updatedAt}  ${session.sessionId}  ${session.sizeBytes}B${title}`);
           console.log(chalk.gray(session.path));
         }
       }
@@ -1027,6 +1028,45 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
     }
     case '/dream': {
       await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const [subCommand, ...dreamRest] = rest;
+      if (subCommand === 'list') {
+        const reports = await agent.dreams.listReports(10);
+        if (reports.length === 0) console.log(chalk.gray('没有找到 dream 报告。'));
+        for (const report of reports) {
+          const status = report.appliedAt ? `已采纳 ${report.appliedAt}` : (report.dryRun ? '待采纳' : '已执行');
+          console.log(`${report.ts}  ${report.id}  ${status}`);
+          console.log(chalk.gray(report.path));
+        }
+        return true;
+      }
+      if (subCommand === 'show') {
+        const report = await agent.dreams.showReport(dreamRest.join(' ') || undefined);
+        if (!report) console.log(chalk.yellow('没有找到 dream 报告。'));
+        else {
+          console.log(`${chalk.cyan(report.id)}  ${report.ts}`);
+          console.log(`摘要：${report.summary}`);
+          console.log(`新增/更新建议：${report.upserts}，归档建议：${report.archives}，灵感：${report.insights}`);
+          console.log(chalk.gray(report.path));
+        }
+        return true;
+      }
+      if (subCommand === 'apply') {
+        const result = await agent.dreams.applyReport(dreamRest.join(' ') || undefined);
+        if (result.status === 'skipped') console.log(chalk.yellow(`dream 采纳跳过：${result.reason}`));
+        else console.log(`${chalk.green('dream 报告已采纳')} 写入 ${result.upserts.length}，归档 ${result.archives.length}`);
+        return true;
+      }
+      if (subCommand === 'review') {
+        const review = await agent.dreams.reviewMemories();
+        console.log(`已复查记忆：${review.checkedMemories}`);
+        if (review.issues.length === 0) console.log(chalk.green('没有发现明显问题。'));
+        for (const issue of review.issues) {
+          const color = issue.severity === 'warn' ? chalk.yellow : chalk.gray;
+          console.log(color(`${issue.type}: ${issue.message}`));
+          console.log(chalk.gray(issue.memoryIds.join(', ')));
+        }
+        return true;
+      }
       const dryRun = rest.includes('--dry-run');
       const force = rest.includes('--force') || !rest.includes('--scheduled');
       const result = await agent.dreams.run({ dryRun, force });
@@ -1102,7 +1142,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/transcript [行数]    查看当前会话 transcript',
     '/transcripts [数量]   查看最近会话 transcript 列表',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
-    '/dream [--dry-run]    整理记忆并提炼灵感',
+    '/dream [--dry-run]    整理记忆并提炼灵感；支持 list/show/apply/review',
     '/web search <查询词>  联网搜索',
     '/web extract <url>    提取网页正文',
     '/web map <url>        发现站点 URL',
@@ -1151,8 +1191,16 @@ function formatMcpPermissionPrompt(request: {
     request.description ? `说明：${request.description}` : '',
     `风险：${request.risk}`,
     `参数：${request.argumentChars} 字符；字段：${keys}`,
-    '允许本次执行吗？输入 y/yes/允许 允许，其他输入拒绝：'
+    '选择：y=允许本次，a=始终允许，n=拒绝本次，d=始终拒绝。'
   ].filter(Boolean).join('\n');
+}
+
+function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always' | 'deny' | 'deny_always' {
+  const normalized = answer.trim().toLowerCase();
+  if (/^(a|always|始终允许|永久允许|总是允许)$/i.test(normalized)) return 'allow_always';
+  if (/^(d|deny always|始终拒绝|永久拒绝|总是拒绝)$/i.test(normalized)) return 'deny_always';
+  if (/^(y|yes|允许|同意)$/i.test(normalized)) return 'allow_once';
+  return 'deny';
 }
 
 function formatToolProgressEvent(event: ToolProgressEvent): string {

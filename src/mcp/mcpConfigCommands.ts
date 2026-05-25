@@ -7,6 +7,10 @@ import { McpManager } from './mcpManager.js';
 type RawUserConfig = Record<string, unknown> & {
   mcp?: Record<string, unknown> & {
     servers?: Record<string, McpServerConfig>;
+    permissions?: {
+      allowedTools?: string[];
+      deniedTools?: string[];
+    };
   };
 };
 
@@ -27,19 +31,29 @@ export async function listConfiguredMcpServers(): Promise<{ filePath: string; en
 
 export async function addConfiguredMcpServer(input: {
   name: string;
-  command: string;
-  args: string[];
+  type?: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  oauthTokenEnv?: string;
   env?: Record<string, string>;
   disabled?: boolean;
 }): Promise<{ filePath: string; server: McpServerConfig }> {
   validateServerName(input.name);
-  if (!input.command.trim()) throw new Error('MCP server command 不能为空。');
+  const type = input.type ?? 'stdio';
+  if (type === 'stdio' && !input.command?.trim()) throw new Error('MCP stdio server command 不能为空。');
+  if ((type === 'http' || type === 'sse') && !input.url?.trim()) throw new Error(`MCP ${type} server url 不能为空。`);
   const filePath = getUserConfigPath();
   const config = await readRawUserConfig(filePath);
   const mcp = ensureMcpConfig(config);
   const server: McpServerConfig = {
-    command: input.command,
-    ...(input.args.length > 0 ? { args: input.args } : {}),
+    type,
+    ...(input.command ? { command: input.command } : {}),
+    ...(input.args && input.args.length > 0 ? { args: input.args } : {}),
+    ...(input.url ? { url: input.url } : {}),
+    ...(input.headers && Object.keys(input.headers).length > 0 ? { headers: input.headers } : {}),
+    ...(input.oauthTokenEnv ? { oauth: { accessTokenEnv: input.oauthTokenEnv } } : {}),
     ...(input.env && Object.keys(input.env).length > 0 ? { env: input.env } : {}),
     ...(input.disabled ? { disabled: true } : {})
   };
@@ -57,6 +71,38 @@ export async function removeConfiguredMcpServer(name: string): Promise<{ filePat
   delete mcp.servers[name];
   await writeRawUserConfig(filePath, config);
   return { filePath, removed };
+}
+
+export async function updateMcpToolPermission(input: {
+  tool: string;
+  behavior: 'allow' | 'deny';
+  remove?: boolean;
+}): Promise<{ filePath: string; allowedTools: string[]; deniedTools: string[] }> {
+  const tool = input.tool.trim();
+  if (!tool) throw new Error('MCP tool 名称不能为空。');
+  const filePath = getUserConfigPath();
+  const config = await readRawUserConfig(filePath);
+  const mcp = ensureMcpConfig(config);
+  mcp.permissions ??= {};
+  mcp.permissions.allowedTools ??= [];
+  mcp.permissions.deniedTools ??= [];
+  const target = input.behavior === 'allow' ? mcp.permissions.allowedTools : mcp.permissions.deniedTools;
+  const opposite = input.behavior === 'allow' ? mcp.permissions.deniedTools : mcp.permissions.allowedTools;
+  if (input.remove) {
+    mcp.permissions.allowedTools = mcp.permissions.allowedTools.filter(rule => rule !== tool);
+    mcp.permissions.deniedTools = mcp.permissions.deniedTools.filter(rule => rule !== tool);
+  } else {
+    if (!target.includes(tool)) target.push(tool);
+    const filtered = opposite.filter(rule => rule !== tool);
+    if (input.behavior === 'allow') mcp.permissions.deniedTools = filtered;
+    else mcp.permissions.allowedTools = filtered;
+  }
+  await writeRawUserConfig(filePath, config);
+  return {
+    filePath,
+    allowedTools: mcp.permissions.allowedTools,
+    deniedTools: mcp.permissions.deniedTools
+  };
 }
 
 export async function testConfiguredMcpServers(name?: string): Promise<Array<{
@@ -116,12 +162,29 @@ export function parseEnvPairs(pairs: string[]): Record<string, string> {
   return output;
 }
 
+export function parseHeaderPairs(pairs: string[]): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const pair of pairs) {
+    const index = pair.indexOf('=');
+    if (index <= 0) throw new Error(`HTTP header 必须使用 KEY=VALUE 格式：${pair}`);
+    const key = pair.slice(0, index).trim();
+    const value = pair.slice(index + 1);
+    if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key)) throw new Error(`HTTP header 名称无效：${key}`);
+    output[key] = value;
+  }
+  return output;
+}
+
 export function formatMcpServerEntry(entry: McpConfigEntry): string {
+  const type = entry.server.type ?? 'stdio';
   const args = entry.server.args?.length ? ` ${entry.server.args.join(' ')}` : '';
   const disabled = entry.server.disabled ? ' [disabled]' : '';
   const envCount = entry.server.env ? Object.keys(entry.server.env).length : 0;
   const env = envCount > 0 ? ` env=${envCount}` : '';
-  return `${entry.name}${disabled}: ${entry.server.command}${args}${env}`;
+  const headers = entry.server.headers ? ` headers=${Object.keys(entry.server.headers).length}` : '';
+  const oauth = entry.server.oauth?.accessTokenEnv ? ` oauth=${entry.server.oauth.accessTokenEnv}` : '';
+  const target = type === 'stdio' ? `${entry.server.command ?? ''}${args}` : `${entry.server.url ?? ''}`;
+  return `${entry.name}${disabled}: ${type} ${target}${env}${headers}${oauth}`;
 }
 
 function getUserConfigPath(): string {
@@ -138,10 +201,10 @@ async function writeRawUserConfig(filePath: string, config: RawUserConfig): Prom
   await writeJsonFile(filePath, config);
 }
 
-function ensureMcpConfig(config: RawUserConfig): { servers: Record<string, McpServerConfig> } {
+function ensureMcpConfig(config: RawUserConfig): { servers: Record<string, McpServerConfig>; permissions?: { allowedTools?: string[]; deniedTools?: string[] } } {
   config.mcp ??= {};
   config.mcp.servers ??= {};
-  return config.mcp as Record<string, unknown> & { servers: Record<string, McpServerConfig> };
+  return config.mcp as Record<string, unknown> & { servers: Record<string, McpServerConfig>; permissions?: { allowedTools?: string[]; deniedTools?: string[] } };
 }
 
 function validateServerName(name: string): void {

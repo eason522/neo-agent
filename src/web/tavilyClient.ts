@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import { buildSearchDomainPolicy, domainRulesToRegexPatterns, normalizeAndValidateWebUrl } from './urlPolicy.js';
+import { createHash } from 'node:crypto';
 
 type TavilySearchOptions = {
   maxResults?: number;
@@ -67,6 +68,17 @@ type TavilyExtractPayload = {
   response_time?: number;
 };
 
+type WebFailureCategory = 'auth' | 'rate_limit' | 'server' | 'timeout' | 'network' | 'bad_request' | 'unknown';
+
+type CachedPayload = {
+  ts: number;
+  value: unknown;
+};
+
+const requestCache = new Map<string, CachedPayload>();
+const cacheTtlMs = 10 * 60 * 1000;
+const maxCacheEntries = 100;
+
 type TavilyMapPayload = {
   base_url?: string;
   results?: string[];
@@ -104,8 +116,9 @@ export class TavilyClient {
       searchDepth: body.search_depth,
       maxResults: body.max_results
     });
-    const payload = await this.request<TavilySearchPayload>('search', body, options.signal);
-    const results = (payload.results ?? [])
+    const response = await this.request<TavilySearchPayload>('search', body, options.signal);
+    const payload = response.payload;
+    const results = dedupeSearchResults((payload.results ?? [])
       .map(item => ({
         title: item.title ?? '',
         url: item.url ?? '',
@@ -113,54 +126,65 @@ export class TavilyClient {
         score: item.score,
         publishedDate: item.published_date
       }))
-      .filter(item => item.url && (item.title || item.content));
+      .filter(item => item.url && (item.title || item.content)));
+    const warnings = detectSearchWarnings(results, payload.answer);
     this.logger?.info('web.search.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
       resultCount: results.length,
-      hasAnswer: Boolean(payload.answer)
+      hasAnswer: Boolean(payload.answer),
+      cacheHit: response.cacheHit,
+      warningCount: warnings.length
     });
     return {
       query,
       answer: payload.answer,
       results,
+      warnings,
+      cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
   }
 
   async extract(urls: string[], options: TavilyExtractOptions = {}): Promise<WebExtractResponse> {
-    const cleanUrls = urls
+    const cleanUrls = uniqueUrls(urls
       .map(url => url.trim())
       .filter(Boolean)
-      .map(url => normalizeAndValidateWebUrl(url, this.config.web, 'Tavily Extract'));
+      .map(url => normalizeAndValidateWebUrl(url, this.config.web, 'Tavily Extract')));
     const start = Date.now();
     this.logger?.info('web.extract.start', {
       provider: this.config.web.provider,
       urlCount: cleanUrls.length,
       extractDepth: options.depth ?? this.config.web.extractDepth
     });
-    const payload = await this.request<TavilyExtractPayload>('extract', {
+    const response = await this.request<TavilyExtractPayload>('extract', {
       urls: cleanUrls,
       extract_depth: options.depth ?? this.config.web.extractDepth
     }, options.signal);
-    const results = (payload.results ?? [])
+    const payload = response.payload;
+    const results = dedupeExtractResults((payload.results ?? [])
       .map(item => ({
         url: item.url ?? '',
         content: item.raw_content ?? item.content ?? ''
       }))
-      .filter(item => item.url && item.content);
+      .filter(item => item.url && item.content));
     const failedResults = (payload.failed_results ?? [])
-      .map(item => ({ url: item.url ?? '', error: item.error }))
+      .map(item => ({ url: item.url ?? '', error: item.error, category: classifyFailureText(item.error ?? '') }))
       .filter(item => item.url);
+    const warnings = detectExtractWarnings(results, failedResults);
     this.logger?.info('web.extract.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
       resultCount: results.length,
-      failedCount: failedResults.length
+      failedCount: failedResults.length,
+      cacheHit: response.cacheHit,
+      warningCount: warnings.length
     });
     return {
       results,
       failedResults,
+      warnings,
+      cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
   }
@@ -179,16 +203,19 @@ export class TavilyClient {
       excludeDomainCount: Array.isArray(body.exclude_domains) ? body.exclude_domains.length : 0,
       hasInstructions: Boolean(body.instructions)
     });
-    const payload = await this.request<TavilyMapPayload>('map', body, options.signal);
-    const results = (payload.results ?? []).filter(item => typeof item === 'string' && item.length > 0);
+    const response = await this.request<TavilyMapPayload>('map', body, options.signal);
+    const payload = response.payload;
+    const results = uniqueUrls((payload.results ?? []).filter(item => typeof item === 'string' && item.length > 0));
     this.logger?.info('web.map.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
-      resultCount: results.length
+      resultCount: results.length,
+      cacheHit: response.cacheHit
     });
     return {
       baseUrl: payload.base_url,
       results,
+      cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
   }
@@ -214,18 +241,21 @@ export class TavilyClient {
       excludeDomainCount: Array.isArray(crawlerBody.exclude_domains) ? crawlerBody.exclude_domains.length : 0,
       hasInstructions: Boolean(crawlerBody.instructions)
     });
-    const payload = await this.request<TavilyCrawlPayload>('crawl', body, options.signal);
-    const results = (payload.results ?? [])
+    const response = await this.request<TavilyCrawlPayload>('crawl', body, options.signal);
+    const payload = response.payload;
+    const results = dedupeExtractResults((payload.results ?? [])
       .map(item => ({ url: item.url ?? '', content: item.raw_content ?? item.content ?? '' }))
-      .filter(item => item.url && item.content);
+      .filter(item => item.url && item.content));
     this.logger?.info('web.crawl.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
-      resultCount: results.length
+      resultCount: results.length,
+      cacheHit: response.cacheHit
     });
     return {
       baseUrl: payload.base_url,
       results,
+      cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
   }
@@ -249,26 +279,56 @@ export class TavilyClient {
     };
   }
 
-  private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>, signal?: AbortSignal): Promise<{ payload: T; cacheHit: boolean }> {
     if (!this.config.web.apiKey) {
       throw new Error('缺少 Tavily API key。请设置 TAVILY_API_KEY，或写入 ~/.neo-agent/config.json 的 web.apiKey。');
     }
+    const cacheKey = buildCacheKey(endpoint, body);
+    const cached = getCached<T>(cacheKey);
+    if (cached) {
+      this.logger?.debug('web.cache.hit', { endpoint, key: cacheKey });
+      return { payload: cached, cacheHit: true };
+    }
     const url = new URL(endpoint, ensureTrailingSlash(this.config.web.apiBase));
     const timeoutSignal = AbortSignal.timeout(this.config.web.timeoutMs);
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.config.web.apiKey}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-    });
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Tavily ${endpoint} 请求失败：${response.status} ${response.statusText} ${text.slice(0, 800)}`);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.web.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const category = classifyHttpFailure(response.status, text);
+        throw new TavilyRequestError(endpoint, category, `Tavily ${endpoint} 请求失败（${category}）：${response.status} ${response.statusText} ${text.slice(0, 800)}`);
+      }
+      const payload = await response.json() as T;
+      setCached(cacheKey, payload);
+      return { payload, cacheHit: false };
+    } catch (error) {
+      if (error instanceof TavilyRequestError) throw error;
+      const category = error instanceof DOMException && error.name === 'TimeoutError'
+        ? 'timeout'
+        : signal?.aborted
+          ? 'timeout'
+          : 'network';
+      throw new TavilyRequestError(endpoint, category, `Tavily ${endpoint} 请求失败（${category}）：${error instanceof Error ? error.message : String(error)}`);
     }
-    return response.json() as Promise<T>;
+  }
+}
+
+export class TavilyRequestError extends Error {
+  constructor(
+    readonly endpoint: string,
+    readonly category: WebFailureCategory,
+    message: string
+  ) {
+    super(message);
+    this.name = 'TavilyRequestError';
   }
 }
 
@@ -312,6 +372,11 @@ export function buildCrawlerFilters(
 
 export function formatWebSearch(response: WebSearchResponse): string {
   const lines = [`搜索：${response.query}`];
+  if (response.cacheHit) lines.push('缓存：命中');
+  if (response.warnings?.length) {
+    lines.push('', '提示：');
+    for (const warning of response.warnings) lines.push(`- ${warning}`);
+  }
   if (response.answer) {
     lines.push('', response.answer.trim());
   }
@@ -344,6 +409,10 @@ export function formatWebContext(context: WebContext, maxChars: number): string 
       lines.push(`URL: ${result.url}`);
       if (result.content) lines.push(`摘要: ${result.content}`);
     });
+    if (context.search.warnings?.length) {
+      lines.push('', '## 联网结果提示');
+      for (const warning of context.search.warnings) lines.push(`- ${warning}`);
+    }
   }
   if (context.extracts?.results.length) {
     lines.push('', '## 网页正文');
@@ -354,13 +423,23 @@ export function formatWebContext(context: WebContext, maxChars: number): string 
   }
   if (context.extracts?.failedResults.length) {
     lines.push('', '## 读取失败');
-    context.extracts.failedResults.forEach(item => lines.push(`- ${item.url}${item.error ? `: ${item.error}` : ''}`));
+    context.extracts.failedResults.forEach(item => lines.push(`- ${item.url}${item.category ? ` [${item.category}]` : ''}${item.error ? `: ${item.error}` : ''}`));
+  }
+  if (context.extracts?.warnings?.length) {
+    lines.push('', '## 网页读取提示');
+    for (const warning of context.extracts.warnings) lines.push(`- ${warning}`);
   }
   return truncate(lines.join('\n'), maxChars);
 }
 
 export function formatWebExtract(response: WebExtractResponse, maxChars = 5000): string {
   const lines: string[] = [];
+  if (response.cacheHit) lines.push('缓存：命中', '');
+  if (response.warnings?.length) {
+    lines.push('提示：');
+    for (const warning of response.warnings) lines.push(`- ${warning}`);
+    lines.push('');
+  }
   for (const result of response.results) {
     lines.push(`URL：${result.url}`);
     lines.push(truncate(result.content.trim(), maxChars));
@@ -368,7 +447,7 @@ export function formatWebExtract(response: WebExtractResponse, maxChars = 5000):
   }
   if (response.failedResults.length > 0) {
     lines.push('失败：');
-    for (const item of response.failedResults) lines.push(`- ${item.url}${item.error ? `：${item.error}` : ''}`);
+    for (const item of response.failedResults) lines.push(`- ${item.url}${item.category ? ` [${item.category}]` : ''}${item.error ? `：${item.error}` : ''}`);
   }
   if (response.responseTime !== undefined) lines.push(`耗时：${response.responseTime}s`);
   return lines.join('\n').trim() || '没有提取到网页正文。';
@@ -376,6 +455,7 @@ export function formatWebExtract(response: WebExtractResponse, maxChars = 5000):
 
 export function formatWebMap(response: WebMapResponse): string {
   const lines = [response.baseUrl ? `站点：${response.baseUrl}` : '站点 map：'];
+  if (response.cacheHit) lines.push('缓存：命中');
   response.results.forEach((url, index) => lines.push(`${index + 1}. ${url}`));
   if (response.responseTime !== undefined) lines.push('', `耗时：${response.responseTime}s`);
   return lines.join('\n');
@@ -383,6 +463,7 @@ export function formatWebMap(response: WebMapResponse): string {
 
 export function formatWebCrawl(response: WebCrawlResponse, maxChars = 1200): string {
   const lines = [response.baseUrl ? `站点：${response.baseUrl}` : '站点 crawl：'];
+  if (response.cacheHit) lines.push('缓存：命中');
   response.results.forEach((result, index) => {
     lines.push('', `${index + 1}. ${result.url}`);
     lines.push(truncate(result.content.trim(), maxChars));
@@ -411,6 +492,121 @@ function mergePatternLists(configured: string[], requested: string[] | undefined
 
 function uniqueStrings(items: string[]): string[] {
   return [...new Set(items)];
+}
+
+function uniqueUrls(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const url of urls) {
+    const key = normalizeUrlForDedupe(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(url);
+  }
+  return output;
+}
+
+function dedupeSearchResults(results: WebSearchResponse['results']): WebSearchResponse['results'] {
+  const seen = new Set<string>();
+  const output: WebSearchResponse['results'] = [];
+  for (const result of results) {
+    const key = normalizeUrlForDedupe(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(result);
+  }
+  return output;
+}
+
+function dedupeExtractResults<T extends { url: string }>(results: T[]): T[] {
+  const seen = new Set<string>();
+  const output: T[] = [];
+  for (const result of results) {
+    const key = normalizeUrlForDedupe(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(result);
+  }
+  return output;
+}
+
+function normalizeUrlForDedupe(input: string): string {
+  try {
+    const url = new URL(input);
+    url.hash = '';
+    url.searchParams.sort();
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return input.trim().replace(/#.*$/, '').replace(/\/$/, '');
+  }
+}
+
+function detectSearchWarnings(results: WebSearchResponse['results'], answer: string | undefined): string[] {
+  const warnings: string[] = [];
+  const dates = new Set<string>();
+  const text = [answer ?? '', ...results.slice(0, 5).map(result => `${result.title} ${result.content} ${result.publishedDate ?? ''}`)].join('\n');
+  for (const match of text.matchAll(/\b20\d{2}(?:[-年/]\d{1,2}(?:[-月/]\d{1,2}日?)?)?/g)) {
+    dates.add(match[0]);
+  }
+  if (dates.size >= 3) {
+    warnings.push(`不同来源或摘要中出现多个日期：${[...dates].slice(0, 6).join('、')}。涉及时间线时请交叉核对。`);
+  }
+  return warnings;
+}
+
+function detectExtractWarnings(results: WebExtractResponse['results'], failedResults: WebExtractResponse['failedResults']): string[] {
+  const warnings: string[] = [];
+  if (failedResults.length > 0 && results.length > 0) {
+    warnings.push('部分 URL 读取失败，回答时不要把已读取页面当作完整来源集合。');
+  }
+  if (failedResults.length > 0 && results.length === 0) {
+    warnings.push('所有 URL 均读取失败，需要改用搜索、检查 URL，或说明无法获取页面正文。');
+  }
+  return warnings;
+}
+
+function classifyHttpFailure(status: number, text: string): WebFailureCategory {
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 408) return 'timeout';
+  if (status === 429) return 'rate_limit';
+  if (status >= 500) return 'server';
+  if (status >= 400) return text.toLowerCase().includes('blocked') ? 'auth' : 'bad_request';
+  return 'unknown';
+}
+
+function classifyFailureText(text: string): WebFailureCategory {
+  const lower = text.toLowerCase();
+  if (/timeout|timed out|超时/.test(lower)) return 'timeout';
+  if (/rate|quota|429|限流|额度/.test(lower)) return 'rate_limit';
+  if (/auth|unauthor|forbidden|401|403|登录|权限/.test(lower)) return 'auth';
+  if (/server|5\d\d/.test(lower)) return 'server';
+  if (/network|dns|连接/.test(lower)) return 'network';
+  return 'unknown';
+}
+
+function buildCacheKey(endpoint: string, body: Record<string, unknown>): string {
+  return createHash('sha256').update(`${endpoint}:${JSON.stringify(body)}`).digest('hex').slice(0, 24);
+}
+
+function getCached<T>(key: string): T | undefined {
+  const cached = requestCache.get(key);
+  if (!cached) return undefined;
+  if (Date.now() - cached.ts > cacheTtlMs) {
+    requestCache.delete(key);
+    return undefined;
+  }
+  return clonePayload(cached.value) as T;
+}
+
+function setCached(key: string, value: unknown): void {
+  requestCache.set(key, { ts: Date.now(), value: clonePayload(value) });
+  if (requestCache.size <= maxCacheEntries) return;
+  const oldest = [...requestCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+  if (oldest) requestCache.delete(oldest);
+}
+
+function clonePayload(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function validateRegexList(name: string, patterns: string[]): void {

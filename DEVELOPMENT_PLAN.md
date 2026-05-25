@@ -32,13 +32,14 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - skill 已记录使用次数、最近使用时间、成功/失败信号，并用 usage 分数辅助排序
 - skill 已支持按需文件变更检测和轻量 reload，外部编辑 `SKILL.md` 后无需重启 neo
 - skill 已支持从 CC-Source plugin manifest 导入 `skills` / `skillsPath` / `skillsPaths` 指向的 skill
-- MCP stdio server 连接基础框架，已连接工具会以 `mcp__server__tool` 形式进入 `QueryEngine`，并具备默认只读的权限保护
+- MCP stdio/http/sse server 连接框架，已连接工具会以 `mcp__server__tool` 形式进入 `QueryEngine`，并具备默认只读、always allow/deny 持久化和 OAuth bearer 支持
 - MCP 配置命令：`neo mcp list/add/remove/test`
 - MCP resource 工具：`ListMcpResources` / `ReadMcpResource`
 - MCP deferred ToolSearch：MCP 工具过多时延迟加载 schema
-- MCP 高风险工具 REPL 一次性权限确认，非交互入口继续默认拒绝
+- MCP 高风险工具 REPL 一次性/始终允许/始终拒绝权限确认，非交互入口继续默认拒绝
 - 配置管理命令：`neo config show` 默认脱敏显示 merged/user/project 配置，`neo config set` 写入 user/project 配置并做 schema 校验
 - 模型客户端基础可靠性：请求超时、5xx/429/网络/超时重试、4xx 不重试、取消分类和 token usage 日志
+- 模型 usage 账本：token usage 落盘到 JSONL，`neo usage` 可按模型/日期查看 token 和配置化估算成本
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -47,13 +48,13 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - 请求级中断/取消：REPL 和 `neo ask` 使用 `AbortController` 取消当前回合，取消信号可传播到模型、联网工具和工具循环检查点
 - 严格参考 CC-Source 分层结构重写的 system prompt
 - `SOUL.md` 长期人格设定
-- 对话 transcript 持久化
+- 对话 transcript 持久化，支持会话标题、`--resume` 恢复、compact boundary 和 tool result pairing 校验
 - 配置诊断命令：`neo doctor`
 - 日志轮转和保留策略
 - CLI 命令冒烟测试
 - 结构化记忆 schema 和显式记忆管理命令
-- dreaming 记忆整理命令和定时门控基础
-- Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览
+- dreaming 记忆整理命令、定时门控、锁文件、报告回放、人工采纳和记忆复查
+- Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览，具备请求缓存、URL 去重、失败分类和多日期冲突提示
 - CC-Source 风格的联网 tool loop：`WebSearch` / `WebFetch` 作为模型可调用工具，过渡版小模型 planner 保留为兜底
 - 项目文件只读工具：`Read`、`Glob`、`Grep`，只能访问 neo 启动目录内的文件；`Grep` 后端已改为 `rg`，带超时、输出上限、二进制跳过和错误分类
 - 联网工具具备域名 allow/deny 和本地/内网/私有地址保护
@@ -105,8 +106,8 @@ M1 后续对齐债务：
 
 - [x] 配置体系补 `neo config show` 默认脱敏、`neo config set`、配置 schema 校验，参考 CC-Source settings/config/doctor。
 - [x] 模型客户端补请求超时、重试退避、取消分类、429/5xx/网络/超时错误分类和 token usage 日志，参考 CC-Source api、cost-tracker、rateLimitMessages。
-- [ ] 模型成本统计落盘和 `neo usage` 视图，参考 CC-Source cost-tracker。
-- [ ] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
+- [x] 模型成本统计落盘和 `neo usage` 视图，参考 CC-Source cost-tracker。
+- [x] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
 - [ ] doctor 补上下文体积、MCP、skill、配置权限、版本/更新、路径可写性等更细诊断，参考 CC-Source Doctor/context warnings。
 - [ ] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级，参考 CC-Source debug/log/analytics 思路。
 - [ ] sub-agent 从“一次性小模型调用”升级为任务状态模型，参考 CC-Source AgentTool、LocalAgentTask、任务 transcript 和停止/前后台能力。
@@ -119,11 +120,11 @@ M1 后续对齐债务：
 - [x] 添加显式记忆命令：更新、删除、置顶、导出
 - [x] 添加 `neo dream` / `/dream`，用于整理记忆、归档旧记忆和提炼灵感报告
 - [x] 添加 dreaming 定时门控配置，默认关闭，避免擅自消耗模型额度
-- [ ] 改进相关性评分，不只依赖简单关键词搜索
+- [x] 改进相关性评分，不只依赖简单关键词搜索
 - [ ] 确认本地 OpenViking 服务接口后，接入 OpenViking 写入链路
-- [ ] 添加记忆复查流程，避免低价值或错误记忆长期留存
-- [ ] 为 dreaming 增加锁文件，避免多个 neo 进程同时整理记忆
-- [ ] 为 dreaming 增加更细的报告回放和人工采纳流程
+- [x] 添加记忆复查流程，避免低价值或错误记忆长期留存
+- [x] 为 dreaming 增加锁文件，避免多个 neo 进程同时整理记忆
+- [x] 为 dreaming 增加更细的报告回放和人工采纳流程
 
 ### M3：skill 生命周期
 
@@ -225,11 +226,11 @@ M4 后续硬化项：
 - [x] 为 `extractImageAttachments` 添加测试，覆盖不存在文件、非图片、大小限制和 mime 推断。
 - [x] 为 `Logger` 脱敏逻辑添加测试，覆盖 API key、URL query、MCP 参数、工具结果摘要。
 - [x] 为记忆搜索排序添加测试，并改进相关性评分。
-- [ ] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
-- [ ] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
-- [ ] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
-- [ ] M1/M5：transcript/session 增加 resume、compact boundary、tool result pairing、会话标题和恢复校验。
-- [ ] M1：模型成本统计落盘，支持 `neo usage` 或 debug 视图查看。
+- [x] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
+- [x] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
+- [x] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
+- [x] M1/M5：transcript/session 增加 resume、compact boundary、tool result pairing、会话标题和恢复校验。
+- [x] M1：模型成本统计落盘，支持 `neo usage` 或 debug 视图查看。
 
 ### P2：生态、发布和长期能力
 
@@ -559,6 +560,14 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：P1 记忆搜索排序相关性硬化
 
 参考 CC-Source `memdir/findRelevantMemories.ts` 和 `memoryScan.ts` 的思路，记忆召回不能只靠“命中任意词 + 新近/置顶”排序，否则弱相关置顶记忆会压过真正有用的上下文。neo 当前仍是本地 JSON 记忆阶段，先在 `LocalMemory` 层增强候选评分：中文改为连续片段和重叠二元词，评分区分 category、tag、content、完整短语、命中覆盖率、指数新近度和受限置顶加分。新增 smoke 测试覆盖强相关优先、归档过滤、弱相关置顶不抢首位，以及 workflow 分类和内容共同命中的排序。
+
+### 2026-05-25：P1 剩余项收口
+
+参考 CC-Source `ResumeConversation`、session storage、compact boundary 和 tool result pairing 思路，neo 现在支持从 transcript 恢复上下文：`neo --resume` / `neo chat --resume` 默认恢复最近会话，也可以指定 session id 或 transcript 文件路径。恢复时会读取最后一个 compact 之后的用户/助手消息，并把 compact 摘要重新注入 `ConversationHistory`；`transcripts` 和 `/transcripts` 会显示从首个用户消息推断出的会话标题。assistant transcript 元数据现在记录每轮 tool call 与 tool result 的配对摘要，恢复时会校验是否存在未配对结果并写入 warning。
+
+参考 CC-Source cost-tracker，neo 新增 `UsageTracker` 和 `neo usage`。模型客户端在成功响应后把 token usage 写入 `usage/model-usage.jsonl`，`neo usage` 可按模型和日期聚合 token 与估算成本。价格表不写死在代码中，避免供应商调价后误导用户；可以通过配置 `usage.prices.<model>.inputPerMillion/outputPerMillion/currency` 或环境变量 `NEO_AGENT_USAGE_PRICES_JSON` 提供单价，未配置时会显示“未配置单价”。
+
+同一轮完成的 P1 项还包括：dreaming 锁文件、报告回放、人工采纳和记忆复查；MCP always allow/deny 持久化、远程 HTTP/SSE/OAuth；Web 工具缓存、URL 去重、失败分类和多日期冲突提示。验证方式：`npm run typecheck` 和 `npm run smoke` 全量通过。
 
 ## 恢复开发检查清单
 

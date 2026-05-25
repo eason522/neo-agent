@@ -17,13 +17,17 @@ import {
   formatMcpServerEntry,
   listConfiguredMcpServers,
   parseEnvPairs,
+  parseHeaderPairs,
   removeConfiguredMcpServer,
-  testConfiguredMcpServers
+  testConfiguredMcpServers,
+  updateMcpToolPermission
 } from './mcp/mcpConfigCommands.js';
 import { createAbortError, isAbortError } from './utils/abort.js';
 import { SkillManager } from './skills/skillManager.js';
 import type { Skill, SkillScope } from './types.js';
 import { buildSkillInstallPlans, exportSkillPackage, installSkillPlan, validateSkillSources, validateSkillSource, type SkillValidationResult } from './skills/skillPackage.js';
+import type { DreamReport, DreamReportSummary } from './dream/dreamService.js';
+import { formatUsageSummary, UsageTracker } from './usage/usageTracker.js';
 
 const program = new Command();
 
@@ -31,6 +35,7 @@ program
   .name('neo-agent')
   .description('个人终端 AI agent')
   .version('0.1.0')
+  .option('--resume [session]', '启动对话时从最近或指定 transcript 恢复上下文')
   .helpOption('-h, --help', '显示帮助')
   .addHelpCommand('help [command]', '显示命令帮助');
 
@@ -154,9 +159,27 @@ program
       return;
     }
     for (const session of sessions) {
-      console.log(`${session.updatedAt}  ${session.sessionId}  ${session.sizeBytes}B`);
+      const title = session.title ? `  ${session.title}` : '';
+      console.log(`${session.updatedAt}  ${session.sessionId}  ${session.sizeBytes}B${title}`);
       console.log(chalk.gray(session.path));
     }
+  });
+
+program
+  .command('usage')
+  .description('查看模型 token 和成本统计')
+  .option('-d, --days <days>', '只统计最近 N 天')
+  .option('--json', '输出 JSON')
+  .action(async (options: { days?: string; json?: boolean }) => {
+    const config = await loadConfig();
+    const usage = new UsageTracker(config);
+    const days = Number.parseInt(options.days ?? '', 10);
+    const summary = await usage.summarize({ days: Number.isFinite(days) ? days : undefined });
+    if (options.json) {
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
+    console.log(formatUsageSummary(summary));
   });
 
 program
@@ -168,7 +191,7 @@ program
     process.exitCode = report.status === 'fail' ? 1 : 0;
   });
 
-program
+const dreamCommand = program
   .command('dream')
   .description('整理记忆和 transcript，提炼长期记忆与灵感')
   .option('--dry-run', '只生成报告，不写入记忆')
@@ -194,6 +217,103 @@ program
       console.log(`读取会话：${result.reviewedSessions}，读取记忆：${result.reviewedMemories}`);
       console.log(`新增/更新建议：${result.upserts.length}，归档建议：${result.archives.length}，灵感：${result.insights.length}`);
       if (result.reportPath) console.log(chalk.gray(result.reportPath));
+    } finally {
+      await agent.close();
+    }
+  });
+
+dreamCommand
+  .command('list')
+  .description('列出 dream 报告')
+  .option('-n, --limit <count>', '报告数量', '10')
+  .action(async (options: { limit: string }) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const limit = Number.parseInt(options.limit, 10);
+      const reports = await agent.dreams.listReports(Number.isFinite(limit) ? limit : 10);
+      if (reports.length === 0) {
+        console.log(chalk.gray('没有找到 dream 报告。'));
+        return;
+      }
+      for (const report of reports) {
+        const status = report.appliedAt ? `已采纳 ${report.appliedAt}` : (report.dryRun ? '待采纳' : '已执行');
+        console.log(`${report.ts}  ${report.id}  ${status}`);
+        console.log(`摘要：${report.summary}`);
+        console.log(chalk.gray(`${report.path} upserts=${report.upserts} archives=${report.archives} insights=${report.insights}`));
+      }
+    } finally {
+      await agent.close();
+    }
+  });
+
+dreamCommand
+  .command('show')
+  .description('回放 dream 报告')
+  .argument('[report]', '报告路径、id 或文件名；不填为最新报告')
+  .action(async (reportSelector?: string) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const result = await agent.dreams.showReport(reportSelector);
+      if (!result) {
+        console.log(chalk.yellow('没有找到 dream 报告。'));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(formatDreamReport(result));
+    } finally {
+      await agent.close();
+    }
+  });
+
+dreamCommand
+  .command('apply')
+  .description('人工采纳 dry-run dream 报告，把建议写入记忆')
+  .argument('[report]', '报告路径、id 或文件名；不填为最新报告')
+  .action(async (reportSelector?: string) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const result = await agent.dreams.applyReport(reportSelector);
+      if (result.status === 'skipped') {
+        console.log(chalk.yellow(`dream 采纳跳过：${result.reason}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(chalk.green('dream 报告已采纳'));
+      console.log(`摘要：${result.summary}`);
+      console.log(`写入记忆：${result.upserts.length}，归档记忆：${result.archives.length}`);
+      if (result.reportPath) console.log(chalk.gray(result.reportPath));
+    } finally {
+      await agent.close();
+    }
+  });
+
+dreamCommand
+  .command('review')
+  .description('复查本地记忆，提示重复、过期或低价值记录')
+  .option('-n, --limit <count>', '最多检查的记忆数量')
+  .action(async (options: { limit?: string }) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const limit = Number.parseInt(options.limit ?? '', 10);
+      const review = await agent.dreams.reviewMemories(Number.isFinite(limit) ? limit : undefined);
+      console.log(`已复查记忆：${review.checkedMemories}`);
+      if (review.issues.length === 0) {
+        console.log(chalk.green('没有发现明显问题。'));
+        return;
+      }
+      for (const issue of review.issues) {
+        const color = issue.severity === 'warn' ? chalk.yellow : chalk.gray;
+        console.log(color(`${issue.type}: ${issue.message}`));
+        console.log(chalk.gray(issue.memoryIds.join(', ')));
+      }
     } finally {
       await agent.close();
     }
@@ -422,19 +542,27 @@ mcpCommand
 
 mcpCommand
   .command('add')
-  .description('添加 stdio MCP server')
+  .description('添加 MCP server，支持 stdio/http/sse')
   .argument('<name>', 'server 名称')
-  .argument('<command>', '启动命令')
+  .argument('[target]', 'stdio 启动命令，或 http/sse URL')
   .argument('[args...]', '启动参数')
   .allowUnknownOption(true)
+  .option('--type <stdio|http|sse>', 'server 类型', 'stdio')
   .option('-e, --env <pair>', '环境变量 KEY=VALUE，可重复', collectOption, [])
+  .option('-H, --header <pair>', 'HTTP/SSE header KEY=VALUE，可重复', collectOption, [])
+  .option('--oauth-token-env <name>', '从环境变量读取 OAuth Bearer token')
   .option('--disabled', '添加后先禁用')
-  .action(async (name: string, command: string, args: string[], options: { env: string[]; disabled?: boolean }) => {
+  .action(async (name: string, target: string | undefined, args: string[], options: { type: string; env: string[]; header: string[]; oauthTokenEnv?: string; disabled?: boolean }) => {
+    const type = parseMcpServerType(options.type);
     const result = await addConfiguredMcpServer({
       name,
-      command,
-      args,
+      type,
+      command: type === 'stdio' ? target : undefined,
+      args: type === 'stdio' ? args : [],
+      url: type === 'stdio' ? undefined : target,
       env: parseEnvPairs(options.env),
+      headers: parseHeaderPairs(options.header),
+      oauthTokenEnv: options.oauthTokenEnv,
       disabled: options.disabled
     });
     console.log(chalk.green(`已添加 MCP server：${name}`));
@@ -493,6 +621,24 @@ webCommand
     } finally {
       await logger.flush();
     }
+  });
+
+mcpCommand
+  .command('permission')
+  .description('持久化 MCP 工具权限规则')
+  .argument('<allow|deny|remove>', '权限动作')
+  .argument('<tool>', '工具名，例如 mcp__github__create_issue、github.create_issue 或 mcp__github__*')
+  .action(async (action: string, tool: string) => {
+    if (action !== 'allow' && action !== 'deny' && action !== 'remove') throw new Error('权限动作只能是 allow、deny 或 remove。');
+    const result = await updateMcpToolPermission({
+      tool,
+      behavior: action === 'deny' ? 'deny' : 'allow',
+      remove: action === 'remove'
+    });
+    const verb = action === 'remove' ? '已移除 MCP 权限规则' : action === 'allow' ? '已持久允许 MCP 工具' : '已持久拒绝 MCP 工具';
+    console.log(chalk.green(`${verb}：${tool}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(chalk.gray(`allowed=${result.allowedTools.length} denied=${result.deniedTools.length}`));
   });
 
 webCommand
@@ -562,10 +708,11 @@ webCommand
 program
   .command('chat')
   .description('启动终端对话')
-  .action(async () => {
+  .option('--resume [session]', '从最近或指定 transcript 恢复上下文')
+  .action(async (options: { resume?: string | boolean }) => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);
-    await agent.initialize();
+    await agent.initialize({ resumeSessionId: normalizeResumeOption(options.resume ?? program.opts<{ resume?: string | boolean }>().resume) });
     await startRepl(agent);
   });
 
@@ -573,7 +720,7 @@ program
   .action(async () => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);
-    await agent.initialize();
+    await agent.initialize({ resumeSessionId: normalizeResumeOption(program.opts<{ resume?: string | boolean }>().resume) });
     await startRepl(agent);
   });
 
@@ -586,6 +733,12 @@ function parseOptionalInt(input: string | undefined): number | undefined {
   if (!input) return undefined;
   const parsed = Number.parseInt(input, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeResumeOption(input: string | boolean | undefined): string | undefined {
+  if (input === true) return 'latest';
+  if (typeof input === 'string' && input.trim()) return input.trim();
+  return undefined;
 }
 
 function parseListOption(input: string | undefined): string[] | undefined {
@@ -644,6 +797,32 @@ function printSkillValidation(validation: SkillValidationResult): void {
   for (const error of validation.errors) console.log(chalk.red(`错误：${error}`));
 }
 
+function formatDreamReport(input: DreamReportSummary & { report: DreamReport }): string {
+  const lines = [
+    `${chalk.cyan(input.id)}  ${input.ts}`,
+    chalk.gray(input.path),
+    `状态：${input.appliedAt ? `已采纳 ${input.appliedAt}` : (input.dryRun ? '待采纳' : '已执行')}`,
+    `摘要：${input.summary}`,
+    '',
+    '新增/更新建议：'
+  ];
+  if (input.report.plan.upserts.length === 0) lines.push(chalk.gray('(无)'));
+  for (const item of input.report.plan.upserts) {
+    lines.push(`- [${item.category}] ${item.content}`);
+    if (item.reason) lines.push(chalk.gray(`  原因：${item.reason}`));
+  }
+  lines.push('', '归档建议：');
+  if (input.report.plan.archives.length === 0) lines.push(chalk.gray('(无)'));
+  for (const item of input.report.plan.archives) {
+    lines.push(`- ${item.id}`);
+    if (item.reason) lines.push(chalk.gray(`  原因：${item.reason}`));
+  }
+  lines.push('', '灵感：');
+  if (input.report.plan.insights.length === 0) lines.push(chalk.gray('(无)'));
+  for (const item of input.report.plan.insights) lines.push(`- ${item}`);
+  return lines.join('\n');
+}
+
 function parseSkillScope(input: string | undefined): SkillScope | undefined {
   if (!input) return undefined;
   if (input === 'user' || input === 'project') return input;
@@ -658,6 +837,11 @@ function parseConfigScope(input: string): 'user' | 'project' {
 function parseConfigSource(input: string): 'merged' | 'user' | 'project' {
   if (input === 'merged' || input === 'user' || input === 'project') return input;
   throw new Error(`无效 source：${input}，只能是 merged、user 或 project。`);
+}
+
+function parseMcpServerType(input: string): 'stdio' | 'http' | 'sse' {
+  if (input === 'stdio' || input === 'http' || input === 'sse') return input;
+  throw new Error(`无效 MCP server 类型：${input}，只能是 stdio、http 或 sse。`);
 }
 
 async function openEditorOrPrintPath(filePath: string): Promise<void> {

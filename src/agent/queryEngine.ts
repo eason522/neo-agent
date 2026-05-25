@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolPairRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolExecutionResult, ToolRunner } from '../tools/tool.js';
@@ -24,6 +24,7 @@ export type QueryEngineResult = {
   fileToolCalls: FileToolCallRecord[];
   skillToolCalls: SkillToolCallRecord[];
   toolEvents: ToolProgressEvent[];
+  toolPairs: ToolPairRecord[];
 };
 
 type QueryEngineOptions = {
@@ -59,6 +60,7 @@ export class QueryEngine {
     const fileToolCalls: FileToolCallRecord[] = [];
     const skillToolCalls: SkillToolCallRecord[] = [];
     const toolEvents: ToolProgressEvent[] = [];
+    const toolPairs: ToolPairRecord[] = [];
     const initialToolDefinitions = this.toolDefinitions();
 
     if (initialToolDefinitions.length === 0) {
@@ -68,7 +70,8 @@ export class QueryEngine {
         mcpToolCalls,
         fileToolCalls,
         skillToolCalls,
-        toolEvents
+        toolEvents,
+        toolPairs
       };
     }
 
@@ -85,7 +88,7 @@ export class QueryEngine {
       throwIfAborted(runOptions.signal);
 
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents };
+        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs };
       }
 
       const toolCalls = normalizeToolCallIds(response.toolCalls);
@@ -101,7 +104,8 @@ export class QueryEngine {
         mcpToolCalls,
         fileToolCalls,
         skillToolCalls,
-        toolEvents
+        toolEvents,
+        toolPairs
       });
       loopMessages.push(...roundResult.messages);
       if (roundResult.terminal) {
@@ -111,6 +115,7 @@ export class QueryEngine {
           fileToolCalls,
           skillToolCalls,
           toolEvents,
+          toolPairs,
           signal: runOptions.signal
         });
       }
@@ -134,7 +139,7 @@ export class QueryEngine {
       signal: runOptions.signal
     });
     throwIfAborted(runOptions.signal);
-    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs };
   }
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
@@ -170,7 +175,7 @@ export class QueryEngine {
         const reason = `同一轮存在独占工具 ${tasks[exclusiveIndex].toolCall.function.name}，为避免并发写入或状态竞争，已跳过 ${task.toolCall.function.name}。`;
         outputs.set(task.toolCall.id, this.skipTool(task.toolCall, reason, round, state.toolEvents));
       }
-      return orderedRoundOutput(toolCalls, outputs);
+      return orderedRoundOutput(toolCalls, outputs, state.toolPairs, round);
     }
 
     const parallelTasks = tasks.filter(task => task.runner && task.mode === 'parallel');
@@ -184,7 +189,7 @@ export class QueryEngine {
       outputs.set(task.toolCall.id, result);
     }
 
-    return orderedRoundOutput(toolCalls, outputs);
+    return orderedRoundOutput(toolCalls, outputs, state.toolPairs, round);
   }
 
   private emitToolStart(toolCall: ChatToolCall, round: number, toolEvents: ToolProgressEvent[]): void {
@@ -362,7 +367,8 @@ export class QueryEngine {
       mcpToolCalls: state.mcpToolCalls,
       fileToolCalls: state.fileToolCalls,
       skillToolCalls: state.skillToolCalls,
-      toolEvents: state.toolEvents
+      toolEvents: state.toolEvents,
+      toolPairs: state.toolPairs
     };
   }
 }
@@ -389,7 +395,9 @@ function normalizeToolCallIds(toolCalls: ChatToolCall[]): ChatToolCall[] {
 
 function orderedRoundOutput(
   toolCalls: ChatToolCall[],
-  outputs: Map<string, { message: ChatMessage; terminal: boolean }>
+  outputs: Map<string, { message: ChatMessage; terminal: boolean }>,
+  toolPairs: ToolPairRecord[],
+  round: number
 ): { messages: ChatMessage[]; terminal: boolean } {
   const messages: ChatMessage[] = [];
   let terminal = false;
@@ -401,9 +409,23 @@ function orderedRoundOutput(
         tool_call_id: toolCall.id,
         content: buildSkippedToolResult(toolCall.function.name, '工具执行器没有返回结果，已生成占位 tool result，避免 orphan tool_use。', 0)
       });
+      toolPairs.push({
+        round,
+        toolCallId: toolCall.id,
+        toolName: toolCall.function.name,
+        hasResult: false,
+        resultChars: 0
+      });
       continue;
     }
     messages.push(output.message);
+    toolPairs.push({
+      round,
+      toolCallId: toolCall.id,
+      toolName: toolCall.function.name,
+      hasResult: true,
+      resultChars: output.message.content.length
+    });
     terminal = terminal || output.terminal;
   }
   return { messages, terminal };

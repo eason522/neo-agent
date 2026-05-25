@@ -3,7 +3,7 @@ import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import type { McpManager, McpToolDetail } from './mcpManager.js';
 
-export type McpPermissionDecision = 'allow_once' | 'deny';
+export type McpPermissionDecision = 'allow_once' | 'allow_always' | 'deny' | 'deny_always';
 
 export type McpPermissionAskRequest = {
   toolName: string;
@@ -17,6 +17,7 @@ export type McpPermissionAskRequest = {
 };
 
 export type McpPermissionAsker = (request: McpPermissionAskRequest) => Promise<McpPermissionDecision>;
+export type McpPermissionPersister = (toolName: string, behavior: 'allow' | 'deny') => Promise<void>;
 
 type McpPermissionEvaluation =
   | { allowed: true; reason: string; code: 'explicit_allowed' | 'allow_all' | 'read_only' | 'allowed_once' }
@@ -31,7 +32,8 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
     private readonly mcp: McpManager,
     private readonly permissions: AppConfig['mcp']['permissions'],
     private readonly toolSearchThreshold: number,
-    permissionAsker?: McpPermissionAsker
+    permissionAsker?: McpPermissionAsker,
+    private readonly permissionPersister?: McpPermissionPersister
   ) {
     this.permissionAsker = permissionAsker;
   }
@@ -139,6 +141,21 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
         reason: '用户已允许本次执行',
         code: 'allowed_once'
       };
+    }
+    if (decision === 'allow_always') {
+      addPermissionRule(this.permissions.allowedTools, tool.fullName);
+      removePermissionRule(this.permissions.deniedTools, tool.fullName);
+      await this.permissionPersister?.(tool.fullName, 'allow');
+      return {
+        allowed: true,
+        reason: '用户已持久允许执行',
+        code: 'explicit_allowed'
+      };
+    }
+    if (decision === 'deny_always') {
+      addPermissionRule(this.permissions.deniedTools, tool.fullName);
+      removePermissionRule(this.permissions.allowedTools, tool.fullName);
+      await this.permissionPersister?.(tool.fullName, 'deny');
     }
     return {
       allowed: false,
@@ -278,6 +295,15 @@ function matchesToolRule(fullName: string, qualifiedName: string, rules: string[
     }
     return false;
   });
+}
+
+function addPermissionRule(rules: string[], rule: string): void {
+  if (!rules.includes(rule)) rules.push(rule);
+}
+
+function removePermissionRule(rules: string[], rule: string): void {
+  const index = rules.indexOf(rule);
+  if (index >= 0) rules.splice(index, 1);
 }
 
 function normalizeInputSchema(inputSchema: Record<string, unknown> | undefined): Record<string, unknown> {
