@@ -573,6 +573,8 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 用户进一步指出：恢复会话不应该要求先 `/transcripts` 再复制 session id，CC-Source 已有无参数 `/resume` 打开历史会话选择器的交互。已重新对照 CC-Source `commands/resume/resume.tsx`、`screens/ResumeConversation.tsx`、`components/ResumeTask.tsx` 和 `CustomSelect`：其核心是无参数打开 picker、过滤当前 session、按最近更新时间排序、用 ↑/↓ 和 Enter 选择；带参数时才按 session id 或标题直接恢复。neo 已按这个模式补轻量 raw TTY 选择器：`/resume` 直接列出最近 50 个可恢复 transcript，支持 ↑/↓、j/k、PageUp/PageDown、Enter 恢复、Esc/q 取消；非交互输入仍保持 `/resume` 走 latest，便于脚本和 smoke 测试。验证方式：`npm run typecheck` 和 `npm run smoke`。
 
+用户测试发现 `/resume` 选择器在长中文标题下刷新错位。原因是 neo 的轻量选择器按逻辑行数清屏，而终端会把过长标题自动换行成多屏幕行；CC-Source 的 Ink/Select 会按终端宽度进行布局和渲染。neo 已修正为：每个 session 选项按 `stdout.columns` 计算显示宽度，标题按中英文显示宽度裁剪到单行；刷新清屏按实际屏幕行数计算，避免 wrapped line 残留。验证方式：`npm run typecheck` 和 `npm run smoke`。
+
 ## 恢复开发检查清单
 
 开始新的开发任务前：

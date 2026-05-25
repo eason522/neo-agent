@@ -785,7 +785,7 @@ async function pickResumeSession(agent: NeoAgent): Promise<TranscriptSessionSumm
   return await readInteractiveSelect({
     title: '选择要恢复的会话',
     items: sessions,
-    format: session => formatResumeSessionOption(session),
+    format: (session, maxWidth) => formatResumeSessionOption(session, maxWidth),
     emptyText: '没有可恢复的历史会话。'
   });
 }
@@ -793,7 +793,7 @@ async function pickResumeSession(agent: NeoAgent): Promise<TranscriptSessionSumm
 async function readInteractiveSelect<T>(options: {
   title: string;
   items: T[];
-  format: (item: T) => string;
+  format: (item: T, maxWidth: number) => string;
   emptyText: string;
 }): Promise<T | undefined> {
   if (options.items.length === 0) {
@@ -802,22 +802,23 @@ async function readInteractiveSelect<T>(options: {
   }
   let selected = 0;
   let offset = 0;
-  let renderedLines = 0;
+  let renderedRows = 0;
   const visibleCount = Math.max(1, Math.min(options.items.length, Math.max(5, Math.min(12, (output.rows || 24) - 6))));
 
   const clear = (): void => {
-    if (renderedLines === 0) return;
+    if (renderedRows === 0) return;
     output.write('\r\x1b[2K');
-    for (let index = 1; index < renderedLines; index += 1) {
+    for (let index = 1; index < renderedRows; index += 1) {
       output.write('\x1b[1A\r\x1b[2K');
     }
-    renderedLines = 0;
+    renderedRows = 0;
   };
   const render = (): void => {
     clear();
     if (selected < offset) offset = selected;
     if (selected >= offset + visibleCount) offset = selected - visibleCount + 1;
     const end = Math.min(options.items.length, offset + visibleCount);
+    const columns = getTerminalColumns();
     const lines = [
       chalk.bold(`${options.title}${options.items.length > visibleCount ? ` (${selected + 1}/${options.items.length})` : ''}`),
       chalk.gray('↑/↓ 选择，Enter 恢复，Esc/q 取消'),
@@ -825,14 +826,14 @@ async function readInteractiveSelect<T>(options: {
         const absoluteIndex = offset + index;
         const isSelected = absoluteIndex === selected;
         const pointer = isSelected ? '› ' : '  ';
-        const label = `${pointer}${options.format(item)}`;
+        const label = `${pointer}${options.format(item, Math.max(10, columns - displayWidth(pointer)))}`;
         return isSelected ? chalk.cyan(label) : label;
       })
     ];
     if (offset > 0) lines.splice(2, 0, chalk.gray('  ...'));
     if (end < options.items.length) lines.push(chalk.gray('  ...'));
     output.write(lines.join('\n'));
-    renderedLines = lines.length;
+    renderedRows = lines.reduce((total, line) => total + getRenderedRowCountForLine(line, columns), 0);
   };
 
   render();
@@ -901,11 +902,15 @@ async function readInteractiveSelect<T>(options: {
   });
 }
 
-function formatResumeSessionOption(session: TranscriptSessionSummary): string {
+function formatResumeSessionOption(session: TranscriptSessionSummary, maxWidth: number): string {
   const title = session.title?.trim() || '(无标题会话)';
   const time = formatResumeTime(session.updatedAt);
   const size = session.sizeBytes > 1024 ? `${Math.round(session.sizeBytes / 1024)}KB` : `${session.sizeBytes}B`;
-  return `${time}  ${truncateDisplay(title, 64)}  ${chalk.gray(`${session.sessionId} ${size}`)}`;
+  const meta = `${session.sessionId} ${size}`;
+  const fixedWidth = displayWidth(time) + displayWidth(meta) + 4;
+  const titleWidth = Math.max(8, maxWidth - fixedWidth);
+  const line = `${time}  ${truncateDisplayWidth(title, titleWidth)}  ${chalk.gray(meta)}`;
+  return truncateAnsiLine(line, maxWidth);
 }
 
 function formatResumeTime(input: string): string {
@@ -919,9 +924,25 @@ function formatResumeTime(input: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function truncateDisplay(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+function truncateDisplayWidth(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) return value;
+  if (maxWidth <= 0) return '';
+  if (maxWidth === 1) return '…';
+  let width = 0;
+  let outputText = '';
+  const target = maxWidth - 1;
+  for (const char of value) {
+    const charWidth = displayWidth(char);
+    if (width + charWidth > target) break;
+    outputText += char;
+    width += charWidth;
+  }
+  return `${outputText.trimEnd()}…`;
+}
+
+function truncateAnsiLine(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) return value;
+  return truncateDisplayWidth(stripAnsi(value), maxWidth);
 }
 
 async function confirmSkillSuggestion(
