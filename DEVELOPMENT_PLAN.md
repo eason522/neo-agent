@@ -141,6 +141,8 @@ M1 后续对齐债务：
 - [x] 支持 skill 中引用本目录资源，例如 `${NEO_SKILL_DIR}` / `${CLAUDE_SKILL_DIR}`，并限制可访问范围
 - [x] 明确 skill 安全边界：默认不执行 skill 内 shell 片段；如果后续支持 hooks/命令，必须走权限确认
 - [x] 支持对话内通过 `InstallSkillPackage` 工具安装项目目录内 `.md`、目录、plugin 目录和 `.zip` skill 包，zip 可批量安装多个 skill
+- [x] 安装类工具结果标记为终止型结果，成功后直接进入最终回答，避免模型重复调用同一安装工具
+- [x] skill 自动沉淀排除一次性安装、导入、删除、查看等操作型任务；安装工具调用后不触发“创建 skill”建议
 
 ### M4：工具和 MCP 执行
 
@@ -373,6 +375,12 @@ neo 本阶段支持 `neo skill install <pluginDir|plugin.json>` 和 `neo skill v
 用户测试 `@skills-main.zip 安装这个包里所有skill` 时，neo 只暴露了 `Read` / `Glob` / `Grep`，导致模型尝试读取 zip 文本并失败。根因是 CLI 已有 `neo skill install`，但能力没有进入统一 `QueryEngine` 工具层，违反“功能入口统一 tool 化”的原则。
 
 已补 `InstallSkillPackage` 工具，复用现有 `buildSkillInstallPlans` / `installSkillPlan`，默认只允许读取当前项目目录内的本地来源，默认安装到 project scope，不执行 skill 内 shell/hook。zip 解析也从“只支持单个 `SKILL.md`”升级为“按每个 `SKILL.md` 生成一个安装计划”，支持仓库包里批量安装所有 skill。包级文件数量上限从 100 提高到 1000，以适配 skills 仓库类 zip，同时继续保留包大小、单文件大小、路径穿越和 zip-slip 校验。
+
+### 2026-05-25：安装类工具必须防重复调用，并跳过已存在 skill
+
+继续测试发现，`InstallSkillPackage` 第一次已经成功安装 17 个 skill，但模型又重复调用安装工具，后续因为目录已存在而失败，最终回答误判为安装失败。修复方式不是继续增加重试，而是在 `ToolExecutionResult` 中加入 `terminal` 标记：安装类工具成功或确认已安装后，`QueryEngine` 直接以 `toolChoice=none` 要求模型总结结果，不再开放下一轮工具调用。
+
+同时，`InstallSkillPackage` 在安装前会检查目标 scope 中已存在的 skill。若全部已存在，返回 `already_installed`；若部分已存在，则跳过已有项并安装缺失项，避免用户上次半安装后需要手动清理。skill 自动沉淀也增加了操作型任务过滤：安装、导入、删除、查看、解压、同步这类一次性动作不会触发“创建 skill”建议；如果工具调用中包含 `InstallSkillPackage`，本轮也不会做自动沉淀建议。
 
 ### 2026-05-24：开发过程以 CC-Source 对应功能为核心参考
 

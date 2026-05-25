@@ -241,10 +241,12 @@ export class NeoAgent {
         tags: ['session'],
         origin: 'session'
       });
-      const skillSuggestion = await this.skills.maybeSuggestSkill(input, text).catch(error => {
-        this.logger.error('skill.suggest.error', error);
-        return undefined;
-      });
+      const skillSuggestion = skillToolCalls.some(call => call.name === 'InstallSkillPackage')
+        ? undefined
+        : await this.skills.maybeSuggestSkill(input, text).catch(error => {
+          this.logger.error('skill.suggest.error', error);
+          return undefined;
+        });
       if (skillSuggestion) {
         this.logger.info('skill.suggest', {
           name: skillSuggestion.name,

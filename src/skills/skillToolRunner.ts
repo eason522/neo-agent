@@ -2,7 +2,7 @@ import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, Skill, SkillToolCallRecord } from '../types.js';
-import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionOptions, ToolExecutionResult, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import { sanitizeName } from '../utils/fs.js';
 import type { SkillManager } from './skillManager.js';
@@ -124,7 +124,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     return (name === SKILL_TOOL_NAME && this.callableSkills().length > 0) || name === INSTALL_SKILL_PACKAGE_TOOL_NAME;
   }
 
-  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: SkillToolCallRecord }> {
+  async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<ToolExecutionResult<SkillToolCallRecord>> {
     throwIfAborted(options.signal);
     if (call.function.name === INSTALL_SKILL_PACKAGE_TOOL_NAME) return this.installSkillPackage(call, options);
     if (call.function.name !== SKILL_TOOL_NAME) throw new Error(`未知 skill 工具：${call.function.name}`);
@@ -191,7 +191,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     return this.skills.find(skill => skill.name === safeName || skill.name === name);
   }
 
-  private async installSkillPackage(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: SkillToolCallRecord }> {
+  private async installSkillPackage(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<ToolExecutionResult<SkillToolCallRecord>> {
     throwIfAborted(options.signal);
     const start = Date.now();
     const input = installSkillPackageInputSchema.parse(parseJsonObject(call.function.arguments));
@@ -199,12 +199,44 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     throwIfAborted(options.signal);
     const plans = await buildSkillInstallPlans({ source: sourcePath });
     const scope = input.scope ?? 'project';
+    const targetRoot = this.manager.skillRoot(scope);
+    const conflicts = await existingSkillNames(plans.map(plan => plan.name), targetRoot);
+    if (conflicts.length > 0 && !input.overwrite) {
+      const allAlreadyInstalled = conflicts.length === plans.length;
+      if (allAlreadyInstalled) {
+        const content = JSON.stringify({
+          tool: INSTALL_SKILL_PACKAGE_TOOL_NAME,
+          source: path.relative(this.projectRootRealPath!, sourcePath).replaceAll(path.sep, '/'),
+          scope,
+          status: 'already_installed',
+          installedCount: 0,
+          skippedCount: conflicts.length,
+          existingSkills: conflicts,
+          instruction: '这些 skill 已经安装完成。不要再次调用 InstallSkillPackage；直接告诉用户已经存在，并列出已有 skill。'
+        }, null, 2);
+        return {
+          content,
+          terminal: true,
+          record: {
+            name: INSTALL_SKILL_PACKAGE_TOOL_NAME,
+            skillName: conflicts.join(',') || 'none',
+            scope,
+            bodyChars: 0,
+            resultChars: content.length,
+            durationMs: Date.now() - start,
+            installedCount: 0
+          }
+        };
+      }
+    }
+
     const results = [];
-    for (const plan of plans) {
+    const installablePlans = input.overwrite ? plans : plans.filter(plan => !conflicts.includes(sanitizeName(plan.name)));
+    for (const plan of installablePlans) {
       throwIfAborted(options.signal);
       results.push(await installSkillPlan({
         plan,
-        targetRoot: this.manager.skillRoot(scope),
+        targetRoot,
         overwrite: input.overwrite,
         dryRun: input.dry_run
       }));
@@ -217,7 +249,10 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
       source: path.relative(this.projectRootRealPath!, sourcePath).replaceAll(path.sep, '/'),
       scope,
       dryRun: Boolean(input.dry_run),
+      status: conflicts.length > 0 && !input.overwrite ? 'installed_missing_skipped_existing' : 'installed',
       installedCount: results.length,
+      skippedCount: conflicts.length,
+      skippedExistingSkills: conflicts,
       skills: results.map(result => ({
         name: result.name,
         sourceType: result.sourceType,
@@ -229,6 +264,7 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
       })),
       instruction: [
         '安装完成后，请向用户汇总安装了哪些 skill、安装 scope 和是否有 warning。',
+        '这个工具结果已经完成安装请求；不要再次调用 InstallSkillPackage 安装同一个来源。',
         '不要声称执行了 skill 内 shell、hook 或命令片段；安装只写入文件。'
       ].join(' ')
     }, null, 2);
@@ -243,7 +279,8 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
         resultChars: content.length,
         durationMs: Date.now() - start,
         installedCount: results.length
-      }
+      },
+      terminal: true
     };
   }
 
@@ -325,6 +362,20 @@ function normalizeSkillName(input: string): string {
 function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function existingSkillNames(skillNames: string[], targetRoot: string): Promise<string[]> {
+  const existing: string[] = [];
+  for (const name of skillNames) {
+    const safeName = sanitizeName(name);
+    try {
+      const targetStat = await stat(path.join(targetRoot, safeName));
+      if (targetStat.isDirectory() || targetStat.isFile()) existing.push(safeName);
+    } catch {
+      continue;
+    }
+  }
+  return existing;
 }
 
 function parseJsonObject(rawArguments: string): unknown {

@@ -242,11 +242,18 @@ function parseSkill(name: string, skillPath: string, filePath: string, scope: Sk
 function taskSignature(input: string): string | undefined {
   const normalized = input.trim().toLowerCase();
   if (normalized.length < 18) return undefined;
-  const explicit = /(每次|以后|固定|流程|复用|记住这个做法|skill)/.test(normalized);
+  const explicit = /(每次|以后|固定|流程|复用|记住这个做法|沉淀|做成\s*skill|创建\s*skill)/.test(normalized);
+  if (!explicit && isOperationalOneOffTask(normalized)) return undefined;
   const taskLike = /(开发|实现|总结|翻译|审查|review|生成|分析|整理|部署|调试)/.test(normalized);
   if (!explicit && !taskLike) return undefined;
   const terms = normalized.match(/[a-z0-9_]{3,}|[\u4e00-\u9fa5]{2}/g) ?? [];
   return terms.slice(0, 6).join('-') || undefined;
+}
+
+function isOperationalOneOffTask(input: string): boolean {
+  const hasOperation = /(安装|卸载|删除|移除|导入|注册|更新|同步|提交|推送|运行|启动|重启|配置|查看|列出|打开|读取|解压|下载)/.test(input);
+  const hasArtifact = /(@?\S+\.(zip|md|json|ts|js|tsx|jsx|py|txt)\b|包|压缩包|文件|目录|仓库|依赖|插件|plugin|skill)/i.test(input);
+  return hasOperation && hasArtifact;
 }
 
 function detectSkillImprovement(input: string, assistantOutput: string, skill: Skill): SkillImprovementSuggestion['updates'][number] | undefined {

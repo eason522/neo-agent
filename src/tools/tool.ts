@@ -7,6 +7,7 @@ export type ToolExecutionOptions = {
 export type ToolExecutionResult<TRecord = unknown> = {
   content: string;
   record?: TRecord;
+  terminal?: boolean;
 };
 
 export type ToolRunner<TRecord = unknown> = {

@@ -176,7 +176,7 @@ export function defaultConfig(): AppConfig {
       apiBase: process.env.TAVILY_API_BASE || 'https://api.tavily.com',
       autoSearch: process.env.NEO_AGENT_WEB_AUTO_SEARCH !== '0',
       toolLoopEnabled: process.env.NEO_AGENT_WEB_TOOL_LOOP_ENABLED !== '0',
-      maxToolRounds: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_TOOL_ROUNDS || '4', 10),
+      maxToolRounds: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_TOOL_ROUNDS || '8', 10),
       plannerEnabled: process.env.NEO_AGENT_WEB_PLANNER_ENABLED !== '0',
       plannerModelKind: (process.env.NEO_AGENT_WEB_PLANNER_MODEL_KIND as AppConfig['web']['plannerModelKind']) || 'small',
       searchDepth: (process.env.NEO_AGENT_WEB_SEARCH_DEPTH as AppConfig['web']['searchDepth']) || 'basic',

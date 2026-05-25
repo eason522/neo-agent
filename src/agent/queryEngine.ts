@@ -136,6 +136,16 @@ export class QueryEngine {
             ...summarizeToolResult(result.record, result.content),
             round
           });
+          if (result.terminal) {
+            return this.finalizeAfterTerminalTool(modelKind, loopMessages, {
+              webToolCalls,
+              mcpToolCalls,
+              fileToolCalls,
+              skillToolCalls,
+              toolEvents,
+              signal: runOptions.signal
+            });
+          }
         } catch (error) {
           if (runOptions.signal?.aborted) throw createAbortError();
           loopMessages.push({
@@ -177,6 +187,34 @@ export class QueryEngine {
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
     return this.tools.find(tool => tool.canExecute(name));
+  }
+
+  private async finalizeAfterTerminalTool(
+    modelKind: TextModelKind,
+    messages: ChatMessage[],
+    state: Omit<QueryEngineResult, 'text'> & { signal?: AbortSignal }
+  ): Promise<QueryEngineResult> {
+    const model = this.models.get(modelKind);
+    const finalResponse = await model.chatWithTools({
+      messages: [
+        ...messages,
+        {
+          role: 'user',
+          content: '上一个工具结果已经完成了用户请求中的外部操作。请不要继续调用工具，直接基于工具结果给出最终回答；如果有 warning 或未完成项，要明确列出。'
+        }
+      ],
+      toolChoice: 'none',
+      signal: state.signal
+    });
+    throwIfAborted(state.signal);
+    return {
+      text: finalResponse.content,
+      webToolCalls: state.webToolCalls,
+      mcpToolCalls: state.mcpToolCalls,
+      fileToolCalls: state.fileToolCalls,
+      skillToolCalls: state.skillToolCalls,
+      toolEvents: state.toolEvents
+    };
   }
 }
 

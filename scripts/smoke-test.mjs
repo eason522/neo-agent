@@ -679,7 +679,9 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
 test('skill 自动沉淀只生成建议，确认后才写入', async () => {
   const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
   const suggestionHome = path.join(tempHome, 'skill-suggestion-home');
-  const manager = new SkillManager({ homeDir: suggestionHome, skills: { autoCreate: true, autoCreateThreshold: 2 } });
+  const suggestionProject = path.join(tempHome, 'skill-suggestion-project');
+  await mkdir(suggestionProject, { recursive: true });
+  const manager = new SkillManager({ homeDir: suggestionHome, skills: { autoCreate: true, autoCreateThreshold: 2 } }, suggestionProject);
   const input = '请帮我整理这个开发流程，以后每次都按这个流程复盘和总结';
   const first = await manager.maybeSuggestSkill(input, '第一次回答摘要');
   if (first) throw new Error(`第一次不应该达到阈值：${JSON.stringify(first)}`);
@@ -692,12 +694,19 @@ test('skill 自动沉淀只生成建议，确认后才写入', async () => {
   assertIncludes(created.name, second.name);
   const afterCreate = await manager.loadSkills();
   if (afterCreate.length !== 1) throw new Error(`确认后应该写入一个 skill：${JSON.stringify(afterCreate)}`);
+
+  const oneOffInstall = '@skills-main.zip 安装这个包里的skill';
+  await manager.maybeSuggestSkill(oneOffInstall, '已安装 17 个 skill');
+  const installSuggestion = await manager.maybeSuggestSkill(oneOffInstall, '这些 skill 已经安装完成');
+  if (installSuggestion) throw new Error(`一次性安装包操作不应该触发 skill 沉淀建议：${JSON.stringify(installSuggestion)}`);
 });
 
 test('skill 改进建议只生成建议，确认后才追加到 SKILL.md', async () => {
   const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
   const improvementHome = path.join(tempHome, 'skill-improvement-home');
-  const manager = new SkillManager({ homeDir: improvementHome, skills: { autoCreate: true, autoCreateThreshold: 2 } });
+  const improvementProject = path.join(tempHome, 'skill-improvement-project');
+  await mkdir(improvementProject, { recursive: true });
+  const manager = new SkillManager({ homeDir: improvementHome, skills: { autoCreate: true, autoCreateThreshold: 2 } }, improvementProject);
   const skill = await manager.createSkill('review-flow', 'Review code changes', ['review', 'code'], [
     'Read the diff.',
     'List risks first.'
@@ -896,6 +905,7 @@ test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () =>
   const model = {
     chatWithTools: async options => {
       calls += 1;
+      if (calls > 2) throw new Error(`终止型安装工具成功后不应该继续进入第 ${calls} 轮工具调用`);
       if (calls === 1) {
         const installTool = options.tools.find(tool => tool.function.name === 'InstallSkillPackage');
         if (!installTool) throw new Error(`应该暴露 InstallSkillPackage 工具：${JSON.stringify(options.tools)}`);
@@ -908,11 +918,15 @@ test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () =>
           }]
         };
       }
+      if (options.toolChoice !== 'none') throw new Error(`安装工具完成后应该强制最终回答，不再开放工具：${JSON.stringify(options.toolChoice)}`);
       const last = options.messages.at(-1);
-      if (last?.role !== 'tool') throw new Error(`第二轮模型调用前应该收到安装工具结果：${JSON.stringify(last)}`);
-      assertIncludes(last.content, '"installedCount": 2');
-      assertIncludes(last.content, 'zip-one');
-      assertIncludes(last.content, 'zip-two');
+      const toolResult = options.messages.findLast(message => message.role === 'tool');
+      if (!toolResult) throw new Error(`第二轮模型调用前应该收到安装工具结果：${JSON.stringify(options.messages)}`);
+      if (last?.role !== 'user') throw new Error(`终止型工具后应该追加最终回答提示：${JSON.stringify(last)}`);
+      assertIncludes(last.content, '不要继续调用工具');
+      assertIncludes(toolResult.content, '"installedCount": 2');
+      assertIncludes(toolResult.content, 'zip-one');
+      assertIncludes(toolResult.content, 'zip-two');
       return { content: '已安装 zip-one 和 zip-two', toolCalls: [] };
     },
     chat: async () => 'unused'
@@ -927,6 +941,14 @@ test('InstallSkillPackage tool 能从项目 zip 批量安装 skill', async () =>
   const installed = await manager.loadSkills();
   assertIncludes(installed.map(skill => skill.name).join(','), 'zip-one');
   assertIncludes(installed.map(skill => skill.name).join(','), 'zip-two');
+  const repeated = await runner.execute({
+    id: 'call_install_skill_package_again',
+    type: 'function',
+    function: { name: 'InstallSkillPackage', arguments: JSON.stringify({ source: 'skills-main.zip' }) }
+  });
+  assertIncludes(repeated.content, 'already_installed');
+  assertIncludes(repeated.content, 'zip-one');
+  if (!repeated.terminal) throw new Error('重复安装已存在 skill 时也应该是终止型工具结果。');
 });
 
 test('REPL 常用命令不触发模型也能运行', async () => {
