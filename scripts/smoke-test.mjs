@@ -42,6 +42,9 @@ test('初始化配置', async () => {
   assertIncludes(config, '"maxToolRounds"');
   assertIncludes(config, '"plannerEnabled"');
   assertIncludes(config, '"plannerModelKind"');
+  assertIncludes(config, '"allowedDomains"');
+  assertIncludes(config, '"blockedDomains"');
+  assertIncludes(config, '"blockPrivateAddresses"');
   assertIncludes(config, '"permissions"');
   assertIncludes(config, '"mode": "readOnly"');
 });
@@ -56,6 +59,25 @@ test('联网工具定义符合 tool loop 入口', async () => {
     if (tool.type !== 'function') throw new Error(`联网工具必须是 function 类型：${JSON.stringify(tool)}`);
     if (!tool.function.parameters?.properties) throw new Error(`联网工具缺少 JSON schema：${tool.function.name}`);
   }
+});
+
+test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
+  const { buildSearchDomainPolicy, normalizeAndValidateWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'urlPolicy.js')).href);
+  const policy = {
+    allowedDomains: ['example.com'],
+    blockedDomains: ['blocked.example.com'],
+    blockPrivateAddresses: true
+  };
+  const safeUrl = normalizeAndValidateWebUrl('http://docs.example.com/path', policy, 'test');
+  assertIncludes(safeUrl, 'https://docs.example.com/path');
+  assertThrows(() => normalizeAndValidateWebUrl('http://127.0.0.1:8080', policy, 'test'), '内网');
+  assertThrows(() => normalizeAndValidateWebUrl('https://blocked.example.com', policy, 'test'), 'blockedDomains');
+  assertThrows(() => normalizeAndValidateWebUrl('https://other.com', policy, 'test'), 'allowedDomains');
+
+  const domainPolicy = buildSearchDomainPolicy(policy, ['docs.example.com'], ['news.example.com']);
+  assertIncludes(domainPolicy.allowedDomains.join(','), 'docs.example.com');
+  assertIncludes(domainPolicy.blockedDomains.join(','), 'blocked.example.com');
+  assertIncludes(domainPolicy.blockedDomains.join(','), 'news.example.com');
 });
 
 test('MCP 工具命名沿用 CC-Source 风格', async () => {
@@ -239,4 +261,15 @@ function assertIncludes(haystack, needle) {
   if (!haystack.includes(needle)) {
     throw new Error(`输出中没有找到 ${JSON.stringify(needle)}。\n实际输出：\n${haystack}`);
   }
+}
+
+function assertThrows(fn, expectedMessage) {
+  try {
+    fn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assertIncludes(message, expectedMessage);
+    return;
+  }
+  throw new Error(`期望抛出包含 ${JSON.stringify(expectedMessage)} 的错误，但函数正常返回。`);
 }

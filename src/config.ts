@@ -58,6 +58,9 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
     maxBreadth: z.number().int().positive(),
     maxPages: z.number().int().positive(),
     allowExternal: z.boolean(),
+    allowedDomains: z.array(z.string()),
+    blockedDomains: z.array(z.string()),
+    blockPrivateAddresses: z.boolean(),
     timeoutMs: z.number().int().positive()
   }),
   skills: z.object({
@@ -171,6 +174,9 @@ export function defaultConfig(): AppConfig {
       maxBreadth: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_BREADTH || '20', 10),
       maxPages: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_PAGES || '20', 10),
       allowExternal: process.env.NEO_AGENT_WEB_ALLOW_EXTERNAL === '1',
+      allowedDomains: parseCommaList(process.env.NEO_AGENT_WEB_ALLOWED_DOMAINS),
+      blockedDomains: parseCommaList(process.env.NEO_AGENT_WEB_BLOCKED_DOMAINS),
+      blockPrivateAddresses: process.env.NEO_AGENT_WEB_BLOCK_PRIVATE_ADDRESSES !== '0',
       timeoutMs: Number.parseInt(process.env.NEO_AGENT_WEB_TIMEOUT_MS || '12000', 10)
     },
     skills: {

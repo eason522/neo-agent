@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AppConfig, ChatToolCall, ChatToolDefinition, WebToolCallRecord } from '../types.js';
 import type { ToolRunner } from '../tools/tool.js';
 import { TavilyClient } from './tavilyClient.js';
+import { normalizeAndValidateWebUrl } from './urlPolicy.js';
 
 export const WEB_SEARCH_TOOL_NAME = 'WebSearch';
 export const WEB_FETCH_TOOL_NAME = 'WebFetch';
@@ -90,6 +91,7 @@ export function getWebToolPrompt(): string {
     '- 当用户的问题涉及最新、当前、今天、近期、新闻、价格、天气、政策法规、软件版本、API 文档、体育赛程、公司职位、政治人物行程，或用户明确要求搜索/验证/打开链接时，主动使用联网工具。',
     '- 如果用户说“你搜一下”“联网验证一下”“查一下这个”，要结合当前会话历史判断它指向的上一轮问题，不要搜索追问句本身。',
     '- 如果使用了联网工具，最终回答必须列出来源 URL 和联网时间；不要编造来源。',
+    '- 不要尝试读取 localhost、内网地址、链路本地地址或配置禁止的域名；如果工具拒绝访问，要如实说明。',
     '- 联网结果也可能错误或冲突。重要事实要交叉检查，冲突时直接说明。'
   ].join('\n');
 }
@@ -166,7 +168,7 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
 
   private async fetch(rawArguments: string): Promise<WebToolResult> {
     const input = webFetchInputSchema.parse(parseToolArguments(rawArguments));
-    const url = normalizeHttpUrl(input.url);
+    const url = normalizeAndValidateWebUrl(input.url, this.config.web, WEB_FETCH_TOOL_NAME);
     const searchedAt = new Date().toISOString();
     const response = await this.tavily.extract([url]);
     return {
@@ -203,15 +205,6 @@ function parseToolArguments(rawArguments: string): unknown {
   } catch {
     throw new Error(`工具参数不是有效 JSON：${rawArguments.slice(0, 300)}`);
   }
-}
-
-function normalizeHttpUrl(input: string): string {
-  const url = new URL(input);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`WebFetch 只支持 http/https URL：${input}`);
-  }
-  if (url.protocol === 'http:') url.protocol = 'https:';
-  return url.toString();
 }
 
 function truncate(input: string, maxChars: number): string {

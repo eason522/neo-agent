@@ -108,6 +108,9 @@ export type AppConfig = {
     maxBreadth: number;
     maxPages: number;
     allowExternal: boolean;
+    allowedDomains: string[];
+    blockedDomains: string[];
+    blockPrivateAddresses: boolean;
     timeoutMs: number;
   };
   skills: {

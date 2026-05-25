@@ -9,6 +9,7 @@ import type {
   WebContext
 } from '../types.js';
 import type { Logger } from '../logging/logger.js';
+import { buildSearchDomainPolicy, normalizeAndValidateWebUrl } from './urlPolicy.js';
 
 type TavilySearchOptions = {
   maxResults?: number;
@@ -80,14 +81,15 @@ export class TavilyClient {
 
   async search(query: string, options: TavilySearchOptions = {}): Promise<WebSearchResponse> {
     const start = Date.now();
+    const domainPolicy = buildSearchDomainPolicy(this.config.web, options.allowedDomains, options.blockedDomains);
     const body = {
       query,
       search_depth: options.depth ?? this.config.web.searchDepth,
       max_results: options.maxResults ?? this.config.web.maxResults,
       include_answer: options.includeAnswer ?? true,
       include_raw_content: false,
-      include_domains: options.allowedDomains,
-      exclude_domains: options.blockedDomains
+      include_domains: domainPolicy.allowedDomains,
+      exclude_domains: domainPolicy.blockedDomains
     };
     this.logger?.info('web.search.start', {
       provider: this.config.web.provider,
@@ -120,7 +122,10 @@ export class TavilyClient {
   }
 
   async extract(urls: string[], options: TavilyExtractOptions = {}): Promise<WebExtractResponse> {
-    const cleanUrls = urls.map(url => url.trim()).filter(Boolean);
+    const cleanUrls = urls
+      .map(url => url.trim())
+      .filter(Boolean)
+      .map(url => normalizeAndValidateWebUrl(url, this.config.web, 'Tavily Extract'));
     const start = Date.now();
     this.logger?.info('web.extract.start', {
       provider: this.config.web.provider,
@@ -211,8 +216,9 @@ export class TavilyClient {
   }
 
   private buildCrawlerBody(url: string, options: TavilyMapOptions): Record<string, unknown> {
+    const safeUrl = normalizeAndValidateWebUrl(url, this.config.web, 'Tavily crawler');
     return {
-      url,
+      url: safeUrl,
       instructions: options.instructions,
       max_depth: clampInt(options.maxDepth ?? this.config.web.maxDepth, 1, 5),
       max_breadth: clampInt(options.maxBreadth ?? this.config.web.maxBreadth, 1, 500),
