@@ -43,7 +43,7 @@ export class NeoAgent {
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
-    this.mcpToolRunner = new McpToolRunner(this.mcp);
+    this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);

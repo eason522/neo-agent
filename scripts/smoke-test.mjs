@@ -42,6 +42,8 @@ test('初始化配置', async () => {
   assertIncludes(config, '"maxToolRounds"');
   assertIncludes(config, '"plannerEnabled"');
   assertIncludes(config, '"plannerModelKind"');
+  assertIncludes(config, '"permissions"');
+  assertIncludes(config, '"mode": "readOnly"');
 });
 
 test('联网工具定义符合 tool loop 入口', async () => {
@@ -60,6 +62,46 @@ test('MCP 工具命名沿用 CC-Source 风格', async () => {
   const { buildMcpToolName } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpManager.js')).href);
   const name = buildMcpToolName('github server', 'create issue');
   assertIncludes(name, 'mcp__github_server__create_issue');
+});
+
+test('MCP 权限默认只允许只读工具', async () => {
+  const { evaluateMcpToolPermission } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpToolRunner.js')).href);
+  const permissions = { mode: 'readOnly', allowedTools: [], deniedTools: [] };
+  const readOnly = evaluateMcpToolPermission({
+    fullName: 'mcp__github__list_issues',
+    serverName: 'github',
+    toolName: 'list_issues',
+    readOnlyHint: true,
+    destructiveHint: false
+  }, permissions);
+  if (!readOnly.allowed) throw new Error(`只读 MCP 工具应该默认允许：${JSON.stringify(readOnly)}`);
+
+  const write = evaluateMcpToolPermission({
+    fullName: 'mcp__github__create_issue',
+    serverName: 'github',
+    toolName: 'create_issue',
+    readOnlyHint: false,
+    destructiveHint: false
+  }, permissions);
+  if (write.allowed) throw new Error(`非只读 MCP 工具不应该默认允许：${JSON.stringify(write)}`);
+
+  const explicit = evaluateMcpToolPermission({
+    fullName: 'mcp__github__create_issue',
+    serverName: 'github',
+    toolName: 'create_issue',
+    readOnlyHint: false,
+    destructiveHint: false
+  }, { mode: 'readOnly', allowedTools: ['mcp__github__create_issue'], deniedTools: [] });
+  if (!explicit.allowed) throw new Error(`显式允许的 MCP 工具应该能执行：${JSON.stringify(explicit)}`);
+
+  const denied = evaluateMcpToolPermission({
+    fullName: 'mcp__github__delete_repo',
+    serverName: 'github',
+    toolName: 'delete_repo',
+    readOnlyHint: true,
+    destructiveHint: true
+  }, { mode: 'allowAll', allowedTools: [], deniedTools: ['mcp__github__delete_*'] });
+  if (denied.allowed) throw new Error(`deniedTools 应该优先于 allowAll：${JSON.stringify(denied)}`);
 });
 
 test('自动联网规划能识别时效问题和追问', async () => {

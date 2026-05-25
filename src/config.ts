@@ -70,7 +70,12 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
       disabled: z.boolean().optional()
-    }))
+    })),
+    permissions: z.object({
+      mode: z.enum(['readOnly', 'allowAll']),
+      allowedTools: z.array(z.string()),
+      deniedTools: z.array(z.string())
+    })
   }),
   logging: z.object({
     level: z.enum(['debug', 'info', 'warn', 'error', 'silent']),
@@ -173,7 +178,12 @@ export function defaultConfig(): AppConfig {
       autoCreateThreshold: 2
     },
     mcp: {
-      servers: {}
+      servers: {},
+      permissions: {
+        mode: getMcpPermissionMode(),
+        allowedTools: parseCommaList(process.env.NEO_AGENT_MCP_ALLOWED_TOOLS),
+        deniedTools: parseCommaList(process.env.NEO_AGENT_MCP_DENIED_TOOLS)
+      }
     },
     logging: {
       level: (process.env.NEO_AGENT_LOG_LEVEL as AppConfig['logging']['level']) || 'info',
@@ -189,6 +199,17 @@ export function defaultConfig(): AppConfig {
       maxTailLines: Number.parseInt(process.env.NEO_AGENT_TRANSCRIPTS_TAIL_LINES || '80', 10)
     }
   };
+}
+
+function getMcpPermissionMode(): AppConfig['mcp']['permissions']['mode'] {
+  const raw = process.env.NEO_AGENT_MCP_PERMISSION_MODE;
+  if (raw === 'allowAll') return 'allowAll';
+  return 'readOnly';
+}
+
+function parseCommaList(input: string | undefined): string[] {
+  if (!input) return [];
+  return input.split(',').map(item => item.trim()).filter(Boolean);
 }
 
 function deepMerge<T>(base: T, override: Partial<T>): T {

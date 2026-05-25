@@ -171,6 +171,11 @@ npm run smoke
 ```json
 {
   "mcp": {
+    "permissions": {
+      "mode": "readOnly",
+      "allowedTools": [],
+      "deniedTools": []
+    },
     "servers": {
       "filesystem": {
         "command": "npx",
@@ -180,6 +185,8 @@ npm run smoke
   }
 }
 ```
+
+MCP 工具会以 `mcp__server__tool` 的名字进入模型工具循环。默认权限模式是 `readOnly`：只有 MCP server 明确声明 `readOnlyHint=true` 且不是 destructive 的工具会自动执行。需要执行写入、创建、删除或未声明只读语义的工具时，把完整工具名加入 `mcp.permissions.allowedTools`，或临时设置 `NEO_AGENT_MCP_PERMISSION_MODE=allowAll`。`deniedTools` 优先级最高，支持完整工具名、`server.tool` 和以 `*` 结尾的前缀规则。
 
 ## OpenViking
 

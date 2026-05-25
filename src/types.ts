@@ -53,6 +53,7 @@ export type MemoryOrigin = 'manual' | 'session' | 'agent' | 'imported' | 'openvi
 export type MemoryStatus = 'active' | 'archived';
 export type WebSearchDepth = 'basic' | 'advanced';
 export type WebExtractDepth = 'basic' | 'advanced';
+export type McpPermissionMode = 'readOnly' | 'allowAll';
 
 export type McpServerConfig = {
   command: string;
@@ -115,6 +116,11 @@ export type AppConfig = {
   };
   mcp: {
     servers: Record<string, McpServerConfig>;
+    permissions: {
+      mode: McpPermissionMode;
+      allowedTools: string[];
+      deniedTools: string[];
+    };
   };
   logging: {
     level: LogLevel;

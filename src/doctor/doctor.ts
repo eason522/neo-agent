@@ -328,11 +328,13 @@ function checkWebConfig(config: AppConfig): DoctorCheck {
 
 function checkMcpConfig(config: AppConfig): DoctorCheck[] {
   const entries = Object.entries(config.mcp.servers);
+  const permissionDetail = formatMcpPermissionDetail(config);
   if (entries.length === 0) {
     return [{
       status: 'pass',
       name: 'MCP',
-      message: '没有配置 MCP server。'
+      message: '没有配置 MCP server。',
+      detail: permissionDetail
     }];
   }
 
@@ -341,7 +343,8 @@ function checkMcpConfig(config: AppConfig): DoctorCheck[] {
       return {
         status: 'warn',
         name: `MCP：${name}`,
-        message: '该 MCP server 已禁用。'
+        message: '该 MCP server 已禁用。',
+        detail: permissionDetail
       };
     }
     if (!server.command) {
@@ -356,9 +359,17 @@ function checkMcpConfig(config: AppConfig): DoctorCheck[] {
       status: 'pass',
       name: `MCP：${name}`,
       message: '配置格式看起来正常。',
-      detail: [server.command, ...(server.args ?? [])].join(' ')
+      detail: `${[server.command, ...(server.args ?? [])].join(' ')}; ${permissionDetail}`
     };
   });
+}
+
+function formatMcpPermissionDetail(config: AppConfig): string {
+  return [
+    `permissionMode=${config.mcp.permissions.mode}`,
+    `allowedTools=${config.mcp.permissions.allowedTools.length}`,
+    `deniedTools=${config.mcp.permissions.deniedTools.length}`
+  ].join(', ');
 }
 
 async function checkBuildOutput(cwd: string): Promise<DoctorCheck> {
