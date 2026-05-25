@@ -178,16 +178,65 @@ export function redact(value: unknown): unknown {
       output[key] = '[REDACTED]';
       continue;
     }
+    if (/^(arguments|args|params|parameters)$/i.test(key)) {
+      output[key] = summarizeRedactedValue(nested);
+      continue;
+    }
     output[key] = redact(nested);
   }
   return output;
 }
 
 function redactString(input: string): string {
-  return input
+  return redactUrlQueries(input)
     .replace(/sk-[A-Za-z0-9_-]{12,}/g, 'sk-[REDACTED]')
     .replace(/tp-[A-Za-z0-9_-]{12,}/g, 'tp-[REDACTED]')
     .replace(/tvly-[A-Za-z0-9_-]{12,}/g, 'tvly-[REDACTED]')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, 'data:image/[REDACTED];base64,[REDACTED]');
+}
+
+function redactUrlQueries(input: string): string {
+  return input.replace(/https?:\/\/[^\s"'<>]+/gi, rawUrl => {
+    try {
+      const url = new URL(rawUrl);
+      if (!url.search) return rawUrl;
+      return `${url.origin}${url.pathname}?[REDACTED]${url.hash}`;
+    } catch {
+      return rawUrl;
+    }
+  });
+}
+
+function summarizeRedactedValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return {
+      redacted: true,
+      chars: value.length,
+      keys: Object.keys(safeParseObject(value)).sort()
+    };
+  }
+  if (Array.isArray(value)) {
+    return {
+      redacted: true,
+      items: value.length
+    };
+  }
+  if (value && typeof value === 'object') {
+    return {
+      redacted: true,
+      keys: Object.keys(value as Record<string, unknown>).sort()
+    };
+  }
+  return '[REDACTED]';
+}
+
+function safeParseObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }

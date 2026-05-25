@@ -230,6 +230,95 @@ test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
   assertIncludes(domainPolicy.blockedDomains.join(','), 'news.example.com');
 });
 
+test('Logger 脱敏覆盖密钥、URL query、MCP 参数和错误栈', async () => {
+  const { Logger, redact, serializeError } = await import(pathToFileURL(path.join(root, 'dist', 'logging', 'logger.js')).href);
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const logHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-log-redaction-'));
+  const fakeSk = ['sk', 'abcdefghijklmnopqrstuvwxyz'].join('-');
+  const fakeTp = ['tp', 'abcdefghijklmnopqrstuvwxyz'].join('-');
+  const fakeTavily = ['tvly', 'dev', 'abcdefghijklmnopqrstuvwxyz'].join('-');
+  const rawArguments = JSON.stringify({
+    title: 'issue-secret-title',
+    body: 'issue-secret-body'
+  });
+
+  const redacted = redact({
+    raw: [
+      fakeSk,
+      fakeTp,
+      fakeTavily,
+      'Bearer abc.def.ghi',
+      'https://docs.example.com/path?token=url-secret&x=1#frag',
+      'data:image/png;base64,QUJDREVGRw=='
+    ].join(' '),
+    apiKey: 'field-secret-api-key',
+    mcp: {
+      arguments: rawArguments,
+      params: {
+        issue: 'params-secret-issue',
+        labels: ['bug']
+      }
+    }
+  });
+  const payload = JSON.stringify(redacted);
+  for (const leaked of [
+    'abcdefghijklmnopqrstuvwxyz',
+    'abc.def.ghi',
+    'token=url-secret',
+    'field-secret-api-key',
+    'issue-secret-title',
+    'issue-secret-body',
+    'params-secret-issue',
+    'QUJDREVGRw=='
+  ]) {
+    if (payload.includes(leaked)) throw new Error(`Logger redact 泄露敏感内容：${leaked} in ${payload}`);
+  }
+  assertIncludes(payload, 'https://docs.example.com/path?[REDACTED]#frag');
+  assertIncludes(payload, 'sk-[REDACTED]');
+  assertIncludes(payload, 'tp-[REDACTED]');
+  assertIncludes(payload, 'tvly-[REDACTED]');
+  assertIncludes(payload, 'Bearer [REDACTED]');
+  assertIncludes(payload, 'data:image/[REDACTED];base64,[REDACTED]');
+  if (redacted.mcp.arguments.redacted !== true) throw new Error(`MCP arguments 应被摘要化：${payload}`);
+  if (redacted.mcp.arguments.chars !== rawArguments.length) throw new Error(`MCP arguments chars 错误：${payload}`);
+  assertIncludes(redacted.mcp.arguments.keys.join(','), 'body');
+  assertIncludes(redacted.mcp.arguments.keys.join(','), 'title');
+  if (redacted.mcp.params.redacted !== true) throw new Error(`MCP params 应被摘要化：${payload}`);
+  assertIncludes(redacted.mcp.params.keys.join(','), 'issue');
+  assertIncludes(redacted.mcp.params.keys.join(','), 'labels');
+
+  const serializedError = serializeError(new Error(`failed https://api.example.com/a?api_key=error-secret ${fakeSk}`));
+  const serializedPayload = JSON.stringify(serializedError);
+  if (serializedPayload.includes('api_key=error-secret') || serializedPayload.includes('abcdefghijklmnopqrstuvwxyz')) {
+    throw new Error(`serializeError 泄露敏感内容：${serializedPayload}`);
+  }
+
+  const config = defaultConfig();
+  config.homeDir = logHome;
+  config.logging.file = 'logs/redaction.log';
+  config.logging.level = 'debug';
+  config.logging.console = false;
+  const logger = new Logger(config);
+  logger.info('redaction.test', {
+    url: 'https://logs.example.com/a?token=log-secret',
+    arguments: rawArguments,
+    apiKey: 'field-secret-api-key'
+  });
+  logger.error('redaction.error', new Error('boom Bearer abc.def.ghi'), {
+    params: {
+      content: 'log-param-secret'
+    }
+  });
+  await logger.flush();
+  const tail = await logger.tail(10);
+  for (const leaked of ['token=log-secret', 'issue-secret-title', 'field-secret-api-key', 'abc.def.ghi', 'log-param-secret']) {
+    if (tail.includes(leaked)) throw new Error(`日志文件泄露敏感内容：${leaked} in ${tail}`);
+  }
+  assertIncludes(tail, 'redaction.test');
+  assertIncludes(tail, '[REDACTED]');
+  await rm(logHome, { recursive: true, force: true });
+});
+
 test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
   const { summarizeToolArguments, summarizeToolError, summarizeToolResult } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'toolLog.js')).href);
   const args = summarizeToolArguments({
