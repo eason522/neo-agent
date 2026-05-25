@@ -240,11 +240,24 @@ export class NeoAgent {
         tags: ['session'],
         origin: 'session'
       });
-      const createdSkill = await this.skills.maybeAutoCreate(input, text).catch(error => {
-        this.logger.error('skill.autocreate.error', error);
+      const skillSuggestion = await this.skills.maybeSuggestSkill(input, text).catch(error => {
+        this.logger.error('skill.suggest.error', error);
         return undefined;
       });
-      if (createdSkill) this.logger.info('skill.autocreate.success', { name: createdSkill.name, path: createdSkill.path });
+      if (skillSuggestion) {
+        this.logger.info('skill.suggest', {
+          name: skillSuggestion.name,
+          signature: skillSuggestion.signature,
+          observedCount: skillSuggestion.observedCount
+        });
+        await this.transcripts.append('skill_suggestion', skillSuggestion.reason, {
+          name: skillSuggestion.name,
+          signature: skillSuggestion.signature,
+          observedCount: skillSuggestion.observedCount,
+          triggerCount: skillSuggestion.triggers.length,
+          workflowSteps: skillSuggestion.workflow.length
+        });
+      }
       const compactResult = await this.conversationHistory.append(input, text, this.models.get('small'));
       if (compactResult.compacted) {
         await this.transcripts.append('compact', '自动压缩会话上下文', {
@@ -271,6 +284,7 @@ export class NeoAgent {
         fileToolCallCount: fileToolCalls.length,
         skillToolCallCount: skillToolCalls.length,
         toolEventCount: toolEvents.length,
+        hasSkillSuggestion: Boolean(skillSuggestion),
         durationMs: Date.now() - start
       });
       return {
@@ -284,7 +298,8 @@ export class NeoAgent {
         mcpToolCalls,
         fileToolCalls,
         skillToolCalls,
-        toolEvents
+        toolEvents,
+        skillSuggestion
       };
     } catch (error) {
       if (options.signal?.aborted) {

@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
-import type { MemoryCategory, MemoryRecord, ToolProgressEvent } from '../types.js';
+import type { MemoryCategory, MemoryRecord, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 
@@ -52,6 +52,9 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       try {
         const response = await agent.ask(text, attachments, { signal: turnController.signal });
         output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n\n`);
+        if (isInteractive && response.skillSuggestion && !turnController.signal.aborted) {
+          await confirmSkillSuggestion(agent, rl, response.skillSuggestion, turnController.signal);
+        }
       } catch (error) {
         if (isAbortError(error) || turnController.signal.aborted) {
           output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
@@ -69,6 +72,38 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     rl.close();
     await agent.close();
   }
+}
+
+async function confirmSkillSuggestion(
+  agent: NeoAgent,
+  rl: ReturnType<typeof readline.createInterface>,
+  suggestion: SkillSuggestion,
+  signal: AbortSignal
+): Promise<void> {
+  output.write([
+    chalk.yellow('neo 发现这个任务可能值得沉淀为 skill：'),
+    `${chalk.cyan(suggestion.name)} - ${suggestion.description}`,
+    chalk.gray(`触发词：${suggestion.triggers.join(', ') || '(空)'}`),
+    chalk.gray(suggestion.reason)
+  ].join('\n') + '\n');
+  const answer = await rl.question('创建这个 skill 吗？[y/N] ', { signal });
+  if (!/^(y|yes|是|创建|同意)$/i.test(answer.trim())) {
+    output.write(chalk.gray('已跳过创建 skill。\n'));
+    await agent.transcripts.append('command', 'skill suggestion declined', {
+      command: 'skill_suggestion_declined',
+      name: suggestion.name,
+      signature: suggestion.signature
+    });
+    return;
+  }
+  const skill = await agent.skills.createSuggestedSkill(suggestion);
+  output.write(`${chalk.green('已创建 skill')} ${skill.path}\n`);
+  await agent.transcripts.append('command', 'skill suggestion accepted', {
+    command: 'skill_suggestion_accepted',
+    name: skill.name,
+    path: skill.path,
+    signature: suggestion.signature
+  });
 }
 
 async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {

@@ -203,6 +203,16 @@ export type SkillUsage = {
   lastStatus?: 'success' | 'failure';
 };
 
+export type SkillSuggestion = {
+  name: string;
+  description: string;
+  triggers: string[];
+  workflow: string[];
+  signature: string;
+  observedCount: number;
+  reason: string;
+};
+
 export type AgentResponse = {
   text: string;
   modelKind: TextModelKind;
@@ -213,6 +223,7 @@ export type AgentResponse = {
   fileToolCalls?: FileToolCallRecord[];
   skillToolCalls?: SkillToolCallRecord[];
   toolEvents?: ToolProgressEvent[];
+  skillSuggestion?: SkillSuggestion;
   memories: MemoryHit[];
   skills: Skill[];
 };

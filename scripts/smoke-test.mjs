@@ -663,6 +663,24 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   await assertRejects(() => buildSkillInstallPlan({ source: path.join(tempHome, 'evil.zip') }), '不安全');
 });
 
+test('skill 自动沉淀只生成建议，确认后才写入', async () => {
+  const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
+  const suggestionHome = path.join(tempHome, 'skill-suggestion-home');
+  const manager = new SkillManager({ homeDir: suggestionHome, skills: { autoCreate: true, autoCreateThreshold: 2 } });
+  const input = '请帮我整理这个开发流程，以后每次都按这个流程复盘和总结';
+  const first = await manager.maybeSuggestSkill(input, '第一次回答摘要');
+  if (first) throw new Error(`第一次不应该达到阈值：${JSON.stringify(first)}`);
+  const second = await manager.maybeSuggestSkill(input, '第二次回答摘要');
+  if (!second) throw new Error('第二次应该生成 skill 建议');
+  assertIncludes(second.reason, '相似任务');
+  const beforeCreate = await manager.loadSkills();
+  if (beforeCreate.length !== 0) throw new Error(`生成建议不应该自动写入 skill：${JSON.stringify(beforeCreate)}`);
+  const created = await manager.createSuggestedSkill(second);
+  assertIncludes(created.name, second.name);
+  const afterCreate = await manager.loadSkills();
+  if (afterCreate.length !== 1) throw new Error(`确认后应该写入一个 skill：${JSON.stringify(afterCreate)}`);
+});
+
 test('skill install 支持 CC-Source plugin manifest 的 skillsPath/skillsPaths', async () => {
   const pluginRoot = path.join(tempHome, 'demo-plugin');
   await mkdir(path.join(pluginRoot, 'skills', 'default-skill'), { recursive: true });

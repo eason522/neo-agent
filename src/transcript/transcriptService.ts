@@ -5,7 +5,7 @@ import type { Logger } from '../logging/logger.js';
 import { redact } from '../logging/logger.js';
 import { ensureDir, stableId } from '../utils/fs.js';
 
-export type TranscriptEntryType = 'session_start' | 'session_end' | 'user' | 'assistant' | 'command' | 'error' | 'compact' | 'cancel';
+export type TranscriptEntryType = 'session_start' | 'session_end' | 'user' | 'assistant' | 'command' | 'error' | 'compact' | 'cancel' | 'skill_suggestion';
 
 export type TranscriptEntry = {
   id: string;

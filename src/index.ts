@@ -59,6 +59,10 @@ program
       const response = await agent.ask(text, attachments, { signal: controller.signal });
       console.log(response.text);
       console.error(chalk.gray(`model=${response.modelKind}`));
+      if (response.skillSuggestion) {
+        console.error(chalk.yellow(`skill 建议：${response.skillSuggestion.name}，${response.skillSuggestion.reason}`));
+        console.error(chalk.gray('单次 ask 不会自动创建 skill；如需沉淀，请在 REPL 中确认，或使用 `neo skill create`。'));
+      }
     } catch (error) {
       if (isAbortError(error) || controller.signal.aborted) {
         console.error(chalk.yellow('已取消当前请求。'));

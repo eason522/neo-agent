@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig, Skill, SkillScope } from '../types.js';
+import type { AppConfig, Skill, SkillScope, SkillSuggestion } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
 import { SkillChangeDetector, type SkillChangeSummary } from './skillChangeDetector.js';
 import { validateSkillContent } from './skillPackage.js';
@@ -140,7 +140,7 @@ export class SkillManager {
     return parseSkill(safeName, dir, filePath, scope, body);
   }
 
-  async maybeAutoCreate(input: string, assistantOutput: string): Promise<Skill | undefined> {
+  async maybeSuggestSkill(input: string, assistantOutput: string): Promise<SkillSuggestion | undefined> {
     if (!this.config.skills.autoCreate) return undefined;
     const signature = taskSignature(input);
     if (!signature) return undefined;
@@ -153,16 +153,28 @@ export class SkillManager {
     const existing = await this.match(input, 1);
     if (existing.length > 0) return undefined;
 
-    const name = signature.replace(/-/g, ' ');
-    return this.createSkill(
-      name,
-      `Auto-created from repeated task pattern: ${signature}`,
-      signature.split('-').filter(Boolean),
-      [
+    return {
+      name: sanitizeName(signature),
+      description: `Repeated task pattern: ${signature}`,
+      triggers: signature.split('-').filter(Boolean),
+      workflow: [
         `Identify whether the task matches this repeated request: "${input.slice(0, 160)}".`,
         'Reuse the relevant context, commands, and output style from previous successful runs.',
         `Previous answer summary to preserve: ${assistantOutput.slice(0, 300)}`
-      ]
+      ],
+      signature,
+      observedCount: patterns[signature],
+      reason: `检测到相似任务已出现 ${patterns[signature]} 次，可以沉淀为 skill。`
+    };
+  }
+
+  async createSuggestedSkill(suggestion: SkillSuggestion, options: { scope?: SkillScope } = {}): Promise<Skill> {
+    return this.createSkill(
+      suggestion.name,
+      suggestion.description,
+      suggestion.triggers,
+      suggestion.workflow,
+      options
     );
   }
 }
