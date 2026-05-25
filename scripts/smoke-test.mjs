@@ -1184,9 +1184,6 @@ test('REPL 常用命令不触发模型也能运行', async () => {
       '/debug on',
       '/debug last',
       '/debug off',
-      '/multi',
-      '这是一段不会提交给模型的多行输入',
-      '/cancel',
       '/remember --type workflow --tag cli --pin 我喜欢简洁直接的回答',
       '/memory --type workflow 简洁',
       '/memory-export 5',
@@ -1202,11 +1199,10 @@ test('REPL 常用命令不触发模型也能运行', async () => {
     ].join('\n')
   });
   assertIncludes(result.stdout, '/help                 查看命令');
-  assertIncludes(result.stdout, '/multi                多行输入');
+  assertIncludes(result.stdout, '换行                 当前推荐');
   assertIncludes(result.stdout, 'neo REPL 状态');
   assertIncludes(result.stdout, 'debug 已开启');
   assertIncludes(result.stdout, 'debug 暂无最近一轮对话');
-  assertIncludes(result.stdout, '已取消多行输入');
   assertIncludes(result.stdout, '已记住');
   assertIncludes(result.stdout, '置顶 workflow');
   assertIncludes(result.stdout, '我喜欢简洁直接的回答');
@@ -1243,8 +1239,8 @@ test('REPL 会根据终端环境提示多行输入方式', async () => {
     ].join('\n')
   });
   assertIncludes(sshUnknown.stdout, '终端=SSH 远程会话（本地终端未知）');
-  assertIncludes(sshUnknown.stdout, '推荐换行=/multi / 行尾 \\');
-  assertIncludes(sshUnknown.stdout, 'SSH 默认不会告诉 neo 本机外层是 PowerShell');
+  assertIncludes(sshUnknown.stdout, '推荐换行=Ctrl+Enter / Ctrl+J');
+  assertIncludes(sshUnknown.stdout, '主动开启 Kitty keyboard protocol');
 
   const powerShell = await run([], {
     env: {
@@ -1259,8 +1255,8 @@ test('REPL 会根据终端环境提示多行输入方式', async () => {
     ].join('\n')
   });
   assertIncludes(powerShell.stdout, '终端=PowerShell over SSH');
-  assertIncludes(powerShell.stdout, '推荐换行=/multi / 行尾 \\');
-  assertIncludes(powerShell.stdout, 'Alt+Enter 用作全屏');
+  assertIncludes(powerShell.stdout, '推荐换行=Ctrl+Enter / Ctrl+J');
+  assertIncludes(powerShell.stdout, 'Alt+Enter 在 PowerShell');
 });
 
 test('transcripts 命令能列出会话', async () => {

@@ -1,5 +1,4 @@
 import readline from 'node:readline/promises';
-import { emitKeypressEvents } from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -33,8 +32,22 @@ type TerminalMultilineSupport = {
   ctrlEnterLikelyDistinct: boolean;
 };
 
+type AskQuestion = (prompt: string, signal: AbortSignal) => Promise<string>;
+
+const enableKittyKeyboard = '\x1b[>1u';
+const disableKittyKeyboard = '\x1b[<u';
+const enableModifyOtherKeys = '\x1b[>4;2m';
+const disableModifyOtherKeys = '\x1b[>4m';
+const enableBracketedPaste = '\x1b[?2004h';
+const disableBracketedPaste = '\x1b[?2004l';
+
 export async function startRepl(agent: NeoAgent): Promise<void> {
-  const isInteractive = Boolean(input.isTTY);
+  const isInteractiveSession = Boolean(input.isTTY);
+  if (isInteractiveSession) {
+    await startInteractiveRepl(agent);
+    return;
+  }
+  const isInteractive = false;
   const historyFile = path.join(agent.config.homeDir, 'repl_history');
   const rl = readline.createInterface({
     input,
@@ -49,31 +62,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     debugEnabled: process.env.NEO_AGENT_REPL_DEBUG === '1',
     terminal: terminalSupport
   };
-  let multilineBuffer: string[] | undefined;
   let activeController: AbortController | undefined;
-  const continueMultilineFromShortcut = (): void => {
-    const mutableRl = rl as ReturnType<typeof readline.createInterface> & {
-      line?: string;
-      write?: (data: string | null, key?: { ctrl?: boolean; name?: string }) => void;
-    };
-    const currentLine = String(mutableRl.line ?? '').trimEnd();
-    if (!multilineBuffer) {
-      multilineBuffer = [];
-      rl.setPrompt(chalk.gray('neo… '));
-    }
-    multilineBuffer.push(currentLine);
-    mutableRl.write?.(null, { ctrl: true, name: 'u' });
-    output.write('\n');
-    if (isInteractive) rl.prompt();
-  };
-  const handleKeypress = (sequence: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } = {}): void => {
-    if (!isMultilineShortcut(sequence, key)) return;
-    continueMultilineFromShortcut();
-  };
-  if (isInteractive && input.isTTY) {
-    emitKeypressEvents(input);
-    input.on('keypress', handleKeypress);
-  }
   agent.setMcpPermissionAsker(isInteractive ? async request => {
     const answer = activeController
       ? await rl.question(formatMcpPermissionPrompt(request), { signal: activeController.signal })
@@ -97,50 +86,8 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   try {
     if (isInteractive) rl.prompt();
     for await (const raw of rl) {
-      const rawLine = raw.trimEnd();
-      const line = rawLine.trim();
-      if (multilineBuffer) {
-        if (line === '/cancel') {
-          multilineBuffer = undefined;
-          rl.setPrompt(chalk.gray('neo> '));
-          output.write(chalk.gray('已取消多行输入。\n'));
-          if (isInteractive) rl.prompt();
-          continue;
-        }
-        if (line === '.' || line === '/end') {
-          const combined = multilineBuffer.join('\n').trim();
-          multilineBuffer = undefined;
-          rl.setPrompt(chalk.gray('neo> '));
-          if (!combined) {
-            if (isInteractive) rl.prompt();
-            continue;
-          }
-          await saveReplHistory(historyFile, combined);
-          await runAgentTurn(agent, combined, isInteractive, rl, state, controller => {
-            activeController = controller;
-          });
-          activeController = undefined;
-          if (isInteractive) rl.prompt();
-          continue;
-        }
-        multilineBuffer.push(rawLine);
-        if (isInteractive) rl.prompt();
-        continue;
-      }
+      const line = raw.trim();
       if (!line) {
-        if (isInteractive) rl.prompt();
-        continue;
-      }
-      if (line === '/multi') {
-        multilineBuffer = [];
-        rl.setPrompt(chalk.gray('neo… '));
-        output.write(chalk.gray('进入多行输入：单独输入 . 或 /end 提交，/cancel 取消。\n'));
-        if (isInteractive) rl.prompt();
-        continue;
-      }
-      if (rawLine.endsWith('\\')) {
-        multilineBuffer = [rawLine.slice(0, -1)];
-        rl.setPrompt(chalk.gray('neo… '));
         if (isInteractive) rl.prompt();
         continue;
       }
@@ -151,7 +98,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
         continue;
       }
 
-      await runAgentTurn(agent, line, isInteractive, rl, state, controller => {
+      await runAgentTurn(agent, line, isInteractive, undefined, state, controller => {
         activeController = controller;
       });
       activeController = undefined;
@@ -159,18 +106,320 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     }
   } finally {
     rl.off('SIGINT', handleSigint);
-    input.off('keypress', handleKeypress);
     agent.setToolEventHandler(undefined);
     rl.close();
     await agent.close();
   }
 }
 
+async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
+  const historyFile = path.join(agent.config.homeDir, 'repl_history');
+  const terminalSupport = detectTerminalMultilineSupport();
+  const state: ReplState = {
+    debugEnabled: process.env.NEO_AGENT_REPL_DEBUG === '1',
+    terminal: terminalSupport
+  };
+  const history = await loadReplHistory(historyFile);
+  let activeController: AbortController | undefined;
+  let closed = false;
+  const rawModeWasEnabled = Boolean(input.isTTY && input.isRaw);
+
+  const askQuestion: AskQuestion = async (prompt, signal) => readInteractiveInput({
+    prompt,
+    signal,
+    history: []
+  });
+
+  agent.setMcpPermissionAsker(async request => {
+    const answer = await askQuestion(formatMcpPermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
+    return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
+  });
+  agent.setToolEventHandler(event => {
+    output.write(`${formatToolProgressEvent(event)}\n`);
+  });
+  const handleGlobalData = (chunk: Buffer | string): void => {
+    if (!activeController || activeController.signal.aborted) return;
+    if (chunk.toString().includes('\x03')) {
+      activeController.abort(createAbortError());
+      output.write(`\n${chalk.yellow('正在取消当前请求...')}\n`);
+    }
+  };
+  input.on('data', handleGlobalData);
+
+  input.setRawMode(true);
+  output.write(enableBracketedPaste);
+  output.write(enableKittyKeyboard);
+  output.write(enableModifyOtherKeys);
+  printBanner(terminalSupport);
+
+  try {
+    while (!closed) {
+      const line = await readInteractiveInput({
+        prompt: chalk.gray('neo> '),
+        history
+      });
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed === '/exit' || trimmed === '/quit') break;
+      await saveReplHistory(historyFile, line);
+      history.push(line);
+      if (history.length > 200) history.splice(0, history.length - 200);
+      if (await handleCommand(agent, trimmed, state)) continue;
+
+      await runAgentTurn(agent, line, true, askQuestion, state, controller => {
+        activeController = controller;
+      });
+      activeController = undefined;
+    }
+  } catch (error) {
+    if (!isAbortError(error)) throw error;
+  } finally {
+    closed = true;
+    agent.setToolEventHandler(undefined);
+    agent.setMcpPermissionAsker(undefined);
+    input.off('data', handleGlobalData);
+    output.write(disableModifyOtherKeys);
+    output.write(disableKittyKeyboard);
+    output.write(disableBracketedPaste);
+    input.setRawMode(rawModeWasEnabled);
+    input.pause();
+    input.unref?.();
+    await agent.close();
+  }
+}
+
+async function readInteractiveInput(options: {
+  prompt: string;
+  signal?: AbortSignal;
+  history: string[];
+}): Promise<string> {
+  let text = '';
+  let cursor = 0;
+  let historyIndex = options.history.length;
+  let renderedLines = 0;
+  let renderedCursorRow = 0;
+
+  const render = (): void => {
+    if (renderedLines > 0) {
+      const rowsBelowCursor = renderedLines - 1 - renderedCursorRow;
+      if (rowsBelowCursor > 0) output.write(`\x1b[${rowsBelowCursor}B`);
+      output.write('\r\x1b[2K');
+      for (let index = 1; index < renderedLines; index += 1) {
+        output.write('\x1b[1A\r\x1b[2K');
+      }
+    }
+    const lines = text.split('\n');
+    const rendered = lines.map((line, index) => `${promptForLine(options.prompt, index)}${line}`).join('\n');
+    output.write(rendered);
+
+    const cursorPosition = getCursorPosition(text, cursor, options.prompt);
+    const endRow = lines.length - 1;
+    if (endRow > cursorPosition.row) output.write(`\x1b[${endRow - cursorPosition.row}A`);
+    output.write('\r');
+    if (cursorPosition.column > 0) output.write(`\x1b[${cursorPosition.column}C`);
+
+    renderedLines = lines.length;
+    renderedCursorRow = cursorPosition.row;
+  };
+
+  render();
+
+  return await new Promise<string>((resolve, reject) => {
+    const cleanup = (): void => {
+      input.off('data', onData);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (value: string): void => {
+      cleanup();
+      output.write('\n');
+      resolve(value);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(options.signal?.reason ?? createAbortError());
+    };
+    const setText = (next: string, nextCursor = next.length): void => {
+      text = next;
+      cursor = Math.max(0, Math.min(next.length, nextCursor));
+      render();
+    };
+    const insert = (value: string): void => setText(`${text.slice(0, cursor)}${value}${text.slice(cursor)}`, cursor + value.length);
+    const backspace = (): void => {
+      if (cursor <= 0) return;
+      setText(`${text.slice(0, cursor - 1)}${text.slice(cursor)}`, cursor - 1);
+    };
+    const deleteForward = (): void => {
+      if (cursor >= text.length) return;
+      setText(`${text.slice(0, cursor)}${text.slice(cursor + 1)}`, cursor);
+    };
+    const moveCursor = (next: number): void => {
+      cursor = Math.max(0, Math.min(text.length, next));
+      render();
+    };
+    const previousHistory = (): void => {
+      if (options.history.length === 0) return;
+      historyIndex = Math.max(0, historyIndex - 1);
+      setText(options.history[historyIndex] ?? '');
+    };
+    const nextHistory = (): void => {
+      if (options.history.length === 0) return;
+      historyIndex = Math.min(options.history.length, historyIndex + 1);
+      setText(historyIndex >= options.history.length ? '' : options.history[historyIndex] ?? '');
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const data = chunk.toString();
+      for (let index = 0; index < data.length;) {
+        const rest = data.slice(index);
+        if (rest.startsWith('\x1b[200~')) {
+          const end = rest.indexOf('\x1b[201~');
+          if (end >= 0) {
+            insert(rest.slice(6, end).replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+            index += end + 6;
+            continue;
+          }
+        }
+        const multiline = findMultilineSequence(rest);
+        if (multiline?.index === 0) {
+          insert('\n');
+          index += multiline.sequence.length;
+          continue;
+        }
+        if (rest.startsWith('\x1b[A')) {
+          previousHistory();
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[B')) {
+          nextHistory();
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[C')) {
+          moveCursor(cursor + 1);
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[D')) {
+          moveCursor(cursor - 1);
+          index += 3;
+          continue;
+        }
+        if (rest.startsWith('\x1b[H') || rest.startsWith('\x1b[1~')) {
+          moveCursor(0);
+          index += rest.startsWith('\x1b[H') ? 3 : 4;
+          continue;
+        }
+        if (rest.startsWith('\x1b[F') || rest.startsWith('\x1b[4~')) {
+          moveCursor(text.length);
+          index += rest.startsWith('\x1b[F') ? 3 : 4;
+          continue;
+        }
+        if (rest.startsWith('\x1b[3~')) {
+          deleteForward();
+          index += 4;
+          continue;
+        }
+        if (rest.startsWith('\x1b')) {
+          const escapeMatch = /^\x1b\[[0-9;?]*[A-Za-z~]/.exec(rest) ?? /^\x1b./.exec(rest);
+          index += escapeMatch?.[0].length ?? 1;
+          continue;
+        }
+        const char = data[index] ?? '';
+        if (char === '\r') {
+          finish(text);
+          return;
+        }
+        if (char === '\n') {
+          insert('\n');
+          index += 1;
+          continue;
+        }
+        if (char === '\x7f' || char === '\b') {
+          backspace();
+          index += 1;
+          continue;
+        }
+        if (char === '\x01') {
+          moveCursor(0);
+          index += 1;
+          continue;
+        }
+        if (char === '\x05') {
+          moveCursor(text.length);
+          index += 1;
+          continue;
+        }
+        if (char === '\x02') {
+          moveCursor(cursor - 1);
+          index += 1;
+          continue;
+        }
+        if (char === '\x06') {
+          moveCursor(cursor + 1);
+          index += 1;
+          continue;
+        }
+        if (char === '\x03') {
+          if (text) {
+            setText('');
+            index += 1;
+            continue;
+          }
+          cleanup();
+          output.write('\n');
+          reject(createAbortError());
+          return;
+        }
+        if (char === '\x04') {
+          cleanup();
+          output.write('\n');
+          reject(createAbortError());
+          return;
+        }
+        if (char >= ' ' || char === '\t') {
+          insert(char);
+        }
+        index += 1;
+      }
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    input.on('data', onData);
+  });
+}
+
+function promptForLine(firstPrompt: string, lineIndex: number): string {
+  return lineIndex === 0 ? firstPrompt : chalk.gray('neo… ');
+}
+
+function getCursorPosition(text: string, cursor: number, firstPrompt: string): { row: number; column: number } {
+  const beforeCursor = text.slice(0, cursor).split('\n');
+  const row = beforeCursor.length - 1;
+  const lineBeforeCursor = beforeCursor[row] ?? '';
+  return {
+    row,
+    column: displayWidth(promptForLine(firstPrompt, row)) + displayWidth(lineBeforeCursor)
+  };
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of stripAnsi(value)) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    width += codePoint >= 0x1100 ? 2 : 1;
+  }
+  return width;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
+}
+
 async function runAgentTurn(
   agent: NeoAgent,
   line: string,
   isInteractive: boolean,
-  rl: ReturnType<typeof readline.createInterface>,
+  askQuestion: AskQuestion | undefined,
   state: ReplState,
   setActiveController: (controller: AbortController | undefined) => void
 ): Promise<void> {
@@ -195,11 +444,11 @@ async function runAgentTurn(
     output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n`);
     output.write(`${formatStatusLine(state.lastTurn)}\n\n`);
     if (state.debugEnabled) output.write(`${formatDebugView(agent, state)}\n`);
-    if (isInteractive && response.skillSuggestion && !turnController.signal.aborted) {
-      await confirmSkillSuggestion(agent, rl, response.skillSuggestion, turnController.signal);
+    if (isInteractive && askQuestion && response.skillSuggestion && !turnController.signal.aborted) {
+      await confirmSkillSuggestion(agent, askQuestion, response.skillSuggestion, turnController.signal);
     }
-    if (isInteractive && response.skillImprovementSuggestion && !turnController.signal.aborted) {
-      await confirmSkillImprovement(agent, rl, response.skillImprovementSuggestion, turnController.signal);
+    if (isInteractive && askQuestion && response.skillImprovementSuggestion && !turnController.signal.aborted) {
+      await confirmSkillImprovement(agent, askQuestion, response.skillImprovementSuggestion, turnController.signal);
     }
   } catch (error) {
     if (isAbortError(error) || turnController.signal.aborted) {
@@ -239,16 +488,21 @@ function shouldPersistHistory(line: string): boolean {
   return !/(api[-_ ]?key|sk-[A-Za-z0-9]{12,}|tp-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9_-]{12,})/i.test(line);
 }
 
-function isMultilineShortcut(sequence: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }): boolean {
-  const name = key.name ?? '';
-  if ((name === 'return' || name === 'enter') && (key.ctrl || key.meta)) return true;
-  if (name === 'j' && key.ctrl) return true;
-  return [
+function findMultilineSequence(input: string): { index: number; sequence: string } | undefined {
+  const sequences = [
     '\u001b[13;5u',
     '\u001b[13;6u',
     '\u001b[13;3u',
-    '\u001b[13;7u'
-  ].includes(sequence);
+    '\u001b[13;7u',
+    '\u001b[27;5;13~',
+    '\u001b[27;6;13~',
+    '\u001b[27;3;13~',
+    '\u001b[27;7;13~'
+  ];
+  return sequences
+    .map(sequence => ({ sequence, index: input.indexOf(sequence) }))
+    .filter(item => item.index >= 0)
+    .sort((a, b) => a.index - b.index)[0];
 }
 
 function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): TerminalMultilineSupport {
@@ -274,7 +528,7 @@ function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): T
     return buildTerminalSupport('VS Code Terminal', ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'VS Code 的快捷键可能被编辑器或终端配置拦截；若 Ctrl+Enter 无效，优先用 Alt+Enter 或 Ctrl+J。');
   }
   if (env.WT_SESSION || termProgram.includes('windows_terminal')) {
-    return buildTerminalSupport('Windows Terminal', ['Ctrl+J', 'Ctrl+Enter'], isTmux, 'Windows Terminal 的 Ctrl+Enter 支持取决于输入协议和配置；Ctrl+J 通常更稳。');
+    return buildTerminalSupport('Windows Terminal', ['Ctrl+Enter', 'Ctrl+J'], isTmux, 'neo 已主动开启增强键盘协议；Alt+Enter 常被终端占用，不作为推荐换行键。');
   }
   if (termProgram.includes('iterm')) {
     return buildTerminalSupport('iTerm2', ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'iTerm2 默认不一定把 Ctrl+Enter 单独发给程序；开启 CSI u 或键盘映射后可用。');
@@ -291,12 +545,12 @@ function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): T
   if (isSsh) {
     return buildTerminalSupport(
       'SSH 远程会话（本地终端未知）',
-      ['/multi', '行尾 \\'],
+      ['Ctrl+Enter', 'Ctrl+J'],
       false,
-      'neo 运行在远端服务器上，SSH 默认不会告诉 neo 本机外层是 PowerShell、Windows Terminal 还是其它终端；组合键可能已经被本地终端或 SSH 客户端截获。可设置 NEO_AGENT_TERMINAL=powershell、wezterm、kitty、vscode 等手动覆盖。'
+      'neo 已按 CC-Source 方式主动开启 Kitty keyboard protocol 和 xterm modifyOtherKeys；SSH 默认不会告诉 neo 本机外层终端类型，可设置 NEO_AGENT_TERMINAL=powershell、wezterm、kitty、vscode 等手动覆盖显示。'
     );
   }
-  return buildTerminalSupport('未知终端', ['Ctrl+J', 'Alt+Enter'], false, '当前无法可靠识别终端类型；如果快捷键无效，请使用 /multi。');
+  return buildTerminalSupport('未知终端', ['Ctrl+Enter', 'Ctrl+J'], false, 'neo 会尝试启用增强键盘协议；Alt+Enter 可能被终端占用，不作为默认推荐。');
 }
 
 function terminalSupportFromOverride(override: string, isTmux: boolean, isSsh: boolean): TerminalMultilineSupport {
@@ -304,20 +558,20 @@ function terminalSupportFromOverride(override: string, isTmux: boolean, isSsh: b
   if (override.includes('powershell') || override.includes('pwsh') || override.includes('conhost')) {
     return buildTerminalSupport(
       `PowerShell${suffix}`,
-      ['/multi', '行尾 \\'],
+      ['Ctrl+Enter', 'Ctrl+J'],
       isTmux,
-      'PowerShell/conhost 常会把 Alt+Enter 用作全屏，Ctrl+Enter/Ctrl+J 也常被当作普通回车或被 SSH 截获；不要把这些组合键当作可靠换行。'
+      'neo 已主动开启增强键盘协议；Alt+Enter 在 PowerShell/conhost/Windows Terminal 中常被全屏等行为占用，不作为推荐换行键。'
     );
   }
   if (override.includes('windows') || override.includes('wt')) {
-    return buildTerminalSupport(`Windows Terminal${suffix}`, ['Ctrl+J', 'Ctrl+Enter'], isTmux, 'Windows Terminal 的 Ctrl+Enter 支持取决于输入协议、PowerShell/SSH 和快捷键配置；如果在 SSH 中无效，请使用 /multi。');
+    return buildTerminalSupport(`Windows Terminal${suffix}`, ['Ctrl+Enter', 'Ctrl+J'], isTmux, 'neo 已主动开启增强键盘协议；Alt+Enter 常被终端占用，不作为推荐换行键。');
   }
   if (override.includes('wezterm')) return buildTerminalSupport(`WezTerm${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
   if (override.includes('kitty')) return buildTerminalSupport(`Kitty${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
   if (override.includes('ghostty')) return buildTerminalSupport(`Ghostty${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
   if (override.includes('vscode')) return buildTerminalSupport(`VS Code Terminal${suffix}`, ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'VS Code 的快捷键可能被编辑器或终端配置拦截；若 Ctrl+Enter 无效，优先用 Alt+Enter 或 Ctrl+J。');
   if (override.includes('iterm')) return buildTerminalSupport(`iTerm2${suffix}`, ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'iTerm2 默认不一定把 Ctrl+Enter 单独发给程序；开启 CSI u 或键盘映射后可用。');
-  return buildTerminalSupport(`手动终端配置：${override}${suffix}`, ['/multi', '行尾 \\'], isTmux, '未知手动终端配置，使用稳定多行方式。');
+  return buildTerminalSupport(`手动终端配置：${override}${suffix}`, ['Ctrl+Enter', 'Ctrl+J'], isTmux, '未知手动终端配置；neo 仍会尝试启用增强键盘协议。');
 }
 
 function buildTerminalSupport(
@@ -326,13 +580,13 @@ function buildTerminalSupport(
   isTmux: boolean,
   note?: string
 ): TerminalMultilineSupport {
-  const fallback = ['/multi', '行尾 \\'];
+  const fallback = ['粘贴多行文本'];
   const tmuxNote = isTmux ? '检测到 tmux，组合键可能受 tmux extended-keys 配置影响。' : '';
   return {
     name: isTmux && name !== 'tmux' ? `${name} + tmux` : name,
     recommended,
     fallback,
-    note: [note, tmuxNote, `稳定兜底：${fallback.join('、')}。`].filter(Boolean).join(' '),
+    note: [note, tmuxNote, `也支持：${fallback.join('、')}。`].filter(Boolean).join(' '),
     ctrlEnterLikelyDistinct: recommended[0] === 'Ctrl+Enter' && !isTmux
   };
 }
@@ -396,7 +650,7 @@ function formatDebugView(agent: NeoAgent, state: ReplState): string {
 
 async function confirmSkillSuggestion(
   agent: NeoAgent,
-  rl: ReturnType<typeof readline.createInterface>,
+  askQuestion: AskQuestion,
   suggestion: SkillSuggestion,
   signal: AbortSignal
 ): Promise<void> {
@@ -406,7 +660,7 @@ async function confirmSkillSuggestion(
     chalk.gray(`触发词：${suggestion.triggers.join(', ') || '(空)'}`),
     chalk.gray(suggestion.reason)
   ].join('\n') + '\n');
-  const answer = await rl.question('创建这个 skill 吗？[y/N] ', { signal });
+  const answer = await askQuestion('创建这个 skill 吗？[y/N] ', signal);
   if (!/^(y|yes|是|创建|同意)$/i.test(answer.trim())) {
     output.write(chalk.gray('已跳过创建 skill。\n'));
     await agent.transcripts.append('command', 'skill suggestion declined', {
@@ -428,7 +682,7 @@ async function confirmSkillSuggestion(
 
 async function confirmSkillImprovement(
   agent: NeoAgent,
-  rl: ReturnType<typeof readline.createInterface>,
+  askQuestion: AskQuestion,
   suggestion: SkillImprovementSuggestion,
   signal: AbortSignal
 ): Promise<void> {
@@ -437,7 +691,7 @@ async function confirmSkillImprovement(
     ...suggestion.updates.map(update => `- ${update.section}: ${update.change}`),
     chalk.gray(suggestion.reason)
   ].join('\n') + '\n');
-  const answer = await rl.question('把这些改进追加到 SKILL.md 吗？[y/N] ', { signal });
+  const answer = await askQuestion('把这些改进追加到 SKILL.md 吗？[y/N] ', signal);
   if (!/^(y|yes|是|更新|追加|同意)$/i.test(answer.trim())) {
     output.write(chalk.gray('已跳过更新 skill。\n'));
     await agent.transcripts.append('command', 'skill improvement declined', {
@@ -712,7 +966,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/exit                 退出',
     '/status               查看当前 REPL 状态',
     '/debug [on|off|last]  开关轻量 debug 视图',
-    `/multi                多行输入，. 或 /end 提交；当前推荐 ${support.recommended.join(' / ')}，兜底 ${support.fallback.join(' / ')}`,
+    `换行                 当前推荐 ${support.recommended.join(' / ')}；${support.note}`,
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
     '/memory [查询词]      查看或搜索记忆，支持 --type',
     '/memory-update <id|uri> <新内容>',
