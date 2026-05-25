@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { AppConfig, Skill, SkillScope } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
 import { validateSkillContent } from './skillPackage.js';
+import { applySkillUsage, skillUsageScore, updateSkillUsage, type SkillUsageStatus, type SkillUsageStore } from './skillUsage.js';
 
 type PatternStore = Record<string, number>;
 
@@ -10,19 +11,22 @@ export class SkillManager {
   private readonly userSkillsDir: string;
   private readonly projectSkillsDir: string;
   private readonly patternsFile: string;
+  private readonly usageFile: string;
 
   constructor(private readonly config: AppConfig, private readonly projectRoot = process.cwd()) {
     this.userSkillsDir = path.join(config.homeDir, 'skills');
     this.projectSkillsDir = path.join(projectRoot, '.neo-agent', 'skills');
     this.patternsFile = path.join(this.userSkillsDir, '.task-patterns.json');
+    this.usageFile = path.join(this.userSkillsDir, '.usage.json');
   }
 
   async loadSkills(): Promise<Skill[]> {
-    const [projectSkills, userSkills] = await Promise.all([
+    const [projectSkills, userSkills, usage] = await Promise.all([
       this.loadSkillsFromRoot(this.projectSkillsDir, 'project'),
-      this.loadSkillsFromRoot(this.userSkillsDir, 'user')
+      this.loadSkillsFromRoot(this.userSkillsDir, 'user'),
+      this.loadUsage()
     ]);
-    return [...projectSkills, ...userSkills].sort((a, b) => a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+    return sortSkills(applySkillUsage([...projectSkills, ...userSkills], usage));
   }
 
   skillRoot(scope: SkillScope): string {
@@ -61,6 +65,15 @@ export class SkillManager {
     return skill;
   }
 
+  async recordUsage(skill: Pick<Skill, 'name' | 'scope'>, status: SkillUsageStatus): Promise<void> {
+    const usage = await this.loadUsage();
+    await writeJsonFile(this.usageFile, updateSkillUsage(usage, skill, status));
+  }
+
+  async loadUsage(): Promise<SkillUsageStore> {
+    return readJsonFile<SkillUsageStore>(this.usageFile, {});
+  }
+
   async match(input: string, limit = 4): Promise<Skill[]> {
     const skills = await this.loadSkills();
     return this.matchLoaded(input, skills, limit);
@@ -76,7 +89,7 @@ export class SkillManager {
           (lower.includes(skill.name.toLowerCase()) ? 3 : 0)
       }))
       .filter(item => item.score > 0)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.score - a.score || compareSkills(a.skill, b.skill))
       .slice(0, limit)
       .map(item => item.skill);
   }
@@ -130,6 +143,17 @@ export class SkillManager {
       ]
     );
   }
+}
+
+function sortSkills(skills: Skill[]): Skill[] {
+  return skills.sort(compareSkills);
+}
+
+function compareSkills(a: Skill, b: Skill): number {
+  const usageDiff = skillUsageScore(b) - skillUsageScore(a);
+  if (usageDiff !== 0) return usageDiff;
+  if (a.scope !== b.scope) return a.scope === 'project' ? -1 : 1;
+  return a.name.localeCompare(b.name);
 }
 
 function parseSkill(name: string, skillPath: string, filePath: string, scope: SkillScope, body: string): Skill {

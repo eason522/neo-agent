@@ -323,19 +323,23 @@ function printHelp(): void {
   ].join('\n'));
 }
 
-function formatSkillSummary(skill: { name: string; description: string; triggers: string[]; path: string }): string {
+function formatSkillSummary(skill: { name: string; description: string; triggers: string[]; path: string; scope?: string; usage?: { usageCount: number; lastUsedAt?: string } }): string {
   const triggers = skill.triggers.length > 0 ? ` 触发词=${skill.triggers.join(',')}` : '';
+  const scope = skill.scope ? ` scope=${skill.scope}` : '';
+  const usage = skill.usage ? ` 使用=${skill.usage.usageCount}` : '';
   return [
-    `${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(triggers)}`,
+    `${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(`${scope}${triggers}${usage}`)}`,
     chalk.gray(`${skill.path}/SKILL.md`)
   ].join('\n');
 }
 
-function formatSkillDetail(skill: { name: string; description: string; triggers: string[]; path: string; body: string }): string {
+function formatSkillDetail(skill: { name: string; description: string; triggers: string[]; path: string; scope?: string; usage?: { usageCount: number; successCount: number; failureCount: number; lastUsedAt?: string }; body: string }): string {
   return [
     `${chalk.cyan(skill.name)} - ${skill.description}`,
+    skill.scope ? chalk.gray(`scope=${skill.scope}`) : '',
     chalk.gray(`${skill.path}/SKILL.md`),
     skill.triggers.length > 0 ? chalk.gray(`触发词：${skill.triggers.join(', ')}`) : '',
+    skill.usage ? chalk.gray(`使用：${skill.usage.usageCount} 次，成功 ${skill.usage.successCount}，失败 ${skill.usage.failureCount}，最近 ${skill.usage.lastUsedAt ?? 'never'}`) : '',
     '',
     skill.body.trimEnd()
   ].filter(line => line !== '').join('\n');

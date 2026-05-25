@@ -191,7 +191,16 @@ export type Skill = {
   disableModelInvocation: boolean;
   userInvocable: boolean;
   triggers: string[];
+  usage?: SkillUsage;
   body: string;
+};
+
+export type SkillUsage = {
+  usageCount: number;
+  successCount: number;
+  failureCount: number;
+  lastUsedAt?: string;
+  lastStatus?: 'success' | 'failure';
 };
 
 export type AgentResponse = {

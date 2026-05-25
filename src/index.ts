@@ -537,14 +537,15 @@ function collectOption(value: string, previous: string[]): string[] {
   return previous;
 }
 
-function toSkillSummary(skill: Skill): Pick<Skill, 'name' | 'path' | 'filePath' | 'scope' | 'description' | 'triggers'> {
+function toSkillSummary(skill: Skill): Pick<Skill, 'name' | 'path' | 'filePath' | 'scope' | 'description' | 'triggers' | 'usage'> {
   return {
     name: skill.name,
     path: skill.path,
     filePath: skill.filePath,
     scope: skill.scope,
     description: skill.description,
-    triggers: skill.triggers
+    triggers: skill.triggers,
+    usage: skill.usage
   };
 }
 
@@ -555,7 +556,8 @@ function printSkillList(skills: Skill[]): void {
   }
   for (const skill of skills) {
     const triggers = skill.triggers.length > 0 ? ` 触发词=${skill.triggers.join(',')}` : '';
-    console.log(`${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(` scope=${skill.scope}${triggers}`)}`);
+    const usage = skill.usage ? ` 使用=${skill.usage.usageCount} 最近=${skill.usage.lastUsedAt ?? 'never'}` : '';
+    console.log(`${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(` scope=${skill.scope}${triggers}${usage}`)}`);
     console.log(chalk.gray(`${skill.path}/SKILL.md`));
   }
 }
@@ -565,6 +567,7 @@ function printSkillDetail(skill: Skill): void {
   console.log(chalk.gray(`scope=${skill.scope}`));
   console.log(chalk.gray(`${skill.path}/SKILL.md`));
   if (skill.triggers.length > 0) console.log(chalk.gray(`触发词：${skill.triggers.join(', ')}`));
+  if (skill.usage) console.log(chalk.gray(`使用：${skill.usage.usageCount} 次，成功 ${skill.usage.successCount}，失败 ${skill.usage.failureCount}，最近 ${skill.usage.lastUsedAt ?? 'never'}`));
   console.log('');
   console.log(skill.body.trimEnd());
 }

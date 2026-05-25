@@ -714,6 +714,12 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
   assertIncludes(result.text, '已按 skill 回答');
   if (result.skillToolCalls.length !== 1) throw new Error(`应该记录一次 Skill 调用：${JSON.stringify(result.skillToolCalls)}`);
   assertIncludes(result.skillToolCalls[0].skillName, 'answer-style');
+  const usedSkill = (await manager.loadSkills()).find(skill => skill.name === 'answer-style');
+  if (usedSkill?.usage?.usageCount !== 1 || usedSkill.usage.successCount !== 1) {
+    throw new Error(`应该记录 Skill usage：${JSON.stringify(usedSkill?.usage)}`);
+  }
+  const listAfterUsage = await run(['skill', 'list', '--scope', 'project'], { cwd: projectRoot });
+  assertIncludes(listAfterUsage.stdout, '使用=1');
   if (!events.some(event => event.phase === 'success' && event.name === 'Skill')) {
     throw new Error(`应该产生 Skill 成功事件：${JSON.stringify(events)}`);
   }

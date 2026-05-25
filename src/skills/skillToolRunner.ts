@@ -4,6 +4,7 @@ import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import { sanitizeName } from '../utils/fs.js';
 import type { SkillManager } from './skillManager.js';
+import { skillUsageScore } from './skillUsage.js';
 
 export const SKILL_TOOL_NAME = 'Skill';
 
@@ -65,9 +66,12 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     const start = Date.now();
     const input = skillInputSchema.parse(parseJsonObject(call.function.arguments));
     const normalizedName = normalizeSkillName(input.skill);
-    const skill = this.findSkill(normalizedName);
+    const skill = this.findAnySkill(normalizedName);
     if (!skill) throw new Error(`Unknown skill: ${normalizedName}`);
-    if (skill.disableModelInvocation) throw new Error(`Skill ${normalizedName} 禁止模型自动调用。`);
+    if (skill.disableModelInvocation) {
+      await this.manager.recordUsage(skill, 'failure');
+      throw new Error(`Skill ${normalizedName} 禁止模型自动调用。`);
+    }
 
     const content = truncate(JSON.stringify({
       tool: SKILL_TOOL_NAME,
@@ -88,6 +92,8 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
       ].join(' ')
     }, null, 2), maxSkillBodyChars);
 
+    await this.manager.recordUsage(skill, 'success');
+
     return {
       content,
       record: {
@@ -105,9 +111,9 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     return this.skills.filter(skill => !skill.disableModelInvocation);
   }
 
-  private findSkill(name: string): Skill | undefined {
+  private findAnySkill(name: string): Skill | undefined {
     const safeName = sanitizeName(name);
-    return this.callableSkills().find(skill => skill.name === safeName || skill.name === name);
+    return this.skills.find(skill => skill.name === safeName || skill.name === name);
   }
 }
 
@@ -136,6 +142,8 @@ export function getSkillToolPrompt(skills: Skill[]): string {
 
 function formatSkillsWithinBudget(skills: Skill[]): string {
   const sorted = [...skills].sort((a, b) => {
+    const usageDiff = skillUsageScore(b) - skillUsageScore(a);
+    if (usageDiff !== 0) return usageDiff;
     if (a.scope !== b.scope) return a.scope === 'project' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
