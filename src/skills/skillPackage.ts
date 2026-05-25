@@ -22,7 +22,7 @@ export type SkillInstallPlan = {
   triggers: string[];
   files: Array<{ relativePath: string; data: Uint8Array }>;
   validation: SkillValidationResult;
-  sourceType: 'markdown' | 'directory' | 'zip';
+  sourceType: 'markdown' | 'directory' | 'zip' | 'plugin';
 };
 
 export type SkillInstallResult = SkillInstallPlan & {
@@ -40,22 +40,32 @@ export async function buildSkillInstallPlan(input: {
   source: string;
   name?: string;
 }): Promise<SkillInstallPlan> {
+  const plans = await buildSkillInstallPlans(input);
+  if (plans.length !== 1) throw new Error(`该来源包含 ${plans.length} 个 skill，请使用批量安装路径。`);
+  return plans[0]!;
+}
+
+export async function buildSkillInstallPlans(input: {
+  source: string;
+  name?: string;
+}): Promise<SkillInstallPlan[]> {
   const source = input.source.trim();
   if (/^https?:\/\//i.test(source)) {
     const response = await fetch(source);
     if (!response.ok) throw new Error(`下载 skill 失败：${response.status} ${response.statusText}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     const pathname = new URL(source).pathname.toLowerCase();
-    if (pathname.endsWith('.zip')) return buildZipPlan(bytes, input.name);
+    if (pathname.endsWith('.zip')) return [buildZipPlan(bytes, input.name)];
     const nameHint = path.basename(pathname, path.extname(pathname)) || undefined;
-    return buildMarkdownPlan(strFromU8(bytes), input.name, nameHint);
+    return [buildMarkdownPlan(strFromU8(bytes), input.name, nameHint)];
   }
 
   const sourceStat = await stat(source);
-  if (sourceStat.isDirectory()) return buildDirectoryPlan(source, input.name);
+  if (sourceStat.isDirectory()) return buildDirectoryOrPluginPlans(source, input.name);
   const bytes = await readFile(source);
-  if (source.toLowerCase().endsWith('.zip')) return buildZipPlan(new Uint8Array(bytes), input.name);
-  return buildMarkdownPlan(bytes.toString('utf8'), input.name, path.basename(source, path.extname(source)));
+  if (source.toLowerCase().endsWith('.zip')) return [buildZipPlan(new Uint8Array(bytes), input.name)];
+  if (path.basename(source).toLowerCase() === 'plugin.json') return buildPluginPlans(path.dirname(source), input.name);
+  return [buildMarkdownPlan(bytes.toString('utf8'), input.name, path.basename(source, path.extname(source)))];
 }
 
 export async function installSkillPlan(input: {
@@ -98,6 +108,10 @@ export async function installSkillPlan(input: {
 
 export async function validateSkillSource(source: string, name?: string): Promise<SkillValidationResult> {
   return (await buildSkillInstallPlan({ source, name })).validation;
+}
+
+export async function validateSkillSources(source: string, name?: string): Promise<SkillValidationResult[]> {
+  return (await buildSkillInstallPlans({ source, name })).map(plan => plan.validation);
 }
 
 export async function exportSkillPackage(input: {
@@ -171,6 +185,111 @@ async function buildDirectoryPlan(sourceDir: string, overrideName?: string): Pro
     validation,
     sourceType: 'directory'
   };
+}
+
+async function buildDirectoryOrPluginPlans(sourceDir: string, overrideName?: string): Promise<SkillInstallPlan[]> {
+  if (await hasPluginSkillManifest(sourceDir)) return buildPluginPlans(sourceDir, overrideName);
+  return [await buildDirectoryPlan(sourceDir, overrideName)];
+}
+
+async function buildPluginPlans(pluginDir: string, overrideName?: string): Promise<SkillInstallPlan[]> {
+  const manifest = await readPluginManifest(pluginDir);
+  const pluginName = sanitizeName(manifest.name ?? path.basename(pluginDir));
+  const skillRoots = await pluginSkillRoots(pluginDir, manifest);
+  if (skillRoots.length === 0) throw new Error('plugin manifest 没有可用 skill 路径。');
+
+  const plans: SkillInstallPlan[] = [];
+  const seenSkillFiles = new Set<string>();
+  for (const root of skillRoots) {
+    const skillDirs = await pluginSkillDirectories(root);
+    for (const skillDir of skillDirs) {
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      const resolvedSkillFile = path.resolve(skillFile);
+      if (seenSkillFiles.has(resolvedSkillFile)) continue;
+      seenSkillFiles.add(resolvedSkillFile);
+      const skillName = overrideName && skillDirs.length === 1 && skillRoots.length === 1
+        ? overrideName
+        : `${pluginName}-${path.basename(skillDir)}`;
+      const plan = await buildDirectoryPlan(skillDir, skillName);
+      plans.push({ ...plan, sourceType: 'plugin' });
+    }
+  }
+  if (plans.length === 0) throw new Error('plugin skill 路径中没有找到 SKILL.md。');
+  return plans.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function hasPluginSkillManifest(sourceDir: string): Promise<boolean> {
+  const manifestPath = path.join(sourceDir, 'plugin.json');
+  if (!(await pathExists(manifestPath))) return false;
+  const manifest = await readPluginManifest(sourceDir);
+  return Boolean(manifest.skills || manifest.skillsPath || manifest.skillsPaths || await pathExists(path.join(sourceDir, 'skills')));
+}
+
+type PluginSkillManifest = {
+  name?: string;
+  skills?: string | string[];
+  skillsPath?: string;
+  skillsPaths?: string[];
+};
+
+async function readPluginManifest(pluginDir: string): Promise<PluginSkillManifest> {
+  const manifestPath = path.join(pluginDir, 'plugin.json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`读取 plugin.json 失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('plugin.json 必须是 JSON object。');
+  }
+  const manifest = parsed as Record<string, unknown>;
+  return {
+    name: typeof manifest.name === 'string' ? manifest.name : undefined,
+    skills: readStringOrStringArray(manifest.skills, 'skills'),
+    skillsPath: typeof manifest.skillsPath === 'string' ? manifest.skillsPath : undefined,
+    skillsPaths: readStringArray(manifest.skillsPaths, 'skillsPaths')
+  };
+}
+
+async function pluginSkillRoots(pluginDir: string, manifest: PluginSkillManifest): Promise<string[]> {
+  const candidates = [
+    await pathExists(path.join(pluginDir, 'skills')) ? './skills' : undefined,
+    ...toArray(manifest.skills),
+    manifest.skillsPath,
+    ...toArray(manifest.skillsPaths)
+  ].filter((item): item is string => Boolean(item));
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const root = resolvePluginRelativePath(pluginDir, candidate);
+    if (!(await pathExists(root))) continue;
+    const key = path.resolve(root);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(root);
+  }
+  return roots;
+}
+
+async function pluginSkillDirectories(root: string): Promise<string[]> {
+  if (await pathExists(path.join(root, 'SKILL.md'))) return [root];
+  const entries = await readdir(root, { withFileTypes: true });
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const skillDir = path.join(root, entry.name);
+    if (await pathExists(path.join(skillDir, 'SKILL.md'))) dirs.push(skillDir);
+  }
+  return dirs.sort();
+}
+
+function resolvePluginRelativePath(pluginDir: string, input: string): string {
+  if (!input.startsWith('./')) throw new Error(`plugin skill 路径必须以 ./ 开头：${input}`);
+  const normalized = normalizeArchivePath(input.slice(2));
+  const resolved = path.resolve(pluginDir, normalized);
+  if (!isInside(path.resolve(pluginDir), resolved)) throw new Error(`plugin skill 路径越界：${input}`);
+  return resolved;
 }
 
 function buildMarkdownPlan(body: string, overrideName?: string, fallbackName?: string): SkillInstallPlan {
@@ -312,4 +431,23 @@ function parseList(input: string | undefined): string[] {
 function parseBoolean(input: string | undefined, fallback = false): boolean {
   if (input === undefined) return fallback;
   return /^(true|1|yes|y|on)$/i.test(input.trim());
+}
+
+function readStringOrStringArray(value: unknown, field: string): string | string[] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  return readStringArray(value, field);
+}
+
+function readStringArray(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
+    throw new Error(`plugin.json 字段 ${field} 必须是字符串或字符串数组。`);
+  }
+  return value;
+}
+
+function toArray(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
 }

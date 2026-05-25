@@ -663,6 +663,62 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   await assertRejects(() => buildSkillInstallPlan({ source: path.join(tempHome, 'evil.zip') }), '不安全');
 });
 
+test('skill install 支持 CC-Source plugin manifest 的 skillsPath/skillsPaths', async () => {
+  const pluginRoot = path.join(tempHome, 'demo-plugin');
+  await mkdir(path.join(pluginRoot, 'skills', 'default-skill'), { recursive: true });
+  await mkdir(path.join(pluginRoot, 'extra-skills', 'extra-skill'), { recursive: true });
+  await mkdir(path.join(pluginRoot, 'single-skill'), { recursive: true });
+  await writeFile(path.join(pluginRoot, 'plugin.json'), JSON.stringify({
+    name: 'demo-plugin',
+    skillsPath: './single-skill',
+    skillsPaths: ['./extra-skills']
+  }, null, 2), 'utf8');
+  await writeFile(path.join(pluginRoot, 'skills', 'default-skill', 'SKILL.md'), [
+    '---',
+    'description: Default plugin skill',
+    'triggers: default',
+    '---',
+    '# default-skill',
+    ''
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(pluginRoot, 'extra-skills', 'extra-skill', 'SKILL.md'), [
+    '---',
+    'description: Extra plugin skill',
+    'triggers: extra',
+    '---',
+    '# extra-skill',
+    ''
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(pluginRoot, 'single-skill', 'SKILL.md'), [
+    '---',
+    'description: Single plugin skill',
+    'triggers: single',
+    '---',
+    '# single-skill',
+    ''
+  ].join('\n'), 'utf8');
+
+  const preview = await run(['skill', 'install', pluginRoot, '--dry-run']);
+  assertIncludes(preview.stdout, 'skill 安装预览通过：demo-plugin-default-skill');
+  assertIncludes(preview.stdout, 'skill 安装预览通过：demo-plugin-extra-skill');
+  assertIncludes(preview.stdout, 'skill 安装预览通过：demo-plugin-single-skill');
+  assertIncludes(preview.stdout, '共 3 个 skill');
+
+  const install = await run(['skill', 'install', pluginRoot]);
+  assertIncludes(install.stdout, '已安装 skill：demo-plugin-default-skill');
+  assertIncludes(install.stdout, 'source=plugin');
+
+  const list = await run(['skill', 'list']);
+  assertIncludes(list.stdout, 'demo-plugin-default-skill');
+  assertIncludes(list.stdout, 'demo-plugin-extra-skill');
+  assertIncludes(list.stdout, 'demo-plugin-single-skill');
+
+  const validate = await run(['skill', 'validate', path.join(pluginRoot, 'plugin.json')]);
+  assertIncludes(validate.stdout, 'demo-plugin-default-skill');
+  assertIncludes(validate.stdout, 'demo-plugin-extra-skill');
+  assertIncludes(validate.stdout, 'demo-plugin-single-skill');
+});
+
 test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => {
   const projectRoot = path.join(tempHome, 'skill-tool-project');
   await mkdir(projectRoot, { recursive: true });

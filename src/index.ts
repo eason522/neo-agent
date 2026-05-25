@@ -22,7 +22,7 @@ import {
 import { createAbortError, isAbortError } from './utils/abort.js';
 import { SkillManager } from './skills/skillManager.js';
 import type { Skill, SkillScope } from './types.js';
-import { buildSkillInstallPlan, exportSkillPackage, installSkillPlan, validateSkillSource, type SkillValidationResult } from './skills/skillPackage.js';
+import { buildSkillInstallPlans, exportSkillPackage, installSkillPlan, validateSkillSources, validateSkillSource, type SkillValidationResult } from './skills/skillPackage.js';
 
 const program = new Command();
 
@@ -227,17 +227,24 @@ skillCommand
     const config = await loadConfig();
     const manager = new SkillManager(config);
     const scope = parseSkillScope(options.scope) ?? 'user';
-    const plan = await buildSkillInstallPlan({ source, name: options.name });
-    printSkillValidation(plan.validation);
-    const result = await installSkillPlan({
-      plan,
-      targetRoot: manager.skillRoot(scope),
-      overwrite: options.overwrite,
-      dryRun: options.dryRun
-    });
-    console.log(chalk.green(options.dryRun ? `skill 安装预览通过：${result.name}` : `已安装 skill：${result.name}`));
-    console.log(chalk.gray(`scope=${scope}`));
-    console.log(chalk.gray(result.skillFilePath));
+    const plans = await buildSkillInstallPlans({ source, name: options.name });
+    for (const plan of plans) printSkillValidation(plan.validation);
+    const results = [];
+    for (const plan of plans) {
+      results.push(await installSkillPlan({
+        plan,
+        targetRoot: manager.skillRoot(scope),
+        overwrite: options.overwrite,
+        dryRun: options.dryRun
+      }));
+    }
+    const action = options.dryRun ? 'skill 安装预览通过' : '已安装 skill';
+    for (const result of results) {
+      console.log(chalk.green(`${action}：${result.name}`));
+      console.log(chalk.gray(`scope=${scope} source=${result.sourceType}`));
+      console.log(chalk.gray(result.skillFilePath));
+    }
+    if (results.length > 1) console.log(chalk.green(`${action}：共 ${results.length} 个 skill`));
   });
 
 skillCommand
@@ -250,11 +257,11 @@ skillCommand
     const config = await loadConfig();
     const manager = new SkillManager(config);
     const installed = await manager.getSkill(sourceOrName, parseSkillScope(options.scope));
-    const validation = installed
-      ? await validateSkillSource(installed.filePath, options.name ?? installed.name)
-      : await validateSkillSource(sourceOrName, options.name);
-    printSkillValidation(validation);
-    if (!validation.valid) process.exitCode = 1;
+    const validations = installed
+      ? [await validateSkillSource(installed.filePath, options.name ?? installed.name)]
+      : await validateSkillSources(sourceOrName, options.name);
+    for (const validation of validations) printSkillValidation(validation);
+    if (validations.some(validation => !validation.valid)) process.exitCode = 1;
   });
 
 skillCommand
