@@ -62,7 +62,12 @@ export class NeoAgent {
     });
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
-    this.conversationHistory = new ConversationHistory(config.conversation.maxHistoryChars, config.conversation.maxMessageChars);
+    this.conversationHistory = new ConversationHistory(config.conversation.maxHistoryChars, config.conversation.maxMessageChars, {
+      enabled: config.conversation.compactEnabled,
+      thresholdRatio: config.conversation.compactThresholdRatio,
+      keepRecentChars: config.conversation.compactKeepRecentChars,
+      maxSummaryChars: config.conversation.compactMaxSummaryChars
+    });
   }
 
   async initialize(options: { scheduledDreams?: boolean } = {}): Promise<void> {
@@ -200,7 +205,20 @@ export class NeoAgent {
         return undefined;
       });
       if (createdSkill) this.logger.info('skill.autocreate.success', { name: createdSkill.name, path: createdSkill.path });
-      this.conversationHistory.append(input, text);
+      const compactResult = await this.conversationHistory.append(input, text, this.models.get('small'));
+      if (compactResult.compacted) {
+        await this.transcripts.append('compact', '自动压缩会话上下文', {
+          source: compactResult.source,
+          beforeChars: compactResult.beforeChars,
+          afterChars: compactResult.afterChars,
+          summarizedMessages: compactResult.summarizedMessages,
+          keptMessages: compactResult.keptMessages,
+          summaryChars: compactResult.summaryChars
+        });
+        this.logger.info('conversation.compact.success', compactResult);
+      } else {
+        this.logger.debug('conversation.compact.skip', compactResult);
+      }
 
       this.logger.info('agent.ask.success', {
         modelKind: decision.modelKind,

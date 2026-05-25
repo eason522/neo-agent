@@ -25,7 +25,11 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
   }),
   conversation: z.object({
     maxHistoryChars: z.number().int().positive(),
-    maxMessageChars: z.number().int().positive()
+    maxMessageChars: z.number().int().positive(),
+    compactEnabled: z.boolean(),
+    compactThresholdRatio: z.number().positive().max(1),
+    compactKeepRecentChars: z.number().int().positive(),
+    compactMaxSummaryChars: z.number().int().positive()
   }),
   memory: z.object({
     backend: z.enum(['local', 'openviking', 'hybrid']),
@@ -146,7 +150,11 @@ export function defaultConfig(): AppConfig {
     },
     conversation: {
       maxHistoryChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS || '300000', 10),
-      maxMessageChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS || '50000', 10)
+      maxMessageChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS || '50000', 10),
+      compactEnabled: process.env.NEO_AGENT_CONVERSATION_COMPACT_ENABLED !== '0',
+      compactThresholdRatio: Number.parseFloat(process.env.NEO_AGENT_CONVERSATION_COMPACT_THRESHOLD_RATIO || '0.85'),
+      compactKeepRecentChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_COMPACT_KEEP_RECENT_CHARS || '120000', 10),
+      compactMaxSummaryChars: Number.parseInt(process.env.NEO_AGENT_CONVERSATION_COMPACT_MAX_SUMMARY_CHARS || '20000', 10)
     },
     memory: {
       backend: (process.env.NEO_AGENT_MEMORY_BACKEND as AppConfig['memory']['backend']) || 'hybrid',

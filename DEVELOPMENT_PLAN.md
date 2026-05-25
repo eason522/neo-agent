@@ -45,6 +45,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - Tavily map/crawl 支持路径和域名正则过滤：select_paths、exclude_paths、select_domains、exclude_domains
 - 参考 CC-Source `QueryEngine.ts` / `query.ts` / `Tool.ts` 拆出的最小 `QueryEngine` 和 `ToolRunner` 分层
 - 按上下文预算保留 REPL 会话历史
+- 接近上下文预算时自动 compact：用小模型总结较早对话，并保留近期原文
 - GitHub `main` 分支同步
 
 ## 开发规则
@@ -139,7 +140,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 状态：计划中
 
 - [x] REPL/agent 按上下文预算保留当前 session 对话历史，而不是固定几轮
-- [ ] 添加自动 compact：接近上下文上限时生成可恢复摘要
+- [x] 添加自动 compact：接近上下文上限时生成可恢复摘要
 - [ ] 添加更丰富的消息渲染
 - [ ] 添加输入历史和多行编辑
 - [ ] 添加中断/取消行为
@@ -170,8 +171,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | --- | --- | --- | --- |
 | system prompt / SOUL | `utils/messages.ts`、系统提示分层、memory/skill/tool 提示 | 基本符合。已采用分层 system prompt，SOUL 作为个人化扩展，不覆盖安全和事实规则。 | 持续随工具、权限、记忆变化同步提示词。 |
 | doctor | `commands/doctor` | 基本符合。采用分项诊断和可执行修复建议。 | 后续补 `config show --redacted` 和更细错误码。 |
-| transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 部分符合。已有 JSONL transcript 和会话列表，但 resume、compact boundary、tool result pairing 还没有。 | M5 优先补自动 compact 和可恢复 resume。 |
-| 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，但还缺 token 估算和 auto compact。 | M5 添加自动 compact，避免只靠字符预算裁剪。 |
+| transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 部分符合。已有 JSONL transcript、会话列表和 compact 事件记录，但 resume、compact boundary 链接、tool result pairing 还没有。 | M5 继续补可恢复 resume 和更完整 compact boundary。 |
+| 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，并加入自动 compact 摘要；但还缺 token 估算、手动 `/compact`、可恢复 boundary 和更精细的消息分组。 | M5 继续按 CC-Source compact/session 机制补齐。 |
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
 | 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、filesystem permissions | 部分符合。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内，带读取/搜索上限和默认忽略目录。 | 后续补完整 permission rules、二进制/图片/PDF 支持、ripgrep 后端和 UI 状态。 |
@@ -312,6 +313,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：MCP 高风险工具先做 REPL 一次性确认
 
 参考 CC-Source permission ask 的设计，neo 在 `McpToolRunner` 中加入可插拔的权限询问回调。配置规则仍然优先：`deniedTools` 直接拒绝，`allowedTools`、`allowAll` 和明确只读工具直接允许；只有未获授权且可能有副作用的 MCP 工具会在交互式 REPL 中询问用户是否允许本次执行。确认界面只展示工具名、来源、风险、参数长度和参数字段名，不打印完整参数值；`neo ask` 等非交互入口不设置询问回调，仍默认拒绝。当前只支持 allow once / deny，后续再补持久化 always allow/deny。
+
+### 2026-05-25：自动 compact 先做会话内摘要，不再直接丢旧消息
+
+参考 CC-Source `services/compact/compact.ts` 和 `services/compact/prompt.ts`，neo 在 `ConversationHistory` 中加入自动 compact：当当前 session 历史超过 `conversation.maxHistoryChars * compactThresholdRatio` 时，用小模型把较早对话压缩成中文摘要，并保留近期原文。摘要会作为“自动压缩的历史摘要”放回后续模型上下文，同时写入 transcript 的 `compact` 事件和 JSONL 日志。compact 模型调用失败时会退回抽取式摘要，不能影响用户刚刚那轮正常回复。当前还不是完整 CC-Source compact：缺 token 估算、手动 `/compact`、compact boundary 链接、resume 恢复和 tool result pairing，后续 M5 继续补齐。
 
 ## 恢复开发检查清单
 

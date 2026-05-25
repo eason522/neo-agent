@@ -35,6 +35,10 @@ test('初始化配置', async () => {
   assertIncludes(config, 'mimo-v2.5');
   assertIncludes(config, '"dreaming"');
   assertIncludes(config, '"conversation"');
+  assertIncludes(config, '"compactEnabled"');
+  assertIncludes(config, '"compactThresholdRatio"');
+  assertIncludes(config, '"compactKeepRecentChars"');
+  assertIncludes(config, '"compactMaxSummaryChars"');
   assertIncludes(config, '"web"');
   assertIncludes(config, 'https://api.tavily.com');
   assertIncludes(config, '"maxDepth"');
@@ -113,6 +117,37 @@ test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
 
   const error = summarizeToolError(new Error('MCP 工具未获授权：mcp__github__create_issue'));
   assertIncludes(JSON.stringify(error), 'permission');
+});
+
+test('ConversationHistory 超过阈值时生成自动 compact 摘要并保留近期消息', async () => {
+  const { ConversationHistory } = await import(pathToFileURL(path.join(root, 'dist', 'conversation', 'history.js')).href);
+  const history = new ConversationHistory(900, 500, {
+    enabled: true,
+    thresholdRatio: 0.5,
+    keepRecentChars: 280,
+    maxSummaryChars: 320
+  });
+  await history.append(
+    '第一轮用户问题：请记住项目必须严格参考 CC-Source。'.repeat(4),
+    '第一轮助手回答：已写入开发原则，并会优先参考 CC-Source。'.repeat(4)
+  );
+  const compact = await history.append(
+    '第二轮用户问题：继续推进自动 compact。'.repeat(4),
+    '第二轮助手回答：开始实现 ConversationHistory 自动压缩。'.repeat(4),
+    {
+      chat: async ({ messages }) => {
+        assertIncludes(messages.at(-1)?.content ?? '', '第一轮用户问题');
+        return '<analysis>内部分析不应保留</analysis><summary>已压缩：项目开发必须严格参考 CC-Source，并保持中文沟通。</summary>';
+      }
+    }
+  );
+  if (!compact.compacted) throw new Error(`应该触发自动 compact：${JSON.stringify(compact)}`);
+  if (compact.source !== 'model') throw new Error(`应该使用模型摘要：${JSON.stringify(compact)}`);
+
+  const messages = history.recentMessages();
+  assertIncludes(messages[0].content, '自动压缩的历史摘要');
+  assertIncludes(messages[0].content, '严格参考 CC-Source');
+  if (messages[0].content.includes('<analysis>')) throw new Error(`compact 摘要不应保留 analysis：${messages[0].content}`);
 });
 
 test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {

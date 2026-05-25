@@ -76,6 +76,10 @@ export type AppConfig = {
   conversation: {
     maxHistoryChars: number;
     maxMessageChars: number;
+    compactEnabled: boolean;
+    compactThresholdRatio: number;
+    compactKeepRecentChars: number;
+    compactMaxSummaryChars: number;
   };
   memory: {
     backend: MemoryBackend;
