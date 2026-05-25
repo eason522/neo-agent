@@ -203,7 +203,7 @@ function parseToolArguments(rawArguments: string): unknown {
   try {
     return JSON.parse(rawArguments || '{}');
   } catch {
-    throw new Error(`工具参数不是有效 JSON：${rawArguments.slice(0, 300)}`);
+    throw new Error(`工具参数不是有效 JSON，参数长度 ${rawArguments.length} 字符。`);
   }
 }
 

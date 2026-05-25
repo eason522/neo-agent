@@ -153,6 +153,9 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - 为 `extractImageAttachments` 添加测试。
 - 为 `Logger` 脱敏逻辑添加测试。
 - 为记忆搜索排序添加测试。
+- 将 `Grep` 工具后端从 JS 遍历升级为 `rg`，并增加超时、最大输出、二进制跳过和错误分类。
+- 为 `QueryEngine` 增加工具调用取消、中断传播、并发执行安全策略和 orphan tool result 处理。
+- 为 MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
 - 添加 `neo config show --redacted`。
 - 添加 `neo config set`，用于修改常见配置。
 - 添加模型流式输出。
@@ -167,6 +170,8 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 最后审查：2026-05-25
 
 本节用于回顾已开发模块是否符合“优先基于 CC-Source 二次开发”的置顶指导思想。结论不是一次性验收，后续每次新增核心能力都要更新。
+
+M4 完成后复盘结论：主方向符合最高指导思想，联网、MCP、文件工具已经收敛到 `QueryEngine` / `ToolRunner`，工具结果通过同一 loop 回灌，权限和状态事件也进入统一链路。已立即修复两个安全收口点：transcript 不再记录完整 Web query 或完整 URL，只记录 query 长度和 URL 域名；Web/File 工具参数解析错误不再回显原始参数片段，只记录参数长度。剩余增强已放入待办池：`Grep` 后端改 `rg`、工具取消/并发/orphan result、MCP 持久化权限和远程 MCP。
 
 | neo-agent 模块 | CC-Source 参考 | 当前结论 | 后续动作 |
 | --- | --- | --- | --- |

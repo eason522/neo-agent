@@ -287,7 +287,7 @@ function parseJsonObject(rawArguments: string): Record<string, unknown> {
     return parsed as Record<string, unknown>;
   } catch (error) {
     if (error instanceof Error && error.message.includes('JSON object')) throw error;
-    throw new Error(`文件工具参数不是有效 JSON：${rawArguments.slice(0, 300)}`);
+    throw new Error(`文件工具参数不是有效 JSON，参数长度 ${rawArguments.length} 字符。`);
   }
 }
 

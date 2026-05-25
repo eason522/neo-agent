@@ -119,6 +119,61 @@ test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
   assertIncludes(JSON.stringify(error), 'permission');
 });
 
+test('Web/File 工具参数错误不会回显原始参数', async () => {
+  const { WebToolRunner } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webTools.js')).href);
+  const { FileToolRunner, READ_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
+  const secretArgs = '{"query":"不应该回显的完整参数 token=secret"';
+  const webRunner = new WebToolRunner({
+    web: {
+      autoSearch: true,
+      toolLoopEnabled: true,
+      apiKey: 'test',
+      maxResults: 1,
+      maxContextChars: 1000,
+      searchDepth: 'basic',
+      extractDepth: 'basic',
+      allowedDomains: [],
+      blockedDomains: [],
+      blockPrivateAddresses: true
+    }
+  }, {});
+  await assertRejects(() => webRunner.execute({
+    id: 'bad_web',
+    type: 'function',
+    function: { name: 'WebSearch', arguments: secretArgs }
+  }), '参数长度');
+  await assertRejects(() => webRunner.execute({
+    id: 'bad_web',
+    type: 'function',
+    function: { name: 'WebSearch', arguments: secretArgs }
+  }), '工具参数不是有效 JSON');
+  try {
+    await webRunner.execute({
+      id: 'bad_web',
+      type: 'function',
+      function: { name: 'WebSearch', arguments: secretArgs }
+    });
+  } catch (error) {
+    if (String(error).includes('token=secret')) throw new Error(`Web 参数错误泄露原始参数：${String(error)}`);
+  }
+
+  const fileRunner = new FileToolRunner(root);
+  await assertRejects(() => fileRunner.execute({
+    id: 'bad_file',
+    type: 'function',
+    function: { name: READ_TOOL_NAME, arguments: secretArgs }
+  }), '参数长度');
+  try {
+    await fileRunner.execute({
+      id: 'bad_file',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: secretArgs }
+    });
+  } catch (error) {
+    if (String(error).includes('token=secret')) throw new Error(`File 参数错误泄露原始参数：${String(error)}`);
+  }
+});
+
 test('ConversationHistory 超过阈值时生成自动 compact 摘要并保留近期消息', async () => {
   const { ConversationHistory } = await import(pathToFileURL(path.join(root, 'dist', 'conversation', 'history.js')).href);
   const history = new ConversationHistory(900, 500, {

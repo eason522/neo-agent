@@ -169,7 +169,7 @@ export class NeoAgent {
         hasVisionContext: Boolean(visionContext),
         web: webContext ? {
           reason: webContext.reason,
-          query: webContext.query,
+          queryChars: webContext.query?.length,
           plannerSource: webContext.plannerSource,
           plannerAction: webContext.plannerAction,
           usesPreviousTurn: webContext.usesPreviousTurn,
@@ -179,8 +179,8 @@ export class NeoAgent {
         } : undefined,
         webToolCalls: webToolCalls.map(call => ({
           name: call.name,
-          query: call.query,
-          url: call.url,
+          queryChars: call.query?.length,
+          urlDomain: call.url ? safeUrlDomain(call.url) : undefined,
           resultCount: call.resultCount,
           failedCount: call.failedCount,
           searchedAt: call.searchedAt
@@ -370,4 +370,12 @@ export class NeoAgent {
     }
   }
 
+}
+
+function safeUrlDomain(input: string): string | undefined {
+  try {
+    return new URL(input).hostname;
+  } catch {
+    return undefined;
+  }
 }
