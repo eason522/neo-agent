@@ -306,6 +306,50 @@ test('MCP 权限默认只允许只读工具', async () => {
   if (denied.allowed) throw new Error(`deniedTools 应该优先于 allowAll：${JSON.stringify(denied)}`);
 });
 
+test('MCP 高风险工具在 REPL 可走一次性授权', async () => {
+  const { McpToolRunner } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpToolRunner.js')).href);
+  const calls = [];
+  const mcp = {
+    listToolDetails: async () => [{
+      serverName: 'github',
+      toolName: 'create_issue',
+      fullName: 'mcp__github__create_issue',
+      description: 'Create GitHub issue',
+      inputSchema: { type: 'object', properties: { title: { type: 'string' } } },
+      readOnlyHint: false,
+      destructiveHint: false
+    }],
+    callTool: async (name, args) => {
+      calls.push({ name, args });
+      return { ok: true };
+    }
+  };
+  const runner = new McpToolRunner(mcp, { mode: 'readOnly', allowedTools: [], deniedTools: [] }, 20);
+  await runner.refresh();
+  const call = {
+    id: 'mcp_write',
+    type: 'function',
+    function: { name: 'mcp__github__create_issue', arguments: JSON.stringify({ title: 'bug', body: 'detail' }) }
+  };
+
+  await assertRejects(() => runner.execute(call), 'MCP 工具未获授权');
+
+  let promptRequest;
+  runner.setPermissionAsker(async request => {
+    promptRequest = request;
+    return 'allow_once';
+  });
+  const result = await runner.execute(call);
+  assertIncludes(result.content, '"ok": true');
+  assertIncludes(promptRequest.fullName, 'mcp__github__create_issue');
+  assertIncludes(promptRequest.argumentKeys.join(','), 'body,title');
+  if (calls.length !== 1) throw new Error(`一次性允许后应该执行一次工具，实际：${calls.length}`);
+
+  runner.setPermissionAsker(async () => 'deny');
+  await assertRejects(() => runner.execute(call), '用户拒绝执行 MCP 工具');
+  if (calls.length !== 1) throw new Error(`拒绝后不应该继续调用外部工具，实际：${calls.length}`);
+});
+
 test('自动联网规划能识别时效问题和追问', async () => {
   const { planWebUse } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webPlanner.js')).href);
   const visitPlan = planWebUse('普京何时来我国访问呢？结束访问了吗？', true);

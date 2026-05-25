@@ -2,15 +2,42 @@ import type { AppConfig, ChatToolCall, ChatToolDefinition, McpToolCallRecord } f
 import type { ToolRunner } from '../tools/tool.js';
 import type { McpManager, McpToolDetail } from './mcpManager.js';
 
+export type McpPermissionDecision = 'allow_once' | 'deny';
+
+export type McpPermissionAskRequest = {
+  toolName: string;
+  fullName: string;
+  serverName: string;
+  description?: string;
+  reason: string;
+  risk: string;
+  argumentKeys: string[];
+  argumentChars: number;
+};
+
+export type McpPermissionAsker = (request: McpPermissionAskRequest) => Promise<McpPermissionDecision>;
+
+type McpPermissionEvaluation =
+  | { allowed: true; reason: string; code: 'explicit_allowed' | 'allow_all' | 'read_only' | 'allowed_once' }
+  | { allowed: false; reason: string; code: 'explicit_denied' | 'needs_user_permission' };
+
 export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
   private tools: McpToolDetail[] = [];
   private activeToolNames = new Set<string>();
+  private permissionAsker?: McpPermissionAsker;
 
   constructor(
     private readonly mcp: McpManager,
     private readonly permissions: AppConfig['mcp']['permissions'],
-    private readonly toolSearchThreshold: number
-  ) {}
+    private readonly toolSearchThreshold: number,
+    permissionAsker?: McpPermissionAsker
+  ) {
+    this.permissionAsker = permissionAsker;
+  }
+
+  setPermissionAsker(permissionAsker: McpPermissionAsker | undefined): void {
+    this.permissionAsker = permissionAsker;
+  }
 
   async refresh(): Promise<void> {
     this.tools = await this.mcp.listToolDetails().catch(() => []);
@@ -60,9 +87,12 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
   async execute(call: ChatToolCall): Promise<{ content: string; record: McpToolCallRecord }> {
     const tool = this.tools.find(item => item.fullName === call.function.name);
     if (!tool) throw new Error(`未知 MCP 工具：${call.function.name}`);
-    const permission = evaluateMcpToolPermission(tool, this.permissions);
-    if (!permission.allowed) throw new Error(permission.reason);
+    const initialPermission = evaluateMcpToolPermission(tool, this.permissions);
+    if (!initialPermission.allowed && initialPermission.code !== 'needs_user_permission') throw new Error(initialPermission.reason);
+    if (!initialPermission.allowed && !this.permissionAsker) throw new Error(initialPermission.reason);
     const args = parseArguments(call.function.arguments);
+    const permission = await this.resolvePermission(tool, call.function.arguments, args, initialPermission);
+    if (!permission.allowed) throw new Error(permission.reason);
     const start = Date.now();
     const result = await this.mcp.callTool(`${tool.serverName}.${tool.toolName}`, args);
     const content = truncate(formatMcpResult(result), 100_000);
@@ -75,6 +105,38 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
         resultChars: content.length,
         durationMs: Date.now() - start
       }
+    };
+  }
+
+  private async resolvePermission(
+    tool: McpToolDetail,
+    rawArguments: string,
+    args: Record<string, unknown>,
+    permission: McpPermissionEvaluation
+  ): Promise<McpPermissionEvaluation> {
+    if (permission.allowed || permission.code !== 'needs_user_permission' || !this.permissionAsker) return permission;
+
+    const decision = await this.permissionAsker({
+      toolName: tool.toolName,
+      fullName: tool.fullName,
+      serverName: tool.serverName,
+      description: tool.description,
+      reason: permission.reason,
+      risk: describeMcpToolRisk(tool),
+      argumentKeys: Object.keys(args).sort(),
+      argumentChars: rawArguments.length
+    });
+    if (decision === 'allow_once') {
+      return {
+        allowed: true,
+        reason: '用户已允许本次执行',
+        code: 'allowed_once'
+      };
+    }
+    return {
+      allowed: false,
+      reason: `用户拒绝执行 MCP 工具：${tool.fullName}`,
+      code: 'needs_user_permission'
     };
   }
 
@@ -108,7 +170,7 @@ export function getMcpToolPrompt(): string {
     '# MCP 工具',
     '- 已连接的 MCP server 会以 `mcp__server__tool` 形式暴露为工具。',
     '- MCP 工具来自外部系统，可能读取或修改外部数据。使用前要根据工具描述、输入 schema 和 annotations 判断风险。',
-    '- 默认只允许执行明确标记为 readOnly 且非 destructive 的 MCP 工具；其它工具需要用户显式加入 allowedTools。',
+    '- 默认只自动执行明确标记为 readOnly 且非 destructive 的 MCP 工具；其它工具在 REPL 中可能需要用户确认本次执行，非交互模式下需要用户显式加入 allowedTools。',
     '- 如果工具因权限被拒绝，要直接说明无法执行该外部操作，不要伪造执行结果。'
   ].join('\n');
 }
@@ -116,30 +178,34 @@ export function getMcpToolPrompt(): string {
 export function evaluateMcpToolPermission(
   tool: Pick<McpToolDetail, 'fullName' | 'serverName' | 'toolName' | 'readOnlyHint' | 'destructiveHint'>,
   permissions: AppConfig['mcp']['permissions']
-): { allowed: true; reason: string } | { allowed: false; reason: string } {
+): McpPermissionEvaluation {
   const qualifiedName = `${tool.serverName}.${tool.toolName}`;
   if (matchesToolRule(tool.fullName, qualifiedName, permissions.deniedTools)) {
     return {
       allowed: false,
-      reason: `MCP 工具已被配置拒绝：${tool.fullName}`
+      reason: `MCP 工具已被配置拒绝：${tool.fullName}`,
+      code: 'explicit_denied'
     };
   }
   if (matchesToolRule(tool.fullName, qualifiedName, permissions.allowedTools)) {
     return {
       allowed: true,
-      reason: '显式允许'
+      reason: '显式允许',
+      code: 'explicit_allowed'
     };
   }
   if (permissions.mode === 'allowAll') {
     return {
       allowed: true,
-      reason: '权限模式允许所有 MCP 工具'
+      reason: '权限模式允许所有 MCP 工具',
+      code: 'allow_all'
     };
   }
   if (tool.readOnlyHint === true && tool.destructiveHint !== true) {
     return {
       allowed: true,
-      reason: '只读 MCP 工具'
+      reason: '只读 MCP 工具',
+      code: 'read_only'
     };
   }
   return {
@@ -149,7 +215,8 @@ export function evaluateMcpToolPermission(
       '默认只自动执行 readOnly 且非 destructive 的 MCP 工具。',
       `如确认需要允许，请在 ~/.neo-agent/config.json 的 mcp.permissions.allowedTools 加入 "${tool.fullName}"，`,
       '或临时设置 NEO_AGENT_MCP_PERMISSION_MODE=allowAll。'
-    ].join(' ')
+    ].join(' '),
+    code: 'needs_user_permission'
   };
 }
 
@@ -166,6 +233,13 @@ function buildDescription(tool: McpToolDetail): string {
     hints.length > 0 ? `Hints: ${hints.join(', ')}` : '',
     `Permission: ${permission}`
   ].filter(Boolean).join('\n');
+}
+
+function describeMcpToolRisk(tool: Pick<McpToolDetail, 'readOnlyHint' | 'destructiveHint' | 'openWorldHint'>): string {
+  if (tool.destructiveHint === true) return '该工具声明为 destructive，可能删除、覆盖或执行难以回退的外部操作。';
+  if (tool.openWorldHint === true) return '该工具声明为 openWorld，可能访问或影响当前上下文之外的外部系统。';
+  if (tool.readOnlyHint !== true) return '该工具没有明确声明为只读，可能修改外部系统或产生副作用。';
+  return '该工具风险语义不完整，需要用户确认。';
 }
 
 function scoreTool(tool: McpToolDetail, terms: string[], query: string): number {
@@ -219,7 +293,7 @@ function parseArguments(rawArguments: string): Record<string, unknown> {
     return parsed as Record<string, unknown>;
   } catch (error) {
     if (error instanceof Error && error.message.includes('JSON object')) throw error;
-    throw new Error(`MCP 工具参数不是有效 JSON：${rawArguments.slice(0, 300)}`);
+    throw new Error(`MCP 工具参数不是有效 JSON，参数长度 ${rawArguments.length} 字符。`);
   }
 }
 

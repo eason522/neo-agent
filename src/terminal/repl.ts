@@ -9,6 +9,10 @@ import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from 
 export async function startRepl(agent: NeoAgent): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: chalk.gray('neo> ') });
   const isInteractive = Boolean(input.isTTY);
+  agent.setMcpPermissionAsker(isInteractive ? async request => {
+    const answer = await rl.question(formatMcpPermissionPrompt(request));
+    return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow_once' : 'deny';
+  } : undefined);
   printBanner();
 
   try {
@@ -261,6 +265,28 @@ function printHelp(): void {
     '/web crawl <url>      有限深度爬取站点正文',
     '@/path/image.png      在普通提示词中附加图片'
   ].join('\n'));
+}
+
+function formatMcpPermissionPrompt(request: {
+  fullName: string;
+  serverName: string;
+  toolName: string;
+  description?: string;
+  risk: string;
+  argumentKeys: string[];
+  argumentChars: number;
+}): string {
+  const keys = request.argumentKeys.length > 0 ? request.argumentKeys.join(', ') : '无';
+  return [
+    '',
+    chalk.yellow('MCP 工具需要权限确认'),
+    `工具：${request.fullName}`,
+    `来源：${request.serverName}.${request.toolName}`,
+    request.description ? `说明：${request.description}` : '',
+    `风险：${request.risk}`,
+    `参数：${request.argumentChars} 字符；字段：${keys}`,
+    '允许本次执行吗？输入 y/yes/允许 允许，其他输入拒绝：'
+  ].filter(Boolean).join('\n');
 }
 
 function parseRememberArgs(arg: string): { content: string; category: MemoryCategory; tags: string[]; pinned: boolean } {

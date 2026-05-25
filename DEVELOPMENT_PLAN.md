@@ -26,6 +26,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP 配置命令：`neo mcp list/add/remove/test`
 - MCP resource 工具：`ListMcpResources` / `ReadMcpResource`
 - MCP deferred ToolSearch：MCP 工具过多时延迟加载 schema
+- MCP 高风险工具 REPL 一次性权限确认，非交互入口继续默认拒绝
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -127,7 +128,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [ ] 为 tool loop 添加更完整的工具结果摘要、失败恢复和 UI 可见状态
 - [x] 将已连接 MCP 工具接入 `QueryEngine` 标准 tool loop，并采用 CC-Source 风格 `mcp__server__tool` 命名
 - [x] 为 MCP 工具执行添加安全调用协议和权限确认
-- [ ] 针对高风险工具添加权限确认
+- [x] 针对高风险 MCP 工具添加 REPL 一次性权限确认
 - [x] 添加 MCP 配置命令：添加、删除、列表、测试
 - [x] 添加 MCP resource 工具：列出和读取已连接 server 暴露的只读资源
 - [x] 添加工具结果日志，并做好脱敏
@@ -174,7 +175,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
 | 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、filesystem permissions | 部分符合。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内，带读取/搜索上限和默认忽略目录。 | 后续补完整 permission rules、二进制/图片/PDF 支持、ripgrep 后端和 UI 状态。 |
-| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio 配置命令、resource 工具和 deferred ToolSearch；但还缺交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4/M5 继续补交互式权限 UI 和远程 MCP。 |
+| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio 配置命令、resource 工具、deferred ToolSearch 和 REPL 一次性权限确认；但还缺 always allow/deny 持久化选择、HTTP/SSE/OAuth 和更完整的安全策略。 | M4/M5 继续补持久化权限规则、远程 MCP 和更完整权限 UI。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
@@ -182,7 +183,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏和工具结果摘要，但缺成本/usage、retry 统计和结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
 | vision | 附件处理、图片消息、文件读取限制 | 部分符合。MiMo 预分析适合 neo-agent 模型组合，但不是 CC-Source 原生多模态路径。 | 后续补附件大小限制、缓存、截断说明和测试。 |
 
-审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具接入该 loop，同时补上默认只读权限保护。仍不充分的模块主要是 sub-agent、REPL、自动 compact 和 skill 生命周期；MCP 仍需继续补 deferred ToolSearch、资源读取工具和交互式权限 UI。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
+审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具接入该 loop，同时补上默认只读权限保护、deferred ToolSearch、resource 工具和 REPL 一次性权限确认。仍不充分的模块主要是 sub-agent、REPL、自动 compact 和 skill 生命周期；MCP 仍需继续补 always allow/deny 持久化规则、远程 MCP 和更完整权限 UI。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
 
 ## 决策记录
 
@@ -278,7 +279,7 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 ### 2026-05-25：MCP 权限默认只读，写操作需要显式允许
 
-参考 CC-Source `MCPTool` 的权限语义和 always allow/deny/ask 思路，neo 先实现非交互式最小安全边界：`mcp.permissions.mode` 默认为 `readOnly`，只有 MCP tool 明确声明 `readOnlyHint=true` 且不是 `destructiveHint=true` 时才会自动执行。高风险、未知语义或写入类工具必须加入 `mcp.permissions.allowedTools`，`deniedTools` 始终优先。当前还没有终端交互式 ask UI，所以拒绝时会把工具名和配置方式回灌给模型，让 neo 明确说明没有执行该外部操作。后续 M4/M5 继续补 CC-Source 风格的交互式权限确认、持久化规则和 ToolSearch deferred loading。
+参考 CC-Source `MCPTool` 的权限语义和 always allow/deny/ask 思路，neo 先实现非交互式最小安全边界：`mcp.permissions.mode` 默认为 `readOnly`，只有 MCP tool 明确声明 `readOnlyHint=true` 且不是 `destructiveHint=true` 时才会自动执行。高风险、未知语义或写入类工具必须加入 `mcp.permissions.allowedTools`，`deniedTools` 始终优先。第一版拒绝时会把工具名和配置方式回灌给模型，让 neo 明确说明没有执行该外部操作；后续已补 REPL 一次性 ask。M4/M5 还需要继续补 CC-Source 风格的持久化 always allow/deny 规则和更完整权限 UI。
 
 ### 2026-05-25：联网工具默认阻止私有地址，并支持域名 allow/deny
 
@@ -307,6 +308,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：MCP 工具过多时使用 ToolSearch 延迟加载
 
 参考 CC-Source `ToolSearchTool` 的 deferred tool 设计，neo 新增 `ToolSearchRunner`。当 MCP 工具数量超过 `mcp.toolSearchThreshold`（默认 20，可用 `NEO_AGENT_MCP_TOOL_SEARCH_THRESHOLD` 调整）时，`McpToolRunner` 不再一次性暴露全部 MCP schema，而是只保留已激活工具，并暴露 `ToolSearch`。模型通过关键词或 `select:mcp__server__tool` 加载需要的 MCP 工具；`QueryEngine` 每轮重新读取 tool definitions，使 ToolSearch 激活的工具能在下一轮被调用。当前 deferred 先覆盖 MCP 工具，后续再考虑 skill/sub-agent 等更多 deferred 类型。
+
+### 2026-05-25：MCP 高风险工具先做 REPL 一次性确认
+
+参考 CC-Source permission ask 的设计，neo 在 `McpToolRunner` 中加入可插拔的权限询问回调。配置规则仍然优先：`deniedTools` 直接拒绝，`allowedTools`、`allowAll` 和明确只读工具直接允许；只有未获授权且可能有副作用的 MCP 工具会在交互式 REPL 中询问用户是否允许本次执行。确认界面只展示工具名、来源、风险、参数长度和参数字段名，不打印完整参数值；`neo ask` 等非交互入口不设置询问回调，仍默认拒绝。当前只支持 allow once / deny，后续再补持久化 always allow/deny。
 
 ## 恢复开发检查清单
 

@@ -6,7 +6,7 @@ import { MemoryService } from './memory/memoryService.js';
 import { SkillManager } from './skills/skillManager.js';
 import { McpManager } from './mcp/mcpManager.js';
 import { getMcpResourcePrompt, McpResourceRunner } from './mcp/mcpResourceRunner.js';
-import { getMcpToolPrompt, McpToolRunner } from './mcp/mcpToolRunner.js';
+import { getMcpToolPrompt, McpToolRunner, type McpPermissionAsker } from './mcp/mcpToolRunner.js';
 import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
 import { loadSoul } from './prompts/soul.js';
@@ -79,6 +79,10 @@ export class NeoAgent {
         this.logger.error('dream.scheduled.error', error);
       });
     }
+  }
+
+  setMcpPermissionAsker(permissionAsker: McpPermissionAsker | undefined): void {
+    this.mcpToolRunner.setPermissionAsker(permissionAsker);
   }
 
   async ask(input: string, attachments: Attachment[] = []): Promise<AgentResponse> {

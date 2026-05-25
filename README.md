@@ -203,7 +203,9 @@ neo mcp remove filesystem
 }
 ```
 
-MCP 工具会以 `mcp__server__tool` 的名字进入模型工具循环。默认权限模式是 `readOnly`：只有 MCP server 明确声明 `readOnlyHint=true` 且不是 destructive 的工具会自动执行。需要执行写入、创建、删除或未声明只读语义的工具时，把完整工具名加入 `mcp.permissions.allowedTools`，或临时设置 `NEO_AGENT_MCP_PERMISSION_MODE=allowAll`。`deniedTools` 优先级最高，支持完整工具名、`server.tool` 和以 `*` 结尾的前缀规则。
+MCP 工具会以 `mcp__server__tool` 的名字进入模型工具循环。默认权限模式是 `readOnly`：只有 MCP server 明确声明 `readOnlyHint=true` 且不是 destructive 的工具会自动执行。需要执行写入、创建、删除或未声明只读语义的工具时，REPL 会要求你确认是否允许本次执行；`neo ask` 等非交互入口仍会默认拒绝。也可以把完整工具名加入 `mcp.permissions.allowedTools`，或临时设置 `NEO_AGENT_MCP_PERMISSION_MODE=allowAll`。`deniedTools` 优先级最高，支持完整工具名、`server.tool` 和以 `*` 结尾的前缀规则。
+
+权限确认只会展示工具名、来源、风险说明、参数长度和参数字段名，不会打印完整参数值。当前只支持一次性允许或拒绝，后续会继续补持久化的 always allow/deny 规则。
 
 当 MCP 工具数量超过 `NEO_AGENT_MCP_TOOL_SEARCH_THRESHOLD`（默认 20）时，neo 会先隐藏大部分 MCP schema，只暴露 `ToolSearch`。模型会先用 `ToolSearch` 搜索并加载需要的 MCP 工具，再在下一轮调用它们。
 
