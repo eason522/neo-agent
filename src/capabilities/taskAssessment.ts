@@ -299,13 +299,12 @@ function capabilityAvailability(id: string, snapshot: CapabilitySnapshot): { ava
     if (!snapshot.files.canWrite) return { available: false, impact: '当前没有 Write/Edit 文件写入工具。', workaround: '输出补丁或修改建议，由用户手动应用。' };
     if (!snapshot.files.writeConfirmationAvailable) {
       return {
-        available: false,
-        impact: 'Write/Edit 需要交互式确认，但当前入口没有确认回调。',
-        workaround: '改在 REPL 中执行，或只输出补丁/修改计划。',
-        constraint: '文件写入工具已暴露，但当前会话不可确认写入请求。'
+        available: true,
+        impact: '',
+        constraint: `当前入口没有写入确认回调；可直接写入 workspace (${snapshot.files.workspaceDir})，写入项目其它位置需要改在 REPL 中确认。`
       };
     }
-    return { available: true, impact: '', constraint: '文件写入仅限当前项目目录内普通文本文件，且每次写入需要确认。' };
+    return { available: true, impact: '', constraint: `workspace (${snapshot.files.workspaceDir}) 内写入无需额外确认；写入项目其它位置或额外授权目录需要确认。` };
   }
   if (id === 'web_search') {
     return snapshot.web.enabled
@@ -363,7 +362,7 @@ function buildUserInputNeeded(required: RequiredCapability[], missing: MissingCa
   if (missing.some(item => item.id === 'shell')) needs.push('需要用户执行测试/构建/命令并把输出贴回来，或接受不运行命令的静态分析结果。');
   if (missing.some(item => item.id === 'web_search')) needs.push('需要用户提供相关网页、文档内容，或配置 Web API key。');
   if (missing.some(item => item.id === 'external_api')) needs.push('需要用户配置对应 MCP server/API 工具，或手动完成外部系统动作。');
-  if (missing.some(item => item.id === 'file_write') && snapshot.files.canWrite) needs.push('需要进入支持交互确认的 REPL，或允许 neo 只输出补丁。');
+  if (missing.some(item => item.id === 'file_write') && snapshot.files.canWrite) needs.push(`如果必须写入 workspace (${snapshot.files.workspaceDir}) 之外的位置，需要进入支持交互确认的 REPL，或允许 neo 只输出补丁。`);
   if (required.some(item => item.id === 'vision')) needs.push('需要用户附加可读取的图片文件。');
   return needs;
 }
@@ -372,12 +371,12 @@ function buildRecommendedStrategy(feasibility: TaskFeasibility, required: Requir
   if (feasibility === 'complete') {
     return [
       '直接按任务执行；执行前仍应按需读取相关文件或调用对应工具确认事实。',
-      required.some(item => item.id === 'file_write') ? '涉及写入时先说明将修改的文件，并等待写入确认。' : ''
+      required.some(item => item.id === 'file_write') ? `涉及写入时优先落在 workspace (${snapshot.files.workspaceDir})；若要改项目其它位置，先说明将修改的文件并等待写入确认。` : ''
     ].filter(Boolean);
   }
   const strategy = ['先完成当前能力可覆盖的部分，并明确标注未验证或需用户配合的部分。'];
   if (missing.some(item => item.id === 'shell')) strategy.push('不能本地运行命令时，提供命令清单和预期输出检查点，让用户回传结果。');
-  if (missing.some(item => item.id === 'file_write') && snapshot.files.canWrite) strategy.push('当前入口不能确认写入时，优先输出补丁或让用户切到 REPL。');
+  if (missing.some(item => item.id === 'file_write') && snapshot.files.canWrite) strategy.push(`当前入口不能确认 workspace (${snapshot.files.workspaceDir}) 之外的写入时，优先输出补丁或让用户切到 REPL。`);
   if (missing.some(item => item.id === 'web_search')) strategy.push('缺少联网时，只使用本地上下文；涉及时效性信息必须声明未联网。');
   if (missing.some(item => item.id === 'external_api')) strategy.push('外部系统动作改为生成请求内容、配置建议或操作步骤。');
   if (feasibility === 'blocked') strategy.push('在用户补齐缺失能力或输入前，不应声称已经完成任务。');

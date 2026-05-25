@@ -22,6 +22,7 @@ export type CapabilitySnapshot = {
   };
   files: {
     root: string;
+    workspaceDir: string;
     additionalReadDirs: string[];
     additionalWriteDirs: string[];
     toolResultBudget: {
@@ -147,6 +148,7 @@ export function buildCapabilitySnapshot(input: {
     },
     files: {
       root: input.cwd,
+      workspaceDir: input.config.workspace.dir,
       additionalReadDirs: input.config.files.additionalReadDirs,
       additionalWriteDirs: input.config.files.additionalWriteDirs,
       toolResultBudget: input.config.toolResults,
@@ -194,7 +196,7 @@ export function formatCapabilitySnapshot(snapshot: CapabilitySnapshot): string {
     `cwd: ${snapshot.cwd}`,
     `models: main=${snapshot.models.main}, small=${snapshot.models.small}, vision=${snapshot.models.vision}`,
     `web: ${snapshot.web.enabled ? 'enabled' : 'disabled'} provider=${snapshot.web.provider} tools=${snapshot.web.tools.join(',') || '(none)'}`,
-    `files: tools=${snapshot.files.tools.join(',') || '(none)'} readDirs=${snapshot.files.additionalReadDirs.length} writeDirs=${snapshot.files.additionalWriteDirs.length} toolBudget=${snapshot.files.toolResultBudget.enabled ? snapshot.files.toolResultBudget.maxInlineChars : 'off'} write=${snapshot.files.canWrite ? 'available' : 'unavailable'} confirm=${snapshot.files.writeConfirmationAvailable ? 'interactive' : 'not-interactive'}`,
+    `files: tools=${snapshot.files.tools.join(',') || '(none)'} workspace=${snapshot.files.workspaceDir} readDirs=${snapshot.files.additionalReadDirs.length} writeDirs=${snapshot.files.additionalWriteDirs.length} toolBudget=${snapshot.files.toolResultBudget.enabled ? snapshot.files.toolResultBudget.maxInlineChars : 'off'} write=${snapshot.files.canWrite ? 'available' : 'unavailable'} confirm=${snapshot.files.writeConfirmationAvailable ? 'interactive' : 'not-interactive'}`,
     `skills: total=${snapshot.skills.total} callable=${snapshot.skills.callable}${snapshot.skills.names.length ? ` names=${snapshot.skills.names.join(',')}` : ''}`,
     `mcp: servers=${snapshot.mcp.connectedServers.join(',') || '(none)'} tools=${snapshot.mcp.visibleTools.length}`,
     `subAgents: background=${snapshot.subAgents.supportsBackground} stop=${snapshot.subAgents.supportsStop} isolation=${snapshot.subAgents.toolIsolation}`,
@@ -235,9 +237,9 @@ function compactSnapshot(snapshot: CapabilitySnapshot): Partial<CapabilitySnapsh
 function buildLimitations(config: AppConfig, fileWriteConfirmationAvailable: boolean, connectedMcpServerCount: number): string[] {
   const limitations: string[] = [
     '没有通用 shell/python/git 执行工具；只能通过已暴露工具和命令入口完成操作。',
-    'Write/Edit 只能写入当前项目目录内普通文本文件，且需要交互式确认。'
+    `Write/Edit 在 workspace (${config.workspace.dir}) 内无需额外确认；写入项目其它位置或额外授权目录时需要交互式确认。`
   ];
-  if (!fileWriteConfirmationAvailable) limitations.push('当前入口没有文件写入确认回调；模型请求中的 Write/Edit 会被拒绝。');
+  if (!fileWriteConfirmationAvailable) limitations.push(`当前入口没有文件写入确认回调；模型只能自动写入 workspace (${config.workspace.dir})，项目其它位置的 Write/Edit 会被拒绝。`);
   if (!config.web.apiKey) limitations.push('未配置 Web API key，WebSearch/WebFetch 不会暴露给模型。');
   if (connectedMcpServerCount === 0) limitations.push('当前没有已连接 MCP server。');
   limitations.push('Hooks 目前只记录内部事件，不执行外部 shell、HTTP、prompt 或 agent hook。');

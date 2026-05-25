@@ -92,6 +92,7 @@ export class NeoAgent {
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.fileToolRunner = new FileToolRunner(process.cwd(), undefined, this.hooks, {
+      workspaceDir: config.workspace.dir,
       additionalReadDirs: config.files.additionalReadDirs,
       additionalWriteDirs: config.files.additionalWriteDirs
     });

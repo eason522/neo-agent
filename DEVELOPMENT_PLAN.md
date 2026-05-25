@@ -57,7 +57,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - dreaming 记忆整理命令、定时门控、锁文件、报告回放、人工采纳和记忆复查
 - Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览，具备请求缓存、URL 去重、失败分类和多日期冲突提示
 - CC-Source 风格的联网 tool loop：`WebSearch` / `WebFetch` 作为模型可调用工具，过渡版小模型 planner 保留为兜底
-- 项目文件工具：`Read`、`Glob`、`Grep`、`Write`、`Edit`，只能访问 neo 启动目录内的文件；写入/编辑必须交互式确认；`Grep` 后端已改为 `rg`，带超时、输出上限、二进制跳过和错误分类
+- 项目文件工具：`Read`、`Glob`、`Grep`、`Write`、`Edit`，可访问 neo 启动目录、默认 `workspace/` 和显式授权额外目录；工作区内写入/编辑无需额外确认，项目其它位置和额外写入目录仍必须交互式确认；`Grep` 后端已改为 `rg`，带超时、输出上限、二进制跳过和错误分类
 - 模型流式输出：OpenAI-compatible SSE 增量解析，REPL 默认流式显示，`neo ask --stream` 支持单次流式输出，tool progress 独立显示
 - 发布与安装自检：`CHANGELOG.md`、`npm run release:check`、`neo self-check`
 - 轻量 skill/plugin marketplace 本地索引：复用 skill 安装和 plugin `skillsPath/skillsPaths` 导入，不启用完整插件生态
@@ -194,7 +194,8 @@ M4 后续硬化项：
 
 - [x] `Grep` 后端升级为 `rg`，补超时、最大输出、二进制跳过、错误分类和取消信号，参考 CC-Source `utils/ripgrep.ts` 和 `GrepTool`。
 - [x] 文件工具补额外目录 scope 第一阶段：默认项目内访问，`files.additionalReadDirs` / `files.additionalWriteDirs` 和环境变量显式授权项目外目录，写入仍需交互确认。
-- [ ] 文件工具补完整权限模型、会话级目录授权、图片/PDF/二进制处理、读取预算和结果落盘，参考 CC-Source FileRead/Glob/Grep/filesystem permissions。（P2 已补写入/编辑前交互式确认；更完整 permission rules 和二进制/图片/PDF 仍属 M4 硬化项。）
+- [x] 文件工具补可配置工作区目录第一阶段：默认 `workspace/`，支持 `workspace.dir` / `NEO_AGENT_WORKSPACE_DIR`，工作区内 `Write`/`Edit` 拥有完全访问权限，项目其它位置和额外写入目录仍需交互确认。
+- [ ] 文件工具补完整权限模型、会话级目录授权、图片/PDF/二进制处理、读取预算和结果落盘，参考 CC-Source FileRead/Glob/Grep/filesystem permissions。（P2 已补写入/编辑前交互式确认；当前已补 workspace 完全访问第一阶段；更完整 permission rules 和二进制/图片/PDF 仍属 M4 硬化项。）
 - [x] QueryEngine 补并发工具策略、orphan tool result 处理和长运行工具真实 kill，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
 - [x] transcript/session 补 tool result pairing 摘要和恢复校验，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
 - [x] QueryEngine 补统一工具结果预算、超大结果落盘引用和 toolPairs 持久化路径摘要，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool result storage。
@@ -628,6 +629,12 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 继续参考 CC-Source `utils/permissions/filesystem.ts`、`FilePermissionDialog/permissionOptions.tsx` 和 workspace directory 的设计后，neo 先补保守版额外目录 scope：默认仍只允许访问启动目录；用户可以通过 `files.additionalReadDirs` / `files.additionalWriteDirs` 或 `NEO_AGENT_FILE_READ_DIRS` / `NEO_AGENT_FILE_WRITE_DIRS` 显式加入项目外目录。写入目录会同时进入读取 scope，便于 `Edit` 先读后改；但所有 `Write` / `Edit` 仍必须走 REPL 交互式确认，非交互入口继续拒绝。
 
 本阶段没有实现 CC-Source 的会话内 “allow this directory during session” UI，也不持久化文件权限规则。原因是 neo 当前还没有完整权限面板和规则冲突检测；先做配置级白名单可以满足明确的项目外资料访问，又不会把一次性确认扩大成长期授权。验证覆盖额外读取目录的 `Read`/`Grep`、额外写入目录的 `Write`，以及未授权路径仍被拒绝。
+
+### 2026-05-25：workspace 目录成为默认完全访问工作区
+
+用户确认的目标是：给 neo 分配一个工作区目录，并赋予它对这个目录内文件和文件夹的完整操作权限。参考 CC-Source workspace directory 的思路后，neo 增加 `workspace.dir` 配置和 `NEO_AGENT_WORKSPACE_DIR` 环境变量，默认值为当前项目下的 `workspace/`。启动时会自动创建并解析真实路径；`Read`/`Glob`/`Grep` 可访问项目、workspace 和显式授权目录，`Write`/`Edit` 在 workspace 内无需额外确认，写入项目其它位置或额外写入目录仍必须走 REPL 权限确认。
+
+这里没有把整个项目目录都升级为无确认可写。原因是项目根目录通常包含源码、配置和密钥引用，完全放开会让一次模型误判直接覆盖关键文件；workspace 则是明确分配给 neo 的可操作区域，边界更清楚，也更符合后续做会话级目录授权和权限 UI 的方向。验证覆盖 workspace 写入/编辑无需确认、项目写入仍被确认拦截、额外写入目录仍需确认，以及能力快照展示当前 workspace 配置。
 
 ### 2026-05-25：统一工具结果预算和落盘引用
 

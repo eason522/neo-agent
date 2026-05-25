@@ -61,17 +61,20 @@ export type FilePermissionRequest = {
   summary: string;
   oldChars?: number;
   newChars: number;
+  permissionRequired: boolean;
 };
 
 export type FilePermissionAsker = (request: FilePermissionRequest) => Promise<'allow' | 'deny'>;
 
 export type FileToolScope = {
+  workspaceDir?: string;
   additionalReadDirs?: string[];
   additionalWriteDirs?: string[];
 };
 
 export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
   private rootRealPath: string | undefined;
+  private workspaceRealPath: string | undefined;
   private readRoots: string[] = [];
   private writeRoots: string[] = [];
 
@@ -92,11 +95,16 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
 
   async refresh(): Promise<void> {
     this.rootRealPath = await realpath(this.projectRoot);
+    this.workspaceRealPath = await resolveWorkspaceRoot(this.rootRealPath, this.scope.workspaceDir ?? 'workspace');
     this.readRoots = await resolveScopeRoots(this.rootRealPath, [
+      this.workspaceRealPath,
       ...(this.scope.additionalReadDirs ?? []),
       ...(this.scope.additionalWriteDirs ?? [])
     ]);
-    this.writeRoots = await resolveScopeRoots(this.rootRealPath, this.scope.additionalWriteDirs ?? []);
+    this.writeRoots = await resolveScopeRoots(this.rootRealPath, [
+      this.workspaceRealPath,
+      ...(this.scope.additionalWriteDirs ?? [])
+    ]);
   }
 
   definitions(): ChatToolDefinition[] {
@@ -106,7 +114,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         function: {
           name: READ_TOOL_NAME,
           description: [
-            '读取当前项目目录和已授权额外目录内的文本文件。结果使用 cat -n 风格，带 1 起始行号。',
+            '读取当前项目目录、workspace 目录和已授权额外目录内的文本文件。结果使用 cat -n 风格，带 1 起始行号。',
             '只能读取文件，不能读取目录；大文件请使用 offset 和 limit。'
           ].join('\n'),
           parameters: {
@@ -125,7 +133,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         type: 'function',
         function: {
           name: GLOB_TOOL_NAME,
-          description: '在当前项目目录或已授权额外目录内按文件名 glob 模式查找文件。只返回路径，不读取正文。',
+          description: '在当前项目目录、workspace 目录或已授权额外目录内按文件名 glob 模式查找文件。只返回路径，不读取正文。',
           parameters: {
             type: 'object',
             additionalProperties: false,
@@ -141,7 +149,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         type: 'function',
         function: {
           name: GREP_TOOL_NAME,
-          description: '在当前项目目录或已授权额外目录内搜索文本内容。默认返回匹配文件列表；需要上下文时使用 output_mode=content。',
+          description: '在当前项目目录、workspace 目录或已授权额外目录内搜索文本内容。默认返回匹配文件列表；需要上下文时使用 output_mode=content。',
           parameters: {
             type: 'object',
             additionalProperties: false,
@@ -163,8 +171,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         function: {
           name: WRITE_TOOL_NAME,
           description: [
-            '在当前项目目录或已授权额外写入目录内创建或完整覆盖一个文本文件。',
-            '执行前必须经过用户权限确认；不要用它做小范围替换，替换请使用 Edit。'
+            '在 workspace 目录内创建或覆盖文件不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
+            '不要用它做小范围替换，替换请使用 Edit。'
           ].join('\n'),
           parameters: {
             type: 'object',
@@ -182,8 +190,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         function: {
           name: EDIT_TOOL_NAME,
           description: [
-            '在当前项目目录或已授权额外写入目录内对文本文件执行精确字符串替换。',
-            'old_string 必须在文件中唯一出现，除非 replace_all=true；执行前必须经过用户权限确认。'
+            '在 workspace 目录内编辑文件不需要额外确认；编辑项目目录或其它授权写入目录时必须经过用户确认。',
+            'old_string 必须在文件中唯一出现，除非 replace_all=true。'
           ].join('\n'),
           parameters: {
             type: 'object',
@@ -327,7 +335,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       operation: existing === undefined ? 'create' : 'overwrite',
       summary: existing === undefined ? '创建新文件' : '完整覆盖已有文件',
       oldChars: existing?.length,
-      newChars: input.content.length
+      newChars: input.content.length,
+      permissionRequired: !this.isInsideWorkspace(target)
     });
     throwIfAborted(signal);
     await mkdir(path.dirname(target), { recursive: true });
@@ -362,7 +371,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       operation: 'edit',
       summary: `替换 ${input.replace_all ? matches : 1} 处文本`,
       oldChars: input.old_string.length,
-      newChars: input.new_string.length
+      newChars: input.new_string.length,
+      permissionRequired: !this.isInsideWorkspace(filePath)
     });
     throwIfAborted(signal);
     await writeFile(filePath, next, 'utf8');
@@ -384,8 +394,10 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       path: request.path,
       operation: request.operation,
       oldChars: request.oldChars,
-      newChars: request.newChars
+      newChars: request.newChars,
+      permissionRequired: request.permissionRequired
     });
+    if (!request.permissionRequired) return;
     if (!this.permissionAsker) throw new Error(`文件写入需要交互式权限确认：${request.path}`);
     const decision = await this.permissionAsker(request);
     if (decision !== 'allow') throw new Error(`用户拒绝文件写入：${request.path}`);
@@ -420,7 +432,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const absolute = path.isAbsolute(inputPath) ? inputPath : path.resolve(root, inputPath);
     const resolved = await realpath(absolute);
     if (!this.isInsideReadScope(resolved)) {
-      throw new Error(`文件工具只能访问当前项目目录或已授权额外读取目录内的路径：${inputPath}`);
+      throw new Error(`文件工具只能访问当前项目目录、workspace 或已授权额外读取目录内的路径：${inputPath}`);
     }
     return resolved;
   }
@@ -431,11 +443,11 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const absolute = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(root, inputPath);
     const parent = await realpath(path.dirname(absolute));
     if (!this.isInsideWriteScope(parent)) {
-      throw new Error(`文件工具只能写入当前项目目录或已授权额外写入目录内的路径：${inputPath}`);
+      throw new Error(`文件工具只能写入当前项目目录、workspace 或已授权额外写入目录内的路径：${inputPath}`);
     }
     const target = path.resolve(parent, path.basename(absolute));
     if (!this.isInsideWriteScope(target)) {
-      throw new Error(`文件工具只能写入当前项目目录或已授权额外写入目录内的路径：${inputPath}`);
+      throw new Error(`文件工具只能写入当前项目目录、workspace 或已授权额外写入目录内的路径：${inputPath}`);
     }
     const existing = await lstat(target).catch(() => undefined);
     if (existing?.isSymbolicLink()) throw new Error(`拒绝写入符号链接：${inputPath}`);
@@ -451,6 +463,10 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return [this.rootRealPath!, ...this.writeRoots].some(root => pathInsideRoot(filePath, root));
   }
 
+  private isInsideWorkspace(filePath: string): boolean {
+    return Boolean(this.workspaceRealPath && pathInsideRoot(filePath, this.workspaceRealPath));
+  }
+
   private relativeToScope(filePath: string): string {
     return relativeToBestRoot(filePath, [this.rootRealPath!, ...this.readRoots, ...this.writeRoots]);
   }
@@ -459,11 +475,20 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
 export function getFileToolPrompt(): string {
   return [
     '# 项目文件工具',
-    '- 你可以使用 Read 读取当前项目目录和已授权额外目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
-    '- 你也可以使用 Write 创建/覆盖文本文件，使用 Edit 做精确字符串替换；写入和编辑必须经过用户权限确认，非交互入口默认拒绝。',
+    '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
+    '- workspace 目录是 neo 的默认可写工作区，Write/Edit 在 workspace 内拥有完全访问权限；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
     '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；不要反复读取大文件。',
-    '- 文件工具默认只能访问 neo 启动时所在的项目目录；额外目录必须由用户通过配置显式授权，不能访问其它路径。'
+    '- 文件工具默认只能访问 neo 启动时所在的项目目录、workspace 和显式授权额外目录，不能访问其它路径。'
   ].join('\n');
+}
+
+async function resolveWorkspaceRoot(projectRoot: string, input: string): Promise<string> {
+  const absolute = path.isAbsolute(input) ? input : path.resolve(projectRoot, input);
+  await mkdir(absolute, { recursive: true });
+  const resolved = await realpath(absolute);
+  const resolvedStat = await stat(resolved);
+  if (!resolvedStat.isDirectory()) throw new Error(`workspace 路径必须是目录：${input}`);
+  return resolved;
 }
 
 async function resolveScopeRoots(projectRoot: string, inputs: string[]): Promise<string[]> {
@@ -482,6 +507,11 @@ function pathInsideRoot(filePath: string, root: string): boolean {
 }
 
 function relativeToBestRoot(filePath: string, roots: string[]): string {
+  const projectRoot = roots[0];
+  if (projectRoot && pathInsideRoot(filePath, projectRoot)) {
+    const relative = path.relative(projectRoot, filePath);
+    return relative || '.';
+  }
   const matches = roots
     .filter(root => pathInsideRoot(filePath, root))
     .sort((a, b) => b.length - a.length);

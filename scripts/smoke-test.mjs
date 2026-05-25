@@ -1128,11 +1128,22 @@ test('项目文件 Write/Edit 必须确认权限并限制在项目内', async ()
     const { FileToolRunner, WRITE_TOOL_NAME, EDIT_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
     const hookEvents = [];
     const hooks = { emit: (event, name, metadata) => hookEvents.push({ event, name, metadata }) };
-    const runner = new FileToolRunner(projectDir, undefined, hooks, { additionalWriteDirs: [extraWriteDir] });
+    const runner = new FileToolRunner(projectDir, undefined, hooks, { workspaceDir: 'workspace', additionalWriteDirs: [extraWriteDir] });
     await runner.refresh();
     const names = runner.definitions().map(tool => tool.function.name).join(',');
     assertIncludes(names, WRITE_TOOL_NAME);
     assertIncludes(names, EDIT_TOOL_NAME);
+
+    const workspaceWrite = await runner.execute({
+      id: 'write_workspace',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'workspace/free.txt', content: 'workspace can write without confirmation\n' }) }
+    });
+    assertIncludes(workspaceWrite.content, 'created workspace/free.txt');
+    assertIncludes(await readFile(path.join(projectDir, 'workspace', 'free.txt'), 'utf8'), 'without confirmation');
+    if (!hookEvents.some(event => event.event === 'PermissionRequest' && event.metadata?.permissionRequired === false)) {
+      throw new Error(`workspace 写入应标记为无需权限确认：${JSON.stringify(hookEvents)}`);
+    }
 
     await assertRejects(() => runner.execute({
       id: 'write_denied',
@@ -1172,6 +1183,14 @@ test('项目文件 Write/Edit 必须确认权限并限制在项目内', async ()
     });
     assertIncludes(edit.content, 'edited src/app.ts');
     assertIncludes(await readFile(path.join(projectDir, 'src', 'app.ts'), 'utf8'), 'value = 2');
+
+    const workspaceEdit = await runner.execute({
+      id: 'edit_workspace',
+      type: 'function',
+      function: { name: EDIT_TOOL_NAME, arguments: JSON.stringify({ file_path: 'workspace/free.txt', old_string: 'without confirmation', new_string: 'with full access' }) }
+    });
+    assertIncludes(workspaceEdit.content, 'edited workspace/free.txt');
+    assertIncludes(await readFile(path.join(projectDir, 'workspace', 'free.txt'), 'utf8'), 'with full access');
 
     await assertRejects(() => runner.execute({
       id: 'write_outside',
@@ -1430,6 +1449,7 @@ test('capabilities 命令会输出运行时能力快照', async () => {
   if (!parsed.runtimeTools.some(tool => tool.name === 'Capabilities')) throw new Error(`应暴露 Capabilities 工具：${json.stdout}`);
   if (!parsed.runtimeTools.some(tool => tool.name === 'TaskAssessment')) throw new Error(`应暴露 TaskAssessment 工具：${json.stdout}`);
   if (!parsed.files.tools.includes('Write')) throw new Error(`能力快照应包含 Write：${json.stdout}`);
+  if (parsed.files.workspaceDir !== 'workspace') throw new Error(`能力快照应包含默认 workspace：${json.stdout}`);
   if (parsed.files.writeConfirmationAvailable !== false) throw new Error(`非交互 CLI 不应具备写入确认回调：${json.stdout}`);
 });
 

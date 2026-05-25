@@ -15,8 +15,8 @@
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 - 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
 - 自动联网：普通 ask/REPL 默认把 `WebSearch`、`WebFetch` 暴露为模型可调用工具，由模型在回答过程中自行搜索或读取网页；关闭 tool loop 后才回落到过渡版小模型 planner。
-- 项目文件工具：普通 ask/REPL 默认提供只读 `Read`、`Glob`、`Grep`，只能访问当前启动目录内的项目文件。
-- 文件写入工具：`Write`/`Edit` 只能访问当前项目目录，且必须经过交互式权限确认。
+- 项目文件工具：普通 ask/REPL 默认提供 `Read`、`Glob`、`Grep`、`Write`、`Edit`，可访问当前项目目录、默认 `workspace/` 和显式授权的额外目录。
+- 工作区目录：默认 `workspace/`，可用 `workspace.dir` 或 `NEO_AGENT_WORKSPACE_DIR` 配置；`Write`/`Edit` 在工作区内拥有完全访问权限，写入项目其它位置仍需交互式确认。
 - 流式输出：REPL 默认流式显示模型文本；`neo ask --stream` 可对单次提问启用流式输出，工具进度会继续独立显示。
 - 轻量 marketplace：`neo marketplace` 管理本地 skill/plugin 索引，复用 skill 安装和 plugin `skillsPath/skillsPaths` 导入。
 - 发布自检：`neo self-check` 和 `npm run release:check` 检查版本、CHANGELOG、构建产物和基础配置。
@@ -180,9 +180,9 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --select-paths "/docum
 
 REPL 会保留当前 session 的对话上下文，默认最多约 300000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS` 调整。单条消息默认最多保留 50000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS` 调整。接近上下文预算时，neo 会参考 CC-Source compact 思路，用小模型把较早对话压缩成“自动压缩的历史摘要”，再保留近期原文；可用 `NEO_AGENT_CONVERSATION_COMPACT_ENABLED=0` 关闭，或用 `NEO_AGENT_CONVERSATION_COMPACT_THRESHOLD_RATIO`、`NEO_AGENT_CONVERSATION_COMPACT_KEEP_RECENT_CHARS`、`NEO_AGENT_CONVERSATION_COMPACT_MAX_SUMMARY_CHARS` 调整阈值和摘要大小。
 
-普通 ask/REPL 会向模型提供项目文件工具：`Read` 读取文件片段，`Glob` 按文件名查找文件，`Grep` 搜索文件内容。这些工具默认只能访问启动 neo 时所在目录内的路径，并默认跳过 `.git`、`node_modules`、`dist` 等噪声目录。确实需要读取项目外资料时，可以用 `NEO_AGENT_FILE_READ_DIRS=/path/a,/path/b` 或配置 `files.additionalReadDirs` 显式加入额外读取目录。
+普通 ask/REPL 会向模型提供项目文件工具：`Read` 读取文件片段，`Glob` 按文件名查找文件，`Grep` 搜索文件内容。这些工具默认可以访问启动 neo 时所在项目目录、工作区目录和显式授权的额外目录，并默认跳过 `.git`、`node_modules`、`dist` 等噪声目录。工作区默认是当前项目下的 `workspace/`，可用 `NEO_AGENT_WORKSPACE_DIR=/path/workspace` 或配置 `workspace.dir` 改成相对项目目录的路径或绝对路径。确实需要读取项目外资料时，可以用 `NEO_AGENT_FILE_READ_DIRS=/path/a,/path/b` 或配置 `files.additionalReadDirs` 显式加入额外读取目录。
 
-REPL 还会提供 `Write` 和 `Edit`。这两个工具默认只能写入当前项目目录内的普通文本文件，执行前会显示路径、操作摘要和字符数，并要求用户确认；`neo ask` 等非交互入口不会自动批准写入。需要写入项目外目录时，必须用 `NEO_AGENT_FILE_WRITE_DIRS=/path/out` 或配置 `files.additionalWriteDirs` 显式加入额外写入目录，且仍然需要交互确认。当前 hook 生态只预留 `PostToolUse`、`PermissionRequest`、`Stop`、`Notification` 内部事件，不执行外部 shell/HTTP/prompt hook。
+REPL 还会提供 `Write` 和 `Edit`。这两个工具在工作区目录内拥有完全访问权限，不再额外询问；写入项目目录其它位置或 `files.additionalWriteDirs` 授权目录时，会显示路径、操作摘要和字符数，并要求用户确认。`neo ask` 等非交互入口只能自动写入工作区；需要写入项目外目录时，必须用 `NEO_AGENT_FILE_WRITE_DIRS=/path/out` 或配置 `files.additionalWriteDirs` 显式加入额外写入目录，且仍然需要交互确认。当前 hook 生态只预留 `PostToolUse`、`PermissionRequest`、`Stop`、`Notification` 内部事件，不执行外部 shell/HTTP/prompt hook。
 
 sub-agent 任务：
 

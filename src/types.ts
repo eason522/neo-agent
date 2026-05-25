@@ -176,6 +176,9 @@ export type AppConfig = {
     excludeDomains: string[];
     timeoutMs: number;
   };
+  workspace: {
+    dir: string;
+  };
   files: {
     additionalReadDirs: string[];
     additionalWriteDirs: string[];

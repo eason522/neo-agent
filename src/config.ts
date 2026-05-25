@@ -74,6 +74,9 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
     excludeDomains: z.array(z.string()),
     timeoutMs: z.number().int().positive()
   }),
+  workspace: z.object({
+    dir: z.string().min(1)
+  }),
   files: z.object({
     additionalReadDirs: z.array(z.string()),
     additionalWriteDirs: z.array(z.string())
@@ -233,6 +236,9 @@ export function defaultConfig(): AppConfig {
       selectDomains: parseCommaList(process.env.NEO_AGENT_WEB_SELECT_DOMAINS),
       excludeDomains: parseCommaList(process.env.NEO_AGENT_WEB_EXCLUDE_DOMAINS),
       timeoutMs: Number.parseInt(process.env.NEO_AGENT_WEB_TIMEOUT_MS || '12000', 10)
+    },
+    workspace: {
+      dir: process.env.NEO_AGENT_WORKSPACE_DIR || 'workspace'
     },
     files: {
       additionalReadDirs: parseCommaList(process.env.NEO_AGENT_FILE_READ_DIRS),
