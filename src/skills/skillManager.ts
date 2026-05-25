@@ -1,46 +1,61 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig, Skill } from '../types.js';
+import type { AppConfig, Skill, SkillScope } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
+import { validateSkillContent } from './skillPackage.js';
 
 type PatternStore = Record<string, number>;
 
 export class SkillManager {
-  private readonly skillsDir: string;
+  private readonly userSkillsDir: string;
+  private readonly projectSkillsDir: string;
   private readonly patternsFile: string;
 
-  constructor(private readonly config: AppConfig) {
-    this.skillsDir = path.join(config.homeDir, 'skills');
-    this.patternsFile = path.join(this.skillsDir, '.task-patterns.json');
+  constructor(private readonly config: AppConfig, private readonly projectRoot = process.cwd()) {
+    this.userSkillsDir = path.join(config.homeDir, 'skills');
+    this.projectSkillsDir = path.join(projectRoot, '.neo-agent', 'skills');
+    this.patternsFile = path.join(this.userSkillsDir, '.task-patterns.json');
   }
 
   async loadSkills(): Promise<Skill[]> {
-    await ensureDir(this.skillsDir);
-    const entries = await readdir(this.skillsDir, { withFileTypes: true });
+    const [projectSkills, userSkills] = await Promise.all([
+      this.loadSkillsFromRoot(this.projectSkillsDir, 'project'),
+      this.loadSkillsFromRoot(this.userSkillsDir, 'user')
+    ]);
+    return [...projectSkills, ...userSkills].sort((a, b) => a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+  }
+
+  skillRoot(scope: SkillScope): string {
+    return scope === 'project' ? this.projectSkillsDir : this.userSkillsDir;
+  }
+
+  async loadSkillsFromRoot(root: string, scope: SkillScope): Promise<Skill[]> {
+    await ensureDir(root);
+    const entries = await readdir(root, { withFileTypes: true });
     const skills: Skill[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const skillPath = path.join(this.skillsDir, entry.name, 'SKILL.md');
+      const skillPath = path.join(root, entry.name, 'SKILL.md');
       if (!(await pathExists(skillPath))) continue;
       const body = await readFile(skillPath, 'utf8');
-      skills.push(parseSkill(entry.name, path.dirname(skillPath), body));
+      skills.push(parseSkill(entry.name, path.dirname(skillPath), skillPath, scope, body));
     }
     return skills.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async getSkill(name: string): Promise<Skill | undefined> {
+  async getSkill(name: string, scope?: SkillScope): Promise<Skill | undefined> {
     const skills = await this.loadSkills();
     const safeName = sanitizeName(name);
-    return skills.find(skill => skill.name === safeName || skill.name === name);
+    return skills.find(skill => (!scope || skill.scope === scope) && (skill.name === safeName || skill.name === name));
   }
 
-  async skillFilePath(name: string): Promise<string | undefined> {
-    const skill = await this.getSkill(name);
-    return skill ? path.join(skill.path, 'SKILL.md') : undefined;
+  async skillFilePath(name: string, scope?: SkillScope): Promise<string | undefined> {
+    const skill = await this.getSkill(name, scope);
+    return skill?.filePath;
   }
 
-  async deleteSkill(name: string): Promise<Skill | undefined> {
-    const skill = await this.getSkill(name);
+  async deleteSkill(name: string, scope?: SkillScope): Promise<Skill | undefined> {
+    const skill = await this.getSkill(name, scope);
     if (!skill) return undefined;
     await rm(skill.path, { recursive: true, force: true });
     return skill;
@@ -61,9 +76,10 @@ export class SkillManager {
       .map(item => item.skill);
   }
 
-  async createSkill(name: string, description: string, triggers: string[], workflow: string[]): Promise<Skill> {
+  async createSkill(name: string, description: string, triggers: string[], workflow: string[], options: { scope?: SkillScope } = {}): Promise<Skill> {
     const safeName = sanitizeName(name);
-    const dir = path.join(this.skillsDir, safeName);
+    const scope = options.scope ?? 'user';
+    const dir = path.join(this.skillRoot(scope), safeName);
     await mkdir(dir, { recursive: true });
     const body = [
       `# ${name}`,
@@ -79,8 +95,9 @@ export class SkillManager {
       '- Keep this skill concise and update it when repeated tasks reveal a better workflow.',
       ''
     ].join('\n');
-    await writeFile(path.join(dir, 'SKILL.md'), body, 'utf8');
-    return parseSkill(safeName, dir, body);
+    const filePath = path.join(dir, 'SKILL.md');
+    await writeFile(filePath, body, 'utf8');
+    return parseSkill(safeName, dir, filePath, scope, body);
   }
 
   async maybeAutoCreate(input: string, assistantOutput: string): Promise<Skill | undefined> {
@@ -110,12 +127,15 @@ export class SkillManager {
   }
 }
 
-function parseSkill(name: string, skillPath: string, body: string): Skill {
-  const description = body.match(/^Description:\s*(.+)$/m)?.[1]?.trim() ?? body.split('\n').find(Boolean) ?? name;
-  const triggers = body.match(/^Triggers:\s*(.+)$/m)?.[1]?.split(',').map(item => item.trim()).filter(Boolean) ?? [name];
+function parseSkill(name: string, skillPath: string, filePath: string, scope: SkillScope, body: string): Skill {
+  const validation = validateSkillContent(body, name);
+  const description = validation.description || body.match(/^Description:\s*(.+)$/m)?.[1]?.trim() || body.split('\n').find(Boolean) || name;
+  const triggers = validation.triggers.length > 0 ? validation.triggers : body.match(/^Triggers:\s*(.+)$/m)?.[1]?.split(',').map(item => item.trim()).filter(Boolean) ?? [name];
   return {
     name,
     path: skillPath,
+    filePath,
+    scope,
     description,
     triggers,
     body

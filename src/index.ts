@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { initConfigFile, loadConfig } from './config.js';
 import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
@@ -20,7 +21,8 @@ import {
 } from './mcp/mcpConfigCommands.js';
 import { createAbortError, isAbortError } from './utils/abort.js';
 import { SkillManager } from './skills/skillManager.js';
-import type { Skill } from './types.js';
+import type { Skill, SkillScope } from './types.js';
+import { buildSkillInstallPlan, exportSkillPackage, installSkillPlan, validateSkillSource, type SkillValidationResult } from './skills/skillPackage.js';
 
 const program = new Command();
 
@@ -161,10 +163,12 @@ const skillCommand = program
 skillCommand
   .command('list')
   .description('列出已加载的 skill')
+  .option('--scope <user|project>', '只显示某个 scope')
   .option('--json', '输出 JSON')
-  .action(async (options: { json?: boolean }) => {
+  .action(async (options: { scope?: string; json?: boolean }) => {
     const config = await loadConfig();
-    const skills = await new SkillManager(config).loadSkills();
+    const scope = parseSkillScope(options.scope);
+    const skills = (await new SkillManager(config).loadSkills()).filter(skill => !scope || skill.scope === scope);
     if (options.json) {
       console.log(JSON.stringify(skills.map(toSkillSummary), null, 2));
       return;
@@ -176,10 +180,11 @@ skillCommand
   .command('show')
   .description('查看 skill 内容')
   .argument('<name>', 'skill 名称')
+  .option('--scope <user|project>', '指定 scope')
   .option('--json', '输出 JSON')
-  .action(async (name: string, options: { json?: boolean }) => {
+  .action(async (name: string, options: { scope?: string; json?: boolean }) => {
     const config = await loadConfig();
-    const skill = await new SkillManager(config).getSkill(name);
+    const skill = await new SkillManager(config).getSkill(name, parseSkillScope(options.scope));
     if (!skill) {
       console.log(chalk.yellow(`没有找到 skill：${name}`));
       process.exitCode = 1;
@@ -194,26 +199,92 @@ skillCommand
   .description('创建 skill')
   .argument('<name>', 'skill 名称')
   .argument('[description...]', '描述')
+  .option('--scope <user|project>', '安装位置，默认 user', 'user')
   .option('-t, --trigger <trigger>', '触发词，可重复', collectOption, [])
-  .action(async (name: string, descriptionParts: string[], options: { trigger: string[] }) => {
+  .action(async (name: string, descriptionParts: string[], options: { scope: string; trigger: string[] }) => {
     const config = await loadConfig();
+    const scope = parseSkillScope(options.scope) ?? 'user';
     const description = descriptionParts.join(' ').trim() || 'Manual skill';
     const triggers = options.trigger.length > 0 ? options.trigger : name.split(/[-_\s]+/).filter(Boolean);
     const skill = await new SkillManager(config).createSkill(name, description, triggers, [
       'Confirm the task matches this skill.',
       'Apply the remembered workflow and adapt only where the current request differs.'
-    ]);
+    ], { scope });
     console.log(chalk.green(`已创建 skill：${skill.name}`));
+    console.log(chalk.gray(`scope=${skill.scope}`));
     console.log(chalk.gray(`${skill.path}/SKILL.md`));
+  });
+
+skillCommand
+  .command('install')
+  .description('从 .md、目录、.zip 或 URL 安装 skill')
+  .argument('<source>', 'skill 来源路径或 URL')
+  .option('--name <name>', '覆盖 skill 名称')
+  .option('--scope <user|project>', '安装位置，默认 user', 'user')
+  .option('--overwrite', '覆盖已有 skill')
+  .option('--dry-run', '只预览，不写入')
+  .action(async (source: string, options: { name?: string; scope: string; overwrite?: boolean; dryRun?: boolean }) => {
+    const config = await loadConfig();
+    const manager = new SkillManager(config);
+    const scope = parseSkillScope(options.scope) ?? 'user';
+    const plan = await buildSkillInstallPlan({ source, name: options.name });
+    printSkillValidation(plan.validation);
+    const result = await installSkillPlan({
+      plan,
+      targetRoot: manager.skillRoot(scope),
+      overwrite: options.overwrite,
+      dryRun: options.dryRun
+    });
+    console.log(chalk.green(options.dryRun ? `skill 安装预览通过：${result.name}` : `已安装 skill：${result.name}`));
+    console.log(chalk.gray(`scope=${scope}`));
+    console.log(chalk.gray(result.skillFilePath));
+  });
+
+skillCommand
+  .command('validate')
+  .description('校验 skill 来源或已安装 skill')
+  .argument('<sourceOrName>', 'skill 路径、URL 或已安装 skill 名称')
+  .option('--name <name>', '校验时使用的名称提示')
+  .option('--scope <user|project>', '按已安装 skill 查找时指定 scope')
+  .action(async (sourceOrName: string, options: { name?: string; scope?: string }) => {
+    const config = await loadConfig();
+    const manager = new SkillManager(config);
+    const installed = await manager.getSkill(sourceOrName, parseSkillScope(options.scope));
+    const validation = installed
+      ? await validateSkillSource(installed.filePath, options.name ?? installed.name)
+      : await validateSkillSource(sourceOrName, options.name);
+    printSkillValidation(validation);
+    if (!validation.valid) process.exitCode = 1;
+  });
+
+skillCommand
+  .command('export')
+  .description('把已安装 skill 打包为 zip')
+  .argument('<name>', 'skill 名称')
+  .option('--scope <user|project>', '指定 scope')
+  .option('-o, --output <path>', '输出 zip 路径')
+  .action(async (name: string, options: { scope?: string; output?: string }) => {
+    const config = await loadConfig();
+    const skill = await new SkillManager(config).getSkill(name, parseSkillScope(options.scope));
+    if (!skill) {
+      console.log(chalk.yellow(`没有找到 skill：${name}`));
+      process.exitCode = 1;
+      return;
+    }
+    const outputPath = path.resolve(options.output ?? `${skill.name}.zip`);
+    const result = await exportSkillPackage({ skillDir: skill.path, skillName: skill.name, outputPath });
+    console.log(chalk.green(`已导出 skill：${skill.name}`));
+    console.log(chalk.gray(`${result.outputPath} files=${result.fileCount} bytes=${result.bytes}`));
   });
 
 skillCommand
   .command('edit')
   .description('用 $VISUAL 或 $EDITOR 编辑 skill')
   .argument('<name>', 'skill 名称')
-  .action(async (name: string) => {
+  .option('--scope <user|project>', '指定 scope')
+  .action(async (name: string, options: { scope?: string }) => {
     const config = await loadConfig();
-    const filePath = await new SkillManager(config).skillFilePath(name);
+    const filePath = await new SkillManager(config).skillFilePath(name, parseSkillScope(options.scope));
     if (!filePath) {
       console.log(chalk.yellow(`没有找到 skill：${name}`));
       process.exitCode = 1;
@@ -227,9 +298,10 @@ skillCommand
   .alias('remove')
   .description('删除 skill')
   .argument('<name>', 'skill 名称')
-  .action(async (name: string) => {
+  .option('--scope <user|project>', '指定 scope')
+  .action(async (name: string, options: { scope?: string }) => {
     const config = await loadConfig();
-    const deleted = await new SkillManager(config).deleteSkill(name);
+    const deleted = await new SkillManager(config).deleteSkill(name, parseSkillScope(options.scope));
     if (!deleted) {
       console.log(chalk.yellow(`没有找到 skill：${name}`));
       process.exitCode = 1;
@@ -465,10 +537,12 @@ function collectOption(value: string, previous: string[]): string[] {
   return previous;
 }
 
-function toSkillSummary(skill: Skill): Pick<Skill, 'name' | 'path' | 'description' | 'triggers'> {
+function toSkillSummary(skill: Skill): Pick<Skill, 'name' | 'path' | 'filePath' | 'scope' | 'description' | 'triggers'> {
   return {
     name: skill.name,
     path: skill.path,
+    filePath: skill.filePath,
+    scope: skill.scope,
     description: skill.description,
     triggers: skill.triggers
   };
@@ -481,17 +555,34 @@ function printSkillList(skills: Skill[]): void {
   }
   for (const skill of skills) {
     const triggers = skill.triggers.length > 0 ? ` 触发词=${skill.triggers.join(',')}` : '';
-    console.log(`${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(triggers)}`);
+    console.log(`${chalk.cyan(skill.name)} - ${skill.description}${chalk.gray(` scope=${skill.scope}${triggers}`)}`);
     console.log(chalk.gray(`${skill.path}/SKILL.md`));
   }
 }
 
 function printSkillDetail(skill: Skill): void {
   console.log(`${chalk.cyan(skill.name)} - ${skill.description}`);
+  console.log(chalk.gray(`scope=${skill.scope}`));
   console.log(chalk.gray(`${skill.path}/SKILL.md`));
   if (skill.triggers.length > 0) console.log(chalk.gray(`触发词：${skill.triggers.join(', ')}`));
   console.log('');
   console.log(skill.body.trimEnd());
+}
+
+function printSkillValidation(validation: SkillValidationResult): void {
+  console.log(validation.valid ? chalk.green('skill 校验通过') : chalk.red('skill 校验失败'));
+  console.log(`名称：${validation.name}`);
+  console.log(`描述：${validation.description || '(空)'}`);
+  console.log(`触发词：${validation.triggers.length > 0 ? validation.triggers.join(', ') : '(空)'}`);
+  console.log(`大小：${validation.bytes} bytes`);
+  for (const warning of validation.warnings) console.log(chalk.yellow(`警告：${warning}`));
+  for (const error of validation.errors) console.log(chalk.red(`错误：${error}`));
+}
+
+function parseSkillScope(input: string | undefined): SkillScope | undefined {
+  if (!input) return undefined;
+  if (input === 'user' || input === 'project') return input;
+  throw new Error(`无效 scope：${input}，只能是 user 或 project。`);
 }
 
 async function openEditorOrPrintPath(filePath: string): Promise<void> {

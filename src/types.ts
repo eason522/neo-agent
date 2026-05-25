@@ -54,6 +54,7 @@ export type MemoryStatus = 'active' | 'archived';
 export type WebSearchDepth = 'basic' | 'advanced';
 export type WebExtractDepth = 'basic' | 'advanced';
 export type McpPermissionMode = 'readOnly' | 'allowAll';
+export type SkillScope = 'user' | 'project';
 
 export type McpServerConfig = {
   command: string;
@@ -183,6 +184,8 @@ export type MemoryHit = MemoryRecord & {
 export type Skill = {
   name: string;
   path: string;
+  filePath: string;
+  scope: SkillScope;
   description: string;
   triggers: string[];
   body: string;

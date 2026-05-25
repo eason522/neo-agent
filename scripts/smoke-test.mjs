@@ -604,6 +604,65 @@ test('skill 生命周期命令能创建、查看、编辑路径和删除 skill',
   assertIncludes(missing.stdout, '没有找到 skill：demo-skill');
 });
 
+test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', async () => {
+  const skillMd = path.join(tempHome, 'writer.md');
+  const skillZip = path.join(tempHome, 'writer.zip');
+  await writeFile(skillMd, [
+    '---',
+    'name: writer-helper',
+    'description: Help write concise Chinese project updates',
+    'triggers: writing, summary',
+    '---',
+    '',
+    '# writer-helper',
+    '',
+    '## Workflow',
+    '1. Keep the answer concise.',
+    ''
+  ].join('\n'), 'utf8');
+
+  const preview = await run(['skill', 'install', skillMd, '--dry-run']);
+  assertIncludes(preview.stdout, 'skill 安装预览通过：writer-helper');
+  assertIncludes(preview.stdout, 'skill 校验通过');
+
+  const install = await run(['skill', 'install', skillMd]);
+  assertIncludes(install.stdout, '已安装 skill：writer-helper');
+  assertIncludes(install.stdout, 'scope=user');
+
+  const validate = await run(['skill', 'validate', 'writer-helper']);
+  assertIncludes(validate.stdout, 'skill 校验通过');
+  assertIncludes(validate.stdout, 'writer-helper');
+
+  const exported = await run(['skill', 'export', 'writer-helper', '--output', skillZip]);
+  assertIncludes(exported.stdout, '已导出 skill：writer-helper');
+  assertIncludes(exported.stdout, 'writer.zip');
+
+  const remove = await run(['skill', 'delete', 'writer-helper']);
+  assertIncludes(remove.stdout, '已删除 skill：writer-helper');
+
+  const installZip = await run(['skill', 'install', skillZip]);
+  assertIncludes(installZip.stdout, '已安装 skill：writer-helper');
+
+  const show = await run(['skill', 'show', 'writer-helper']);
+  assertIncludes(show.stdout, 'Help write concise Chinese project updates');
+
+  const projectRoot = path.join(tempHome, 'project-scope');
+  await mkdir(projectRoot, { recursive: true });
+  const renamed = await run(['skill', 'install', skillMd, '--name', 'project-writer', '--scope', 'project'], { cwd: projectRoot });
+  assertIncludes(renamed.stdout, '已安装 skill：project-writer');
+  assertIncludes(renamed.stdout, 'scope=project');
+  const showRenamed = await run(['skill', 'show', 'project-writer', '--scope', 'project'], { cwd: projectRoot });
+  assertIncludes(showRenamed.stdout, 'Help write concise Chinese project updates');
+
+  const { zipSync, strToU8 } = await import('fflate');
+  const { buildSkillInstallPlan } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillPackage.js')).href);
+  const evilZip = zipSync({
+    '../evil/SKILL.md': strToU8('# evil\n\nDescription: bad\n')
+  });
+  await writeFile(path.join(tempHome, 'evil.zip'), Buffer.from(evilZip));
+  await assertRejects(() => buildSkillInstallPlan({ source: path.join(tempHome, 'evil.zip') }), '不安全');
+});
+
 test('REPL 常用命令不触发模型也能运行', async () => {
   const result = await run([], {
     input: [
@@ -670,7 +729,7 @@ async function run(args, options = {}) {
 
   const result = await new Promise((resolve, reject) => {
     const child = spawn(node, [cli, ...args], {
-      cwd: root,
+      cwd: options.cwd ?? root,
       env,
       stdio: ['pipe', 'pipe', 'pipe']
     });
