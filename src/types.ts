@@ -111,6 +111,10 @@ export type AppConfig = {
     allowedDomains: string[];
     blockedDomains: string[];
     blockPrivateAddresses: boolean;
+    selectPaths: string[];
+    excludePaths: string[];
+    selectDomains: string[];
+    excludeDomains: string[];
     timeoutMs: number;
   };
   skills: {

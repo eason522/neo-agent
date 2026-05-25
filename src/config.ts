@@ -61,6 +61,10 @@ const appConfigSchema: z.ZodType<AppConfig> = z.object({
     allowedDomains: z.array(z.string()),
     blockedDomains: z.array(z.string()),
     blockPrivateAddresses: z.boolean(),
+    selectPaths: z.array(z.string()),
+    excludePaths: z.array(z.string()),
+    selectDomains: z.array(z.string()),
+    excludeDomains: z.array(z.string()),
     timeoutMs: z.number().int().positive()
   }),
   skills: z.object({
@@ -177,6 +181,10 @@ export function defaultConfig(): AppConfig {
       allowedDomains: parseCommaList(process.env.NEO_AGENT_WEB_ALLOWED_DOMAINS),
       blockedDomains: parseCommaList(process.env.NEO_AGENT_WEB_BLOCKED_DOMAINS),
       blockPrivateAddresses: process.env.NEO_AGENT_WEB_BLOCK_PRIVATE_ADDRESSES !== '0',
+      selectPaths: parseCommaList(process.env.NEO_AGENT_WEB_SELECT_PATHS),
+      excludePaths: parseCommaList(process.env.NEO_AGENT_WEB_EXCLUDE_PATHS),
+      selectDomains: parseCommaList(process.env.NEO_AGENT_WEB_SELECT_DOMAINS),
+      excludeDomains: parseCommaList(process.env.NEO_AGENT_WEB_EXCLUDE_DOMAINS),
       timeoutMs: Number.parseInt(process.env.NEO_AGENT_WEB_TIMEOUT_MS || '12000', 10)
     },
     skills: {

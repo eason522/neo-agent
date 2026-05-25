@@ -9,7 +9,7 @@ import type {
   WebContext
 } from '../types.js';
 import type { Logger } from '../logging/logger.js';
-import { buildSearchDomainPolicy, normalizeAndValidateWebUrl } from './urlPolicy.js';
+import { buildSearchDomainPolicy, domainRulesToRegexPatterns, normalizeAndValidateWebUrl } from './urlPolicy.js';
 
 type TavilySearchOptions = {
   maxResults?: number;
@@ -29,6 +29,10 @@ type TavilyMapOptions = {
   maxBreadth?: number;
   limit?: number;
   allowExternal?: boolean;
+  selectPaths?: string[];
+  excludePaths?: string[];
+  selectDomains?: string[];
+  excludeDomains?: string[];
 };
 
 type TavilyCrawlOptions = TavilyMapOptions & {
@@ -166,6 +170,10 @@ export class TavilyClient {
       maxDepth: body.max_depth,
       limit: body.limit,
       allowExternal: body.allow_external,
+      selectPathCount: Array.isArray(body.select_paths) ? body.select_paths.length : 0,
+      excludePathCount: Array.isArray(body.exclude_paths) ? body.exclude_paths.length : 0,
+      selectDomainCount: Array.isArray(body.select_domains) ? body.select_domains.length : 0,
+      excludeDomainCount: Array.isArray(body.exclude_domains) ? body.exclude_domains.length : 0,
       hasInstructions: Boolean(body.instructions)
     });
     const payload = await this.request<TavilyMapPayload>('map', body);
@@ -197,6 +205,10 @@ export class TavilyClient {
       limit: crawlerBody.limit,
       allowExternal: crawlerBody.allow_external,
       extractDepth: body.extract_depth,
+      selectPathCount: Array.isArray(crawlerBody.select_paths) ? crawlerBody.select_paths.length : 0,
+      excludePathCount: Array.isArray(crawlerBody.exclude_paths) ? crawlerBody.exclude_paths.length : 0,
+      selectDomainCount: Array.isArray(crawlerBody.select_domains) ? crawlerBody.select_domains.length : 0,
+      excludeDomainCount: Array.isArray(crawlerBody.exclude_domains) ? crawlerBody.exclude_domains.length : 0,
       hasInstructions: Boolean(crawlerBody.instructions)
     });
     const payload = await this.request<TavilyCrawlPayload>('crawl', body);
@@ -217,12 +229,17 @@ export class TavilyClient {
 
   private buildCrawlerBody(url: string, options: TavilyMapOptions): Record<string, unknown> {
     const safeUrl = normalizeAndValidateWebUrl(url, this.config.web, 'Tavily crawler');
+    const filters = buildCrawlerFilters(this.config.web, options);
     return {
       url: safeUrl,
       instructions: options.instructions,
       max_depth: clampInt(options.maxDepth ?? this.config.web.maxDepth, 1, 5),
       max_breadth: clampInt(options.maxBreadth ?? this.config.web.maxBreadth, 1, 500),
       limit: Math.max(1, options.limit ?? this.config.web.maxPages),
+      select_paths: filters.selectPaths,
+      exclude_paths: filters.excludePaths,
+      select_domains: filters.selectDomains,
+      exclude_domains: filters.excludeDomains,
       allow_external: options.allowExternal ?? this.config.web.allowExternal,
       timeout: clampInt(Math.ceil(this.config.web.timeoutMs / 1000), 10, 150),
       include_usage: true
@@ -249,6 +266,44 @@ export class TavilyClient {
     }
     return response.json() as Promise<T>;
   }
+}
+
+export type TavilyCrawlerFilterOptions = Pick<
+  TavilyMapOptions,
+  'selectPaths' | 'excludePaths' | 'selectDomains' | 'excludeDomains'
+>;
+
+export function buildCrawlerFilters(
+  config: Pick<AppConfig['web'], 'selectPaths' | 'excludePaths' | 'selectDomains' | 'excludeDomains' | 'allowedDomains' | 'blockedDomains'>,
+  options: TavilyCrawlerFilterOptions = {}
+): {
+  selectPaths?: string[];
+  excludePaths?: string[];
+  selectDomains?: string[];
+  excludeDomains?: string[];
+} {
+  const selectPaths = mergePatternLists(config.selectPaths, options.selectPaths);
+  const excludePaths = mergePatternLists(config.excludePaths, options.excludePaths);
+  const configuredAllowedDomains = domainRulesToRegexPatterns(config.allowedDomains);
+  const configuredBlockedDomains = domainRulesToRegexPatterns(config.blockedDomains);
+  const requestedSelectDomains = mergePatternLists(config.selectDomains, options.selectDomains);
+  const selectDomains = configuredAllowedDomains.length > 0 ? configuredAllowedDomains : requestedSelectDomains;
+  const excludeDomains = uniqueStrings([
+    ...configuredBlockedDomains,
+    ...mergePatternLists(config.excludeDomains, options.excludeDomains)
+  ]);
+
+  validateRegexList('select_paths', selectPaths);
+  validateRegexList('exclude_paths', excludePaths);
+  validateRegexList('select_domains', selectDomains);
+  validateRegexList('exclude_domains', excludeDomains);
+
+  return {
+    selectPaths: selectPaths.length > 0 ? selectPaths : undefined,
+    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+    selectDomains: selectDomains.length > 0 ? selectDomains : undefined,
+    excludeDomains: excludeDomains.length > 0 ? excludeDomains : undefined
+  };
 }
 
 export function formatWebSearch(response: WebSearchResponse): string {
@@ -344,4 +399,23 @@ function ensureTrailingSlash(input: string): string {
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function mergePatternLists(configured: string[], requested: string[] | undefined): string[] {
+  return uniqueStrings([...(configured ?? []), ...(requested ?? [])].map(item => item.trim()).filter(Boolean));
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return [...new Set(items)];
+}
+
+function validateRegexList(name: string, patterns: string[]): void {
+  for (const pattern of patterns) {
+    try {
+      new RegExp(pattern);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Tavily ${name} 包含无效正则：${pattern}。${message}`);
+    }
+  }
 }

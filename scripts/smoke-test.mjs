@@ -45,6 +45,10 @@ test('初始化配置', async () => {
   assertIncludes(config, '"allowedDomains"');
   assertIncludes(config, '"blockedDomains"');
   assertIncludes(config, '"blockPrivateAddresses"');
+  assertIncludes(config, '"selectPaths"');
+  assertIncludes(config, '"excludePaths"');
+  assertIncludes(config, '"selectDomains"');
+  assertIncludes(config, '"excludeDomains"');
   assertIncludes(config, '"permissions"');
   assertIncludes(config, '"mode": "readOnly"');
 });
@@ -78,6 +82,41 @@ test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
   assertIncludes(domainPolicy.allowedDomains.join(','), 'docs.example.com');
   assertIncludes(domainPolicy.blockedDomains.join(','), 'blocked.example.com');
   assertIncludes(domainPolicy.blockedDomains.join(','), 'news.example.com');
+});
+
+test('Tavily crawler 过滤参数会合并配置和命令输入', async () => {
+  const { buildCrawlerFilters } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'tavilyClient.js')).href);
+  const filters = buildCrawlerFilters({
+    selectPaths: ['/docs/.*'],
+    excludePaths: ['/admin/.*'],
+    selectDomains: ['^docs\\.example\\.com$'],
+    excludeDomains: ['^private\\.example\\.com$'],
+    allowedDomains: ['example.com'],
+    blockedDomains: ['blocked.example.com']
+  }, {
+    selectPaths: ['/api/.*'],
+    excludePaths: ['/draft/.*'],
+    selectDomains: ['^ignored\\.com$'],
+    excludeDomains: ['^old\\.example\\.com$']
+  });
+  assertIncludes(filters.selectPaths.join(','), '/docs/.*');
+  assertIncludes(filters.selectPaths.join(','), '/api/.*');
+  assertIncludes(filters.excludePaths.join(','), '/admin/.*');
+  assertIncludes(filters.excludePaths.join(','), '/draft/.*');
+  assertIncludes(filters.selectDomains.join(','), 'example\\.com');
+  if (filters.selectDomains.join(',').includes('ignored')) {
+    throw new Error(`配置 allowedDomains 存在时，不应采纳外部 selectDomains：${JSON.stringify(filters)}`);
+  }
+  assertIncludes(filters.excludeDomains.join(','), 'blocked\\.example\\.com');
+  assertIncludes(filters.excludeDomains.join(','), '^old\\.example\\.com$');
+  assertThrows(() => buildCrawlerFilters({
+    selectPaths: ['/['],
+    excludePaths: [],
+    selectDomains: [],
+    excludeDomains: [],
+    allowedDomains: [],
+    blockedDomains: []
+  }), '无效正则');
 });
 
 test('MCP 工具命名沿用 CC-Source 风格', async () => {

@@ -183,7 +183,11 @@ webCommand
   .option('-i, --instructions <text>', '自然语言筛选指令')
   .option('--limit <count>', '最多返回 URL 数量')
   .option('--depth <count>', '最大深度，1-5')
-  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string }) => {
+  .option('--select-paths <patterns>', '只包含匹配这些路径正则的 URL，逗号分隔')
+  .option('--exclude-paths <patterns>', '排除匹配这些路径正则的 URL，逗号分隔')
+  .option('--select-domains <patterns>', '只包含匹配这些域名正则的 URL，逗号分隔')
+  .option('--exclude-domains <patterns>', '排除匹配这些域名正则的 URL，逗号分隔')
+  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string; selectPaths?: string; excludePaths?: string; selectDomains?: string; excludeDomains?: string }) => {
     const config = await loadConfig();
     const logger = new Logger(config);
     const client = new TavilyClient(config, logger);
@@ -191,7 +195,11 @@ webCommand
       const response = await client.map(url, {
         instructions: options.instructions,
         limit: parseOptionalInt(options.limit),
-        maxDepth: parseOptionalInt(options.depth)
+        maxDepth: parseOptionalInt(options.depth),
+        selectPaths: parseListOption(options.selectPaths),
+        excludePaths: parseListOption(options.excludePaths),
+        selectDomains: parseListOption(options.selectDomains),
+        excludeDomains: parseListOption(options.excludeDomains)
       });
       console.log(formatWebMap(response));
     } finally {
@@ -207,7 +215,11 @@ webCommand
   .option('--limit <count>', '最多处理页面数')
   .option('--depth <count>', '最大深度，1-5')
   .option('--max-chars <count>', '每个页面最多输出字符数', '1200')
-  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string; maxChars: string }) => {
+  .option('--select-paths <patterns>', '只爬取匹配这些路径正则的 URL，逗号分隔')
+  .option('--exclude-paths <patterns>', '排除匹配这些路径正则的 URL，逗号分隔')
+  .option('--select-domains <patterns>', '只爬取匹配这些域名正则的 URL，逗号分隔')
+  .option('--exclude-domains <patterns>', '排除匹配这些域名正则的 URL，逗号分隔')
+  .action(async (url: string, options: { instructions?: string; limit?: string; depth?: string; maxChars: string; selectPaths?: string; excludePaths?: string; selectDomains?: string; excludeDomains?: string }) => {
     const config = await loadConfig();
     const logger = new Logger(config);
     const client = new TavilyClient(config, logger);
@@ -216,7 +228,11 @@ webCommand
       const response = await client.crawl(url, {
         instructions: options.instructions,
         limit: parseOptionalInt(options.limit),
-        maxDepth: parseOptionalInt(options.depth)
+        maxDepth: parseOptionalInt(options.depth),
+        selectPaths: parseListOption(options.selectPaths),
+        excludePaths: parseListOption(options.excludePaths),
+        selectDomains: parseListOption(options.selectDomains),
+        excludeDomains: parseListOption(options.excludeDomains)
       });
       console.log(formatWebCrawl(response, Number.isFinite(maxChars) ? maxChars : 1200));
     } finally {
@@ -251,4 +267,10 @@ function parseOptionalInt(input: string | undefined): number | undefined {
   if (!input) return undefined;
   const parsed = Number.parseInt(input, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseListOption(input: string | undefined): string[] | undefined {
+  if (!input) return undefined;
+  const items = input.split(',').map(item => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
 }

@@ -36,6 +36,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览
 - CC-Source 风格的联网 tool loop：`WebSearch` / `WebFetch` 作为模型可调用工具，过渡版小模型 planner 保留为兜底
 - 联网工具具备域名 allow/deny 和本地/内网/私有地址保护
+- Tavily map/crawl 支持路径和域名正则过滤：select_paths、exclude_paths、select_domains、exclude_domains
 - 参考 CC-Source `QueryEngine.ts` / `query.ts` / `Tool.ts` 拆出的最小 `QueryEngine` 和 `ToolRunner` 分层
 - 按上下文预算保留 REPL 会话历史
 - GitHub `main` 分支同步
@@ -105,7 +106,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 
 - [x] 添加联网能力配置：搜索、网页提取、超时、结果数量、脱敏日志
 - [x] 添加站点 map/crawl 配置：最大深度、最大页面数、费用保护
-- [ ] 添加站点 map/crawl 路径过滤：select_paths、exclude_paths、select_domains、exclude_domains
+- [x] 添加站点 map/crawl 路径过滤：select_paths、exclude_paths、select_domains、exclude_domains
 - [x] 接入 Tavily Search，作为默认轻量搜索能力
 - [x] 接入 Tavily Extract，用于读取指定 URL 的正文和引用来源
 - [x] 接入 Tavily Map/Crawl，用于文档站、产品页、项目资料的有限深度浏览
@@ -164,7 +165,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | doctor | `commands/doctor` | 基本符合。采用分项诊断和可执行修复建议。 | 后续补 `config show --redacted` 和更细错误码。 |
 | transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 部分符合。已有 JSONL transcript 和会话列表，但 resume、compact boundary、tool result pairing 还没有。 | M5 优先补自动 compact 和可恢复 resume。 |
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，但还缺 token 估算和 auto compact。 | M5 添加自动 compact，避免只靠字符预算裁剪。 |
-| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny 与私有地址保护。 | 继续补工具摘要、失败恢复、路径过滤和 UI 状态。 |
+| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
 | MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny 的最小权限保护；但还缺 deferred ToolSearch、资源读取工具、交互式 ask 和更完整的安全策略。 | M4 继续补 deferred tool、resource tool 和交互式权限 UI。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
@@ -275,6 +276,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：联网工具默认阻止私有地址，并支持域名 allow/deny
 
 参考 CC-Source 工具安全边界的思路，neo 的 Tavily 调用现在统一经过 URL/domain policy：`WebFetch`、`neo web extract`、`/web extract`、map/crawl 都会阻止 localhost、内网 IP、链路本地地址和私有地址；`WebSearch` 会合并模型请求的 `allowed_domains` / `blocked_domains` 与用户配置。`NEO_AGENT_WEB_ALLOWED_DOMAINS` 可收窄允许域名，`NEO_AGENT_WEB_BLOCKED_DOMAINS` 可拒绝域名，拒绝规则优先。这样安全策略放在 TavilyClient 层，而不是只在某一个命令或工具入口做局部修补。
+
+### 2026-05-25：Tavily map/crawl 路径过滤进入统一 crawler body
+
+根据 Tavily 官方 API，map/crawl 都支持 `select_paths`、`exclude_paths`、`select_domains`、`exclude_domains` 正则过滤。neo 已把这些参数加入 `TavilyClient.buildCrawlerBody()`，CLI 支持 `--select-paths`、`--exclude-paths`、`--select-domains`、`--exclude-domains`，配置支持 `NEO_AGENT_WEB_SELECT_PATHS` 等环境变量。配置级 `allowedDomains/blockedDomains` 仍是安全边界：存在 allowedDomains 时，crawler 的 select_domains 会优先由 allowedDomains 转换而来，避免命令输入扩大访问范围。
 
 ## 恢复开发检查清单
 

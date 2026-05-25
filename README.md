@@ -149,12 +149,14 @@ neo web search "DeepSeek 最新模型"
 neo web search --depth advanced --max-results 8 "TypeScript 5.8 release notes"
 neo web extract https://docs.tavily.com/documentation/api-reference/endpoint/search
 neo web map https://docs.tavily.com --limit 20 --depth 1
-neo web crawl https://docs.tavily.com --limit 5 --depth 1 --instructions "只看 API reference"
+neo web crawl https://docs.tavily.com --limit 5 --depth 1 --select-paths "/documentation/.*" --exclude-paths "/changelog/.*" --instructions "只看 API reference"
 ```
 
 联网能力默认使用 Tavily，Base URL 为 `https://api.tavily.com`。日志只记录查询长度、URL 数量、结果数量、耗时等元数据，不记录 Tavily API key。`map/crawl` 默认深度为 1、最多 20 页、不开启外部域名，避免一次命令消耗过多额度。
 
 联网工具默认阻止 localhost、内网 IP、链路本地地址和私有地址。可用 `NEO_AGENT_WEB_ALLOWED_DOMAINS` 设置逗号分隔的允许域名列表，用 `NEO_AGENT_WEB_BLOCKED_DOMAINS` 设置拒绝域名列表；`blockedDomains` 优先级更高。确实需要关闭私有地址保护时，可以设置 `NEO_AGENT_WEB_BLOCK_PRIVATE_ADDRESSES=0`，但不建议长期关闭。
+
+`map/crawl` 支持 Tavily 官方的正则过滤参数：`--select-paths`、`--exclude-paths`、`--select-domains`、`--exclude-domains`。也可以通过 `NEO_AGENT_WEB_SELECT_PATHS`、`NEO_AGENT_WEB_EXCLUDE_PATHS`、`NEO_AGENT_WEB_SELECT_DOMAINS`、`NEO_AGENT_WEB_EXCLUDE_DOMAINS` 写入默认过滤规则。
 
 普通自然语言提问默认使用 CC-Source 风格的 tool loop：模型先回答或发起 `WebSearch` / `WebFetch` 工具调用，工具结果作为 `tool` 消息回灌给模型，再继续推理直到最终回答。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。默认最多允许 4 轮联网工具调用，可通过 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 调整。若设置 `NEO_AGENT_WEB_TOOL_LOOP_ENABLED=0`，neo 会回落到过渡版小模型 planner；可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭 planner，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
 

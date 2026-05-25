@@ -68,6 +68,13 @@ export function matchesDomainRules(hostname: string, rules: string[]): boolean {
   return normalizeDomainRules(rules).some(rule => domainMatchesRule(normalized, rule));
 }
 
+export function domainRulesToRegexPatterns(rules: string[]): string[] {
+  return normalizeDomainRules(rules).map(rule => {
+    const domain = rule.startsWith('*.') ? rule.slice(2) : rule;
+    return `(^|\\.)${escapeRegex(domain)}$`;
+  });
+}
+
 function validateDomainRule(domain: string, policy: WebAccessPolicy, operation: string): void {
   if (policy.blockPrivateAddresses && isPrivateOrLocalHostname(domain)) {
     throw new Error(`${operation} 已阻止本地、内网或链路本地域名规则：${domain}`);
@@ -100,12 +107,20 @@ function uniqueDomains(domains: string[]): string[] {
 function normalizeDomainRule(input: string): string {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) return '';
+  const isWildcard = trimmed.startsWith('*.');
+  const domainInput = isWildcard ? trimmed.slice(2) : trimmed;
   try {
-    const parsed = trimmed.includes('://') ? new URL(trimmed) : new URL(`https://${trimmed}`);
-    return normalizeHostname(parsed.hostname);
+    const parsed = domainInput.includes('://') ? new URL(domainInput) : new URL(`https://${domainInput}`);
+    const hostname = normalizeHostname(parsed.hostname);
+    return isWildcard && hostname ? `*.${hostname}` : hostname;
   } catch {
-    return normalizeHostname(trimmed.split('/')[0] ?? '');
+    const hostname = normalizeHostname(domainInput.split('/')[0] ?? '');
+    return isWildcard && hostname ? `*.${hostname}` : hostname;
   }
+}
+
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizeHostname(input: string): string {
