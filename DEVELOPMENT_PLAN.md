@@ -39,7 +39,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP 高风险工具 REPL 一次性/始终允许/始终拒绝权限确认，非交互入口继续默认拒绝
 - 配置管理命令：`neo config show` 默认脱敏显示 merged/user/project 配置，`neo config set` 写入 user/project 配置并做 schema 校验
 - 模型客户端基础可靠性：请求超时、5xx/429/网络/超时重试、4xx 不重试、取消分类和 token usage 日志
-- 模型 usage 账本：token usage 落盘到 JSONL，`neo usage` 可按模型/日期查看 token 和配置化估算成本
+- 模型 usage 账本：token usage 落盘到 JSONL，`neo usage` 和 REPL `/usage` 可按模型/日期查看 token 和配置化估算成本
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -48,7 +48,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - 请求级中断/取消：REPL 和 `neo ask` 使用 `AbortController` 取消当前回合，取消信号可传播到模型、联网工具和工具循环检查点
 - 严格参考 CC-Source 分层结构重写的 system prompt
 - `SOUL.md` 长期人格设定
-- 对话 transcript 持久化，支持会话标题、`--resume` 恢复、compact boundary 和 tool result pairing 校验
+- 对话 transcript 持久化，支持会话标题、启动参数 `--resume`、REPL `/resume`、compact boundary 和 tool result pairing 校验
 - 配置诊断命令：`neo doctor`
 - 日志轮转和保留策略
 - CLI 命令冒烟测试
@@ -568,6 +568,8 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 参考 CC-Source cost-tracker，neo 新增 `UsageTracker` 和 `neo usage`。模型客户端在成功响应后把 token usage 写入 `usage/model-usage.jsonl`，`neo usage` 可按模型和日期聚合 token 与估算成本。价格表不写死在代码中，避免供应商调价后误导用户；可以通过配置 `usage.prices.<model>.inputPerMillion/outputPerMillion/currency` 或环境变量 `NEO_AGENT_USAGE_PRICES_JSON` 提供单价，未配置时会显示“未配置单价”。
 
 同一轮完成的 P1 项还包括：dreaming 锁文件、报告回放、人工采纳和记忆复查；MCP always allow/deny 持久化、远程 HTTP/SSE/OAuth；Web 工具缓存、URL 去重、失败分类和多日期冲突提示。验证方式：`npm run typecheck` 和 `npm run smoke` 全量通过。
+
+用户复查后指出：只提供启动参数 `--resume` 和 CLI `neo usage` 不符合 REPL 的日常使用方式，也不方便在不知道 session id 时恢复会话。已补齐 REPL `/resume [session]` 和 `/usage [天数]`；`/resume` 不带参数时等价于恢复上一个会话，且会跳过当前刚启动的空 session，避免“latest 恢复到自己”。`/transcripts` 用于查看最近会话 id 和标题；启动前仍可用 `neo --resume` 或 `neo chat --resume`。验证覆盖 `TranscriptService latest` 跳过当前 session、REPL `/resume latest` 无历史时给出明确提示，以及 `/usage` 在 REPL 内输出 usage 视图。
 
 ## 恢复开发检查清单
 

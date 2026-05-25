@@ -715,6 +715,12 @@ test('TranscriptService 支持标题、compact boundary、resume snapshot 和 to
   if (!snapshot.warnings.some(warning => warning.includes('未配对 tool result'))) {
     throw new Error(`应提示未配对 tool result：${JSON.stringify(snapshot.warnings)}`);
   }
+  const current = new TranscriptService(config);
+  await current.start();
+  const latest = await current.loadConversationSnapshot('latest');
+  if (latest?.sessionId !== transcripts.sessionId) {
+    throw new Error(`latest resume 应跳过当前 session，恢复上一个会话：${JSON.stringify(latest)}`);
+  }
   await rm(transcriptHome, { recursive: true, force: true });
 });
 
@@ -1636,6 +1642,8 @@ test('REPL 常用命令不触发模型也能运行', async () => {
       '/logs 5',
       '/transcript 20',
       '/transcripts 5',
+      '/resume latest',
+      '/usage',
       '/exit',
       ''
     ].join('\n')
@@ -1652,6 +1660,10 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, 'REPL skill description');
   assertIncludes(result.stdout, '已删除 skill');
   assertIncludes(result.stdout, 'transcripts');
+  assertIncludes(result.stdout, '/resume [session]');
+  assertIncludes(result.stdout, '/usage [天数]');
+  assertIncludes(result.stdout, '没有找到可恢复的会话');
+  assertIncludes(result.stdout, 'neo usage');
 });
 
 test('REPL 会根据终端环境提示多行输入方式', async () => {

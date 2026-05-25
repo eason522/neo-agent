@@ -11,7 +11,7 @@ import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
 import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
-import { TranscriptService } from './transcript/transcriptService.js';
+import { TranscriptService, type TranscriptConversationSnapshot } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
 import { FileToolRunner, getFileToolPrompt } from './files/fileTools.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
@@ -32,6 +32,12 @@ export type AskOptions = {
 
 export type NeoAgentOptions = {
   resumeSessionId?: string;
+};
+
+export type ResumeSessionResult = {
+  status: 'resumed' | 'not_found';
+  requested?: string;
+  snapshot?: TranscriptConversationSnapshot;
 };
 
 export class NeoAgent {
@@ -100,18 +106,9 @@ export class NeoAgent {
     const resumeSessionId = options.resumeSessionId ?? this.options.resumeSessionId;
     let resumeMetadata: Record<string, unknown> = {};
     if (resumeSessionId) {
-      const snapshot = await this.transcripts.loadConversationSnapshot(resumeSessionId);
-      if (snapshot) {
-        this.conversationHistory.hydrate(snapshot.messages, snapshot.compactSummary);
-        resumeMetadata = {
-          resumedFrom: snapshot.sessionId,
-          resumedTitle: snapshot.title,
-          resumedPath: snapshot.path,
-          resumedMessages: snapshot.messages.length,
-          resumedCompactSummaryChars: snapshot.compactSummary?.length ?? 0,
-          resumeWarnings: snapshot.warnings
-        };
-        this.logger.info('session.resume.success', resumeMetadata);
+      const resume = await this.resumeSession(resumeSessionId, { appendTranscript: false });
+      if (resume.status === 'resumed' && resume.snapshot) {
+        resumeMetadata = buildResumeMetadata(resume.snapshot);
       } else {
         resumeMetadata = { resumeRequested: resumeSessionId, resumeStatus: 'not_found' };
         this.logger.warn('session.resume.not_found', { resumeSessionId });
@@ -125,6 +122,39 @@ export class NeoAgent {
         this.logger.error('dream.scheduled.error', error);
       });
     }
+  }
+
+  async resumeSession(selector = 'latest', options: { appendTranscript?: boolean } = {}): Promise<ResumeSessionResult> {
+    const snapshot = await this.transcripts.loadConversationSnapshot(selector);
+    if (!snapshot) {
+      this.logger.warn('session.resume.not_found', { resumeSessionId: selector });
+      if (options.appendTranscript ?? true) {
+        await this.transcripts.append('command', 'resume failed', {
+          command: '/resume',
+          requested: selector,
+          status: 'not_found'
+        });
+      }
+      return {
+        status: 'not_found',
+        requested: selector
+      };
+    }
+    this.conversationHistory.hydrate(snapshot.messages, snapshot.compactSummary);
+    const metadata = buildResumeMetadata(snapshot);
+    this.logger.info('session.resume.success', metadata);
+    if (options.appendTranscript ?? true) {
+      await this.transcripts.append('command', 'resume session', {
+        command: '/resume',
+        requested: selector,
+        ...metadata
+      });
+    }
+    return {
+      status: 'resumed',
+      requested: selector,
+      snapshot
+    };
   }
 
   setMcpPermissionAsker(permissionAsker: McpPermissionAsker | undefined): void {
@@ -494,4 +524,15 @@ function safeUrlDomain(input: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function buildResumeMetadata(snapshot: TranscriptConversationSnapshot): Record<string, unknown> {
+  return {
+    resumedFrom: snapshot.sessionId,
+    resumedTitle: snapshot.title,
+    resumedPath: snapshot.path,
+    resumedMessages: snapshot.messages.length,
+    resumedCompactSummaryChars: snapshot.compactSummary?.length ?? 0,
+    resumeWarnings: snapshot.warnings
+  };
 }

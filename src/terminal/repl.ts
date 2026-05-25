@@ -8,6 +8,7 @@ import { extractImageAttachments } from '../input/attachments.js';
 import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
+import { formatUsageSummary } from '../usage/usageTracker.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -1020,6 +1021,30 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState): P
       }
       return true;
     }
+    case '/resume': {
+      const selector = arg.trim() || 'latest';
+      const result = await agent.resumeSession(selector);
+      if (result.status !== 'resumed' || !result.snapshot) {
+        console.log(chalk.yellow(`没有找到可恢复的会话：${selector}`));
+        console.log(chalk.gray('可以先用 /transcripts 查看最近会话，或启动时使用 neo --resume [sessionId]。'));
+        return true;
+      }
+      const { snapshot } = result;
+      console.log(chalk.green(`已恢复会话：${snapshot.sessionId}`));
+      if (snapshot.title) console.log(`标题：${snapshot.title}`);
+      console.log(`恢复消息：${snapshot.messages.length}，compact 摘要：${snapshot.compactSummary?.length ?? 0} 字符`);
+      if (snapshot.warnings.length > 0) {
+        for (const warning of snapshot.warnings) console.log(chalk.yellow(`警告：${warning}`));
+      }
+      console.log(chalk.gray(snapshot.path));
+      return true;
+    }
+    case '/usage': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const days = Number.parseInt(arg, 10);
+      console.log(formatUsageSummary(await agent.usage.summarize({ days: Number.isFinite(days) ? days : undefined })));
+      return true;
+    }
     case '/agent': {
       await agent.transcripts.append('command', line, { command, taskChars: arg.length });
       if (!arg) console.log('用法：/agent <任务>');
@@ -1141,6 +1166,8 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/logs [行数]          查看最近的 JSONL 日志',
     '/transcript [行数]    查看当前会话 transcript',
     '/transcripts [数量]   查看最近会话 transcript 列表',
+    '/resume [session]     恢复最近或指定会话上下文',
+    '/usage [天数]          查看模型 token 和成本统计',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
     '/dream [--dry-run]    整理记忆并提炼灵感；支持 list/show/apply/review',
     '/web search <查询词>  联网搜索',

@@ -173,7 +173,9 @@ export class TranscriptService {
       }
     }
     const sessions = await this.listSessions(200);
-    if (!selector || selector === 'latest') return sessions[0];
+    if (!selector || selector === 'latest') {
+      return sessions.find(session => session.sessionId !== this.sessionId);
+    }
     return sessions.find(session => session.sessionId === selector || path.basename(session.path) === selector || path.basename(session.path, '.jsonl') === selector);
   }
 }
