@@ -720,6 +720,25 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
   }
   const listAfterUsage = await run(['skill', 'list', '--scope', 'project'], { cwd: projectRoot });
   assertIncludes(listAfterUsage.stdout, '使用=1');
+  const skillFile = path.join(projectRoot, '.neo-agent', 'skills', 'answer-style', 'SKILL.md');
+  await writeFile(skillFile, [
+    '# answer-style',
+    '',
+    'Description: Use a sharper answer style after edit',
+    '',
+    'Triggers: answer, style',
+    '',
+    '## Workflow',
+    '1. Answer in one short paragraph after reload.',
+    '2. Mention only verified facts.',
+    ''
+  ].join('\n'), 'utf8');
+  const reloadedSkill = (await manager.loadSkills()).find(skill => skill.name === 'answer-style');
+  assertIncludes(reloadedSkill?.description ?? '', 'sharper answer style');
+  const changeSummary = manager.lastChangeSummary();
+  if (!changeSummary.changed || changeSummary.updated.length === 0) {
+    throw new Error(`应该检测到 skill 文件变化：${JSON.stringify(changeSummary)}`);
+  }
   if (!events.some(event => event.phase === 'success' && event.name === 'Skill')) {
     throw new Error(`应该产生 Skill 成功事件：${JSON.stringify(events)}`);
   }

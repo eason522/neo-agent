@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig, Skill, SkillScope } from '../types.js';
 import { ensureDir, pathExists, readJsonFile, sanitizeName, writeJsonFile } from '../utils/fs.js';
+import { SkillChangeDetector, type SkillChangeSummary } from './skillChangeDetector.js';
 import { validateSkillContent } from './skillPackage.js';
 import { applySkillUsage, skillUsageScore, updateSkillUsage, type SkillUsageStatus, type SkillUsageStore } from './skillUsage.js';
 
@@ -12,21 +13,30 @@ export class SkillManager {
   private readonly projectSkillsDir: string;
   private readonly patternsFile: string;
   private readonly usageFile: string;
+  private readonly changeDetector: SkillChangeDetector;
+  private cachedSkills: Skill[] | undefined;
 
   constructor(private readonly config: AppConfig, private readonly projectRoot = process.cwd()) {
     this.userSkillsDir = path.join(config.homeDir, 'skills');
     this.projectSkillsDir = path.join(projectRoot, '.neo-agent', 'skills');
     this.patternsFile = path.join(this.userSkillsDir, '.task-patterns.json');
     this.usageFile = path.join(this.userSkillsDir, '.usage.json');
+    this.changeDetector = new SkillChangeDetector([
+      { root: this.projectSkillsDir, scope: 'project' },
+      { root: this.userSkillsDir, scope: 'user' }
+    ]);
   }
 
   async loadSkills(): Promise<Skill[]> {
+    const changes = await this.changeDetector.scan();
+    if (this.cachedSkills && !changes.changed) return this.cachedSkills;
     const [projectSkills, userSkills, usage] = await Promise.all([
       this.loadSkillsFromRoot(this.projectSkillsDir, 'project'),
       this.loadSkillsFromRoot(this.userSkillsDir, 'user'),
       this.loadUsage()
     ]);
-    return sortSkills(applySkillUsage([...projectSkills, ...userSkills], usage));
+    this.cachedSkills = sortSkills(applySkillUsage([...projectSkills, ...userSkills], usage));
+    return this.cachedSkills;
   }
 
   skillRoot(scope: SkillScope): string {
@@ -62,16 +72,27 @@ export class SkillManager {
     const skill = await this.getSkill(name, scope);
     if (!skill) return undefined;
     await rm(skill.path, { recursive: true, force: true });
+    this.invalidateCache();
     return skill;
   }
 
   async recordUsage(skill: Pick<Skill, 'name' | 'scope'>, status: SkillUsageStatus): Promise<void> {
     const usage = await this.loadUsage();
     await writeJsonFile(this.usageFile, updateSkillUsage(usage, skill, status));
+    this.invalidateCache();
   }
 
   async loadUsage(): Promise<SkillUsageStore> {
     return readJsonFile<SkillUsageStore>(this.usageFile, {});
+  }
+
+  lastChangeSummary(): SkillChangeSummary {
+    return this.changeDetector.lastChangeSummary();
+  }
+
+  invalidateCache(): void {
+    this.cachedSkills = undefined;
+    this.changeDetector.reset();
   }
 
   async match(input: string, limit = 4): Promise<Skill[]> {
@@ -115,6 +136,7 @@ export class SkillManager {
     ].join('\n');
     const filePath = path.join(dir, 'SKILL.md');
     await writeFile(filePath, body, 'utf8');
+    this.invalidateCache();
     return parseSkill(safeName, dir, filePath, scope, body);
   }
 

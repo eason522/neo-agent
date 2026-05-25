@@ -128,6 +128,15 @@ export class NeoAgent {
       useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);
     const matchedSkills = this.skills.matchLoaded(input, allSkills);
+    const skillChanges = this.skills.lastChangeSummary();
+    if (skillChanges.changed) {
+      this.logger.info('skill.reload', {
+        added: skillChanges.added.length,
+        updated: skillChanges.updated.length,
+        removed: skillChanges.removed.length,
+        fileCount: skillChanges.fileCount
+      });
+    }
 
     const decision = this.router.decide(input, attachments);
     const hasMcpServers = this.mcp.connectedServerNames().length > 0;
