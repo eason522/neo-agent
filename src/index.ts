@@ -28,6 +28,8 @@ import type { Skill, SkillScope } from './types.js';
 import { buildSkillInstallPlans, exportSkillPackage, installSkillPlan, validateSkillSources, validateSkillSource, type SkillValidationResult } from './skills/skillPackage.js';
 import type { DreamReport, DreamReportSummary } from './dream/dreamService.js';
 import { formatUsageSummary, UsageTracker } from './usage/usageTracker.js';
+import { formatMarketplaceEntries, MarketplaceService } from './marketplace/marketplace.js';
+import { formatSelfCheckReport, runInstallSelfCheck } from './release/selfCheck.js';
 
 const program = new Command();
 
@@ -86,7 +88,8 @@ program
   .description('单次提问并输出答案')
   .argument('<prompt...>')
   .option('--no-web', '本次提问不自动联网搜索')
-  .action(async (promptParts: string[], options: { web?: boolean }) => {
+  .option('--stream', '流式输出模型文本')
+  .action(async (promptParts: string[], options: { web?: boolean; stream?: boolean }) => {
     const config = await loadConfig();
     if (options.web === false) config.web.autoSearch = false;
     const agent = new NeoAgent(config);
@@ -96,8 +99,16 @@ program
     process.once('SIGINT', onSigint);
     try {
       const { text, attachments } = extractImageAttachments(promptParts.join(' '));
-      const response = await agent.ask(text, attachments, { signal: controller.signal });
-      console.log(response.text);
+      let streamed = false;
+      const response = await agent.ask(text, attachments, {
+        signal: controller.signal,
+        onContentDelta: options.stream ? delta => {
+          streamed = true;
+          process.stdout.write(delta);
+        } : undefined
+      });
+      if (streamed) process.stdout.write('\n');
+      else console.log(response.text);
       console.error(chalk.gray(`model=${response.modelKind}`));
       if (response.skillSuggestion) {
         console.error(chalk.yellow(`skill 建议：${response.skillSuggestion.name}，${response.skillSuggestion.reason}`));
@@ -189,6 +200,69 @@ program
     const report = await runDoctor();
     console.log(formatDoctorReport(report));
     process.exitCode = report.status === 'fail' ? 1 : 0;
+  });
+
+program
+  .command('self-check')
+  .description('运行发布/安装自检')
+  .action(async () => {
+    const report = await runInstallSelfCheck(await loadConfig());
+    console.log(formatSelfCheckReport(report));
+    process.exitCode = report.status === 'fail' ? 1 : 0;
+  });
+
+program
+  .command('capabilities')
+  .alias('caps')
+  .description('显示 neo 当前运行时能力快照')
+  .option('--json', '输出 JSON')
+  .action(async (options: { json?: boolean }) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const snapshot = await agent.capabilitySnapshot();
+      console.log(options.json ? JSON.stringify(snapshot, null, 2) : await agent.formatCapabilities());
+    } finally {
+      await agent.close();
+    }
+  });
+
+program
+  .command('assess')
+  .description('评估一个任务在当前运行时能力下是否可完成')
+  .argument('<task...>', '需要评估的任务')
+  .option('--json', '输出 JSON')
+  .action(async (taskParts: string[], options: { json?: boolean }) => {
+    const task = taskParts.join(' ').trim();
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const assessment = await agent.assessTask(task);
+      console.log(options.json ? JSON.stringify(assessment, null, 2) : await agent.formatTaskAssessment(task));
+      process.exitCode = assessment.feasibility === 'blocked' ? 2 : 0;
+    } finally {
+      await agent.close();
+    }
+  });
+
+program
+  .command('hooks')
+  .description('查看 hook 预留状态；当前只记录内部事件，不执行外部 hook')
+  .action(async () => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      console.log('hooks: PostToolUse, PermissionRequest, Stop, Notification');
+      console.log('status: reserved-only, external execution disabled');
+      const events = agent.hooks.listRecent();
+      if (events.length === 0) console.log(chalk.gray('当前进程暂无 hook 事件。'));
+      for (const event of events) console.log(`${event.ts} ${event.event} ${event.name}`);
+    } finally {
+      await agent.close();
+    }
   });
 
 const dreamCommand = program
@@ -322,6 +396,62 @@ dreamCommand
 const skillCommand = program
   .command('skill')
   .description('管理 skill 生命周期');
+
+const marketplaceCommand = program
+  .command('marketplace')
+  .description('轻量 skill/plugin marketplace 规划入口');
+
+marketplaceCommand
+  .command('init')
+  .description('创建本地 marketplace 索引文件')
+  .option('--force', '覆盖已有索引')
+  .action(async (options: { force?: boolean }) => {
+    const service = new MarketplaceService(await loadConfig());
+    const result = await service.init(options.force ?? false);
+    console.log(result.created ? chalk.green('已创建 marketplace 索引') : chalk.gray('marketplace 索引已存在'));
+    console.log(chalk.gray(result.path));
+  });
+
+marketplaceCommand
+  .command('list')
+  .description('列出本地 marketplace skill 条目')
+  .action(async () => {
+    const service = new MarketplaceService(await loadConfig());
+    console.log(chalk.gray(service.indexPath));
+    console.log(formatMarketplaceEntries(await service.list()));
+  });
+
+marketplaceCommand
+  .command('show')
+  .description('查看 marketplace 条目')
+  .argument('<name>')
+  .action(async (name: string) => {
+    const service = new MarketplaceService(await loadConfig());
+    const entry = await service.show(name);
+    if (!entry) {
+      console.log(chalk.yellow(`没有找到 marketplace 条目：${name}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(formatMarketplaceEntries([entry]));
+  });
+
+marketplaceCommand
+  .command('install')
+  .description('从本地 marketplace 条目安装 skill；plugin source 会复用 skillsPath/skillsPaths 导入')
+  .argument('<name>')
+  .option('--scope <user|project>', '安装位置，默认 user', 'user')
+  .option('--overwrite', '覆盖已有 skill')
+  .action(async (name: string, options: { scope: string; overwrite?: boolean }) => {
+    const config = await loadConfig();
+    const scope = parseSkillScope(options.scope) ?? 'user';
+    const service = new MarketplaceService(config);
+    const result = await service.installSkill(name, { scope, overwrite: options.overwrite });
+    console.log(chalk.green(`marketplace 安装完成：${name}`));
+    console.log(chalk.gray(`source=${result.source} scope=${scope}`));
+    console.log(`installed=${result.installed.join(', ') || '(无)'}`);
+    if (result.skipped.length > 0) console.log(chalk.yellow(`skipped=${result.skipped.join(', ')}`));
+  });
 
 skillCommand
   .command('list')
@@ -521,6 +651,90 @@ webCommand
 const mcpCommand = program
   .command('mcp')
   .description('管理 MCP server 配置');
+
+const agentCommand = program
+  .command('agent')
+  .description('管理可恢复 sub-agent 任务');
+
+agentCommand
+  .command('run')
+  .description('启动一个 sub-agent 任务')
+  .argument('<task...>')
+  .option('--background', '后台运行，稍后用 neo agent show 查看')
+  .action(async (taskParts: string[], options: { background?: boolean }) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const task = taskParts.join(' ');
+      const record = await agent.subAgent.startTask(task, { background: options.background ?? false });
+      console.log(chalk.green(`sub-agent task ${record.id} ${options.background ? '已后台启动' : '已完成'}`));
+      const latest = await agent.subAgent.getTask(record.id) ?? record;
+      console.log(formatSubAgentTask(latest, !options.background));
+    } finally {
+      await agent.close();
+    }
+  });
+
+agentCommand
+  .command('list')
+  .description('列出 sub-agent 任务')
+  .option('-n, --limit <count>', '显示数量', '20')
+  .action(async (options: { limit: string }) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const limit = Number.parseInt(options.limit, 10);
+      const tasks = await agent.subAgent.listTasks(Number.isFinite(limit) ? limit : 20);
+      if (tasks.length === 0) console.log(chalk.gray('没有 sub-agent 任务。'));
+      for (const task of tasks) console.log(formatSubAgentTask(task, false));
+    } finally {
+      await agent.close();
+    }
+  });
+
+agentCommand
+  .command('show')
+  .description('查看 sub-agent 任务')
+  .argument('<id>')
+  .action(async (id: string) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const task = await agent.subAgent.getTask(id);
+      if (!task) {
+        console.log(chalk.yellow(`没有找到 sub-agent 任务：${id}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(formatSubAgentTask(task, true));
+    } finally {
+      await agent.close();
+    }
+  });
+
+agentCommand
+  .command('stop')
+  .description('停止当前进程内仍在运行的 sub-agent 任务；已退出进程的任务会标记为 cancelled')
+  .argument('<id>')
+  .action(async (id: string) => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const task = await agent.subAgent.stopTask(id);
+      if (!task) {
+        console.log(chalk.yellow(`没有找到 sub-agent 任务：${id}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(formatSubAgentTask(task, false));
+    } finally {
+      await agent.close();
+    }
+  });
 
 mcpCommand
   .command('list')
@@ -795,6 +1009,29 @@ function printSkillValidation(validation: SkillValidationResult): void {
   console.log(`大小：${validation.bytes} bytes`);
   for (const warning of validation.warnings) console.log(chalk.yellow(`警告：${warning}`));
   for (const error of validation.errors) console.log(chalk.red(`错误：${error}`));
+}
+
+function formatSubAgentTask(task: {
+  id: string;
+  status: string;
+  mode: string;
+  task: string;
+  createdAt: string;
+  updatedAt: string;
+  model: string;
+  transcriptPath: string;
+  toolIsolation: string;
+  output?: string;
+  error?: string;
+}, includeOutput: boolean): string {
+  return [
+    `${chalk.cyan(task.id)}  ${task.status}  ${task.mode}`,
+    `任务：${task.task}`,
+    chalk.gray(`model=${task.model} isolation=${task.toolIsolation} created=${task.createdAt} updated=${task.updatedAt}`),
+    chalk.gray(task.transcriptPath),
+    includeOutput && task.output ? `\n${task.output.trimEnd()}` : '',
+    includeOutput && task.error ? chalk.red(`\n${task.error}`) : ''
+  ].filter(Boolean).join('\n');
 }
 
 function formatDreamReport(input: DreamReportSummary & { report: DreamReport }): string {

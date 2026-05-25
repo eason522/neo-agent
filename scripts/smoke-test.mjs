@@ -23,6 +23,8 @@ test('显示帮助', async () => {
   assertIncludes(result.stdout, 'doctor');
   assertIncludes(result.stdout, 'dream');
   assertIncludes(result.stdout, 'usage');
+  assertIncludes(result.stdout, 'capabilities');
+  assertIncludes(result.stdout, 'assess');
   assertIncludes(result.stdout, 'web');
   assertIncludes(result.stdout, 'mcp');
   assertIncludes(result.stdout, 'skill');
@@ -182,6 +184,55 @@ test('模型客户端会对 5xx 重试并记录 usage', async () => {
     if (!events.some(event => event.name === 'model.request.retry')) throw new Error(`应该记录重试日志：${JSON.stringify(events)}`);
     const success = events.find(event => event.name === 'model.request.success');
     if (success?.metadata?.totalTokens !== 14) throw new Error(`成功日志应该记录 token usage：${JSON.stringify(success)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('模型客户端支持流式文本和 tool call delta', async () => {
+  const { OpenAICompatibleClient } = await import(pathToFileURL(path.join(root, 'dist', 'models', 'openaiCompatibleClient.js')).href);
+  const originalFetch = globalThis.fetch;
+  const deltas = [];
+  let requestBody;
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    const encoder = new TextEncoder();
+    const chunks = [
+      { choices: [{ delta: { content: 'hello ' } }] },
+      { choices: [{ delta: { content: 'world' } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_stream', type: 'function', function: { name: 'Web', arguments: '{"q":' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'Search', arguments: '"neo"}' } }] }, finish_reason: 'tool_calls' }] },
+      { choices: [], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } }
+    ];
+    return new Response(new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const client = new OpenAICompatibleClient({
+      model: 'test-model',
+      apiKey: 'test-key',
+      apiBase: 'https://example.com/v1',
+      temperature: 0,
+      maxTokens: 128,
+      requestTimeoutMs: 1000,
+      maxRetries: 0,
+      retryBaseDelayMs: 1
+    }, { debug() {}, info() {}, warn() {}, error() {} });
+    const result = await client.chatWithTools({
+      messages: [{ role: 'user', content: 'hi' }],
+      stream: { onContentDelta: delta => deltas.push(delta) }
+    });
+    if (requestBody.stream !== true) throw new Error(`stream 请求体缺少 stream=true：${JSON.stringify(requestBody)}`);
+    assertIncludes(deltas.join(''), 'hello world');
+    assertIncludes(result.content, 'hello world');
+    if (result.toolCalls[0]?.function.name !== 'WebSearch') throw new Error(`streaming tool name 拼接失败：${JSON.stringify(result.toolCalls)}`);
+    assertIncludes(result.toolCalls[0].function.arguments, '"neo"');
+    if (result.usage?.totalTokens !== 5) throw new Error(`stream usage 解析失败：${JSON.stringify(result.usage)}`);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -929,13 +980,15 @@ test('QueryEngine 超时后取消工具并忽略迟到 orphan result', async () 
 
 test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-files-'));
+  const extraReadDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-extra-read-'));
   await mkdir(path.join(projectDir, 'src'), { recursive: true });
   await writeFile(path.join(projectDir, 'src', 'app.ts'), 'export const answer = 42;\nconsole.log(answer);\n', 'utf8');
   await writeFile(path.join(projectDir, 'README.md'), '# Demo\nanswer lives in src/app.ts\n', 'utf8');
   await writeFile(path.join(projectDir, 'src', 'binary.bin'), Buffer.from([0, 1, 2, 97, 110, 115, 119, 101, 114, 0, 3]));
+  await writeFile(path.join(extraReadDir, 'notes.txt'), 'external scope note\n', 'utf8');
   try {
     const { FileToolRunner, GLOB_TOOL_NAME, GREP_TOOL_NAME, READ_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
-    const runner = new FileToolRunner(projectDir);
+    const runner = new FileToolRunner(projectDir, undefined, undefined, { additionalReadDirs: [extraReadDir] });
     await runner.refresh();
     const names = runner.definitions().map(tool => tool.function.name).join(',');
     assertIncludes(names, READ_TOOL_NAME);
@@ -979,8 +1032,88 @@ test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async (
       type: 'function',
       function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: '/etc/passwd' }) }
     }), '当前项目目录');
+
+    const externalRead = await runner.execute({
+      id: 'read_extra',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: path.join(extraReadDir, 'notes.txt') }) }
+    });
+    assertIncludes(externalRead.content, 'external scope note');
+
+    const externalGrep = await runner.execute({
+      id: 'grep_extra',
+      type: 'function',
+      function: { name: GREP_TOOL_NAME, arguments: JSON.stringify({ path: extraReadDir, pattern: 'scope', output_mode: 'content' }) }
+    });
+    assertIncludes(externalGrep.content, 'notes.txt');
   } finally {
     await rm(projectDir, { recursive: true, force: true });
+    await rm(extraReadDir, { recursive: true, force: true });
+  }
+});
+
+test('项目文件 Write/Edit 必须确认权限并限制在项目内', async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-file-write-'));
+  const extraWriteDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-extra-write-'));
+  await mkdir(path.join(projectDir, 'src'), { recursive: true });
+  await writeFile(path.join(projectDir, 'src', 'app.ts'), 'const value = 1;\n', 'utf8');
+  try {
+    const { FileToolRunner, WRITE_TOOL_NAME, EDIT_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
+    const hookEvents = [];
+    const hooks = { emit: (event, name, metadata) => hookEvents.push({ event, name, metadata }) };
+    const runner = new FileToolRunner(projectDir, undefined, hooks, { additionalWriteDirs: [extraWriteDir] });
+    await runner.refresh();
+    const names = runner.definitions().map(tool => tool.function.name).join(',');
+    assertIncludes(names, WRITE_TOOL_NAME);
+    assertIncludes(names, EDIT_TOOL_NAME);
+
+    await assertRejects(() => runner.execute({
+      id: 'write_denied',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/new.ts', content: 'export const x = 1;\n' }) }
+    }), '交互式权限确认');
+    if (!hookEvents.some(event => event.event === 'PermissionRequest' && event.name === WRITE_TOOL_NAME)) {
+      throw new Error(`Write 应发出 PermissionRequest hook 事件：${JSON.stringify(hookEvents)}`);
+    }
+
+    runner.setPermissionAsker(async request => {
+      if (request.toolName === WRITE_TOOL_NAME && !request.path.includes('external.ts')) assertIncludes(request.path, 'src/new.ts');
+      if (request.toolName === WRITE_TOOL_NAME && request.path.includes('external.ts')) assertIncludes(request.path, extraWriteDir);
+      if (request.toolName === EDIT_TOOL_NAME) assertIncludes(request.path, 'src/app.ts');
+      return 'allow';
+    });
+    const write = await runner.execute({
+      id: 'write_allowed',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/new.ts', content: 'export const x = 1;\n' }) }
+    });
+    assertIncludes(write.content, 'created src/new.ts');
+    assertIncludes(await readFile(path.join(projectDir, 'src', 'new.ts'), 'utf8'), 'export const x');
+
+    const externalWrite = await runner.execute({
+      id: 'write_extra_allowed',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: path.join(extraWriteDir, 'external.ts'), content: 'export const external = true;\n' }) }
+    });
+    assertIncludes(externalWrite.content, 'external.ts');
+    assertIncludes(await readFile(path.join(extraWriteDir, 'external.ts'), 'utf8'), 'external = true');
+
+    const edit = await runner.execute({
+      id: 'edit_allowed',
+      type: 'function',
+      function: { name: EDIT_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/app.ts', old_string: 'value = 1', new_string: 'value = 2' }) }
+    });
+    assertIncludes(edit.content, 'edited src/app.ts');
+    assertIncludes(await readFile(path.join(projectDir, 'src', 'app.ts'), 'utf8'), 'value = 2');
+
+    await assertRejects(() => runner.execute({
+      id: 'write_outside',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: '../outside.ts', content: 'bad' }) }
+    }), '当前项目目录');
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+    await rm(extraWriteDir, { recursive: true, force: true });
   }
 });
 
@@ -1208,6 +1341,49 @@ test('doctor 缺 key 时失败并给出建议', async () => {
   assertIncludes(result.stdout, '设置 DEEPSEEK_API_KEY');
 });
 
+test('self-check 会检查版本、CHANGELOG 和安装环境', async () => {
+  const result = await run(['self-check']);
+  assertIncludes(result.stdout, 'neo-agent 0.1.0 self-check');
+  assertIncludes(result.stdout, 'node:');
+  assertIncludes(result.stdout, 'changelog: CHANGELOG.md version 0.1.0');
+});
+
+test('capabilities 命令会输出运行时能力快照', async () => {
+  const result = await run(['capabilities']);
+  assertIncludes(result.stdout, 'neo capabilities @');
+  assertIncludes(result.stdout, 'runtime tools:');
+  assertIncludes(result.stdout, 'Capabilities');
+  assertIncludes(result.stdout, 'TaskAssessment');
+  assertIncludes(result.stdout, 'Read');
+  assertIncludes(result.stdout, 'Write');
+  assertIncludes(result.stdout, 'skills:');
+
+  const json = await run(['capabilities', '--json']);
+  const parsed = JSON.parse(json.stdout);
+  if (!parsed.runtimeTools.some(tool => tool.name === 'Capabilities')) throw new Error(`应暴露 Capabilities 工具：${json.stdout}`);
+  if (!parsed.runtimeTools.some(tool => tool.name === 'TaskAssessment')) throw new Error(`应暴露 TaskAssessment 工具：${json.stdout}`);
+  if (!parsed.files.tools.includes('Write')) throw new Error(`能力快照应包含 Write：${json.stdout}`);
+  if (parsed.files.writeConfirmationAvailable !== false) throw new Error(`非交互 CLI 不应具备写入确认回调：${json.stdout}`);
+});
+
+test('assess 命令会基于能力快照评估任务可行性', async () => {
+  const readable = await run(['assess', '阅读 README 并总结']);
+  assertIncludes(readable.stdout, 'neo task assessment @');
+  assertIncludes(readable.stdout, 'feasibility: complete');
+  assertIncludes(readable.stdout, 'file_read');
+
+  const partial = await run(['assess', '运行 npm test 并修复失败']);
+  assertIncludes(partial.stdout, 'feasibility: partial');
+  assertIncludes(partial.stdout, 'shell');
+  assertIncludes(partial.stdout, 'file_write');
+  assertIncludes(partial.stdout, '需要用户执行测试/构建/命令');
+
+  const json = await run(['assess', '--json', '阅读 README 并总结']);
+  const parsed = JSON.parse(json.stdout);
+  if (parsed.feasibility !== 'complete') throw new Error(`阅读任务应可完成：${json.stdout}`);
+  if (!parsed.requiredCapabilities.some(capability => capability.id === 'file_read')) throw new Error(`应识别文件读取能力：${json.stdout}`);
+});
+
 test('MCP 配置命令能添加、列出和删除 server', async () => {
   const add = await run(['mcp', 'add', '--env', 'TOKEN=secret', 'demo', '--', 'node', 'server.js', '--flag']);
   assertIncludes(add.stdout, '已添加 MCP server：demo');
@@ -1343,6 +1519,81 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   });
   await writeFile(path.join(tempHome, 'evil.zip'), Buffer.from(evilZip));
   await assertRejects(() => buildSkillInstallPlan({ source: path.join(tempHome, 'evil.zip') }), '不安全');
+});
+
+test('marketplace 本地索引能安装 skill', async () => {
+  const skillMd = path.join(tempHome, 'market-skill.md');
+  await writeFile(skillMd, [
+    '---',
+    'name: market-helper',
+    'description: Marketplace helper skill',
+    'triggers: market',
+    '---',
+    '',
+    '# market-helper',
+    'Use this from marketplace.',
+    ''
+  ].join('\n'), 'utf8');
+
+  const init = await run(['marketplace', 'init']);
+  assertIncludes(init.stdout, 'marketplace');
+  const indexPath = path.join(tempHome, 'marketplace', 'skills.json');
+  await writeFile(indexPath, `${JSON.stringify({
+    version: 1,
+    skills: [{
+      name: 'market-helper',
+      description: 'Marketplace helper skill',
+      source: skillMd,
+      tags: ['test']
+    }]
+  }, null, 2)}\n`, 'utf8');
+
+  const list = await run(['marketplace', 'list']);
+  assertIncludes(list.stdout, 'market-helper');
+  assertIncludes(list.stdout, '#test');
+
+  const install = await run(['marketplace', 'install', 'market-helper', '--scope', 'project'], { cwd: tempHome });
+  assertIncludes(install.stdout, 'marketplace 安装完成：market-helper');
+  assertIncludes(install.stdout, 'installed=market-helper');
+  const installed = await readFile(path.join(tempHome, '.neo-agent', 'skills', 'market-helper', 'SKILL.md'), 'utf8');
+  assertIncludes(installed, 'Marketplace helper skill');
+});
+
+test('SubAgentRunner 会持久化任务状态并支持停止', async () => {
+  const { SubAgentRunner } = await import(pathToFileURL(path.join(root, 'dist', 'agents', 'subAgent.js')).href);
+  const subHome = path.join(tempHome, 'subagent-home');
+  const models = {
+    config: { models: { small: { model: 'small-test' } } },
+    small: {
+      chat: async ({ messages, signal }) => {
+        if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+        assertIncludes(messages.at(-1).content, 'demo task');
+        return 'sub-agent result';
+      }
+    }
+  };
+  const runner = new SubAgentRunner(models, { info() {}, error() {} }, { homeDir: subHome });
+  const record = await runner.startTask('demo task', { background: false });
+  const completed = await runner.getTask(record.id);
+  if (completed?.status !== 'completed') throw new Error(`sub-agent 应完成并落盘：${JSON.stringify(completed)}`);
+  assertIncludes(completed.output, 'sub-agent result');
+  const list = await runner.listTasks();
+  if (!list.some(task => task.id === record.id)) throw new Error(`sub-agent list 应包含任务：${JSON.stringify(list)}`);
+
+  const slowModels = {
+    config: { models: { small: { model: 'small-test' } } },
+    small: { chat: async ({ signal }) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve('late'), 5000);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error('aborted'));
+      }, { once: true });
+    }) }
+  };
+  const slowRunner = new SubAgentRunner(slowModels, { info() {}, error() {} }, { homeDir: subHome });
+  const bg = await slowRunner.startTask('slow task', { background: true });
+  const stopped = await slowRunner.stopTask(bg.id);
+  if (stopped?.status !== 'cancelled') throw new Error(`stop 应标记任务 cancelled：${JSON.stringify(stopped)}`);
 });
 
 test('skill 自动沉淀只生成建议，确认后才写入', async () => {
@@ -1629,6 +1880,8 @@ test('REPL 常用命令不触发模型也能运行', async () => {
     input: [
       '/help',
       '/status',
+      '/capabilities',
+      '/assess 阅读 README 并总结',
       '/debug on',
       '/debug last',
       '/debug off',
@@ -1651,6 +1904,10 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, '/help                 查看命令');
   assertIncludes(result.stdout, '换行                 当前推荐');
   assertIncludes(result.stdout, 'neo REPL 状态');
+  assertIncludes(result.stdout, 'neo capabilities @');
+  assertIncludes(result.stdout, 'runtime tools:');
+  assertIncludes(result.stdout, 'neo task assessment @');
+  assertIncludes(result.stdout, 'feasibility: complete');
   assertIncludes(result.stdout, 'debug 已开启');
   assertIncludes(result.stdout, 'debug 暂无最近一轮对话');
   assertIncludes(result.stdout, '已记住');
@@ -1661,8 +1918,10 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, '已删除 skill');
   assertIncludes(result.stdout, 'transcripts');
   assertIncludes(result.stdout, '/resume [session]');
+  assertIncludes(result.stdout, '/capabilities');
+  assertIncludes(result.stdout, '/assess <任务>');
   assertIncludes(result.stdout, '/usage [天数]');
-  assertIncludes(result.stdout, '没有找到可恢复的会话');
+  assertIncludes(result.stdout, '/tmp/neo-agent-smoke-');
   assertIncludes(result.stdout, 'neo usage');
 });
 

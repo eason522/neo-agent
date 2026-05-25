@@ -6,6 +6,7 @@ import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
+import type { FilePermissionRequest } from '../files/fileTools.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
@@ -73,6 +74,12 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       : await rl.question(formatMcpPermissionPrompt(request));
     return parseMcpPermissionAnswer(answer);
   } : undefined);
+  agent.setFilePermissionAsker(isInteractive ? async request => {
+    const answer = activeController
+      ? await rl.question(formatFilePermissionPrompt(request), { signal: activeController.signal })
+      : await rl.question(formatFilePermissionPrompt(request));
+    return parseFilePermissionAnswer(answer);
+  } : undefined);
   agent.setToolEventHandler(isInteractive ? event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
   } : undefined);
@@ -111,6 +118,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   } finally {
     rl.off('SIGINT', handleSigint);
     agent.setToolEventHandler(undefined);
+    agent.setFilePermissionAsker(undefined);
     rl.close();
     await agent.close();
   }
@@ -137,6 +145,10 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
   agent.setMcpPermissionAsker(async request => {
     const answer = await askQuestion(formatMcpPermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
     return parseMcpPermissionAnswer(answer);
+  });
+  agent.setFilePermissionAsker(async request => {
+    const answer = await askQuestion(formatFilePermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
+    return parseFilePermissionAnswer(answer);
   });
   agent.setToolEventHandler(event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
@@ -181,6 +193,7 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
     closed = true;
     agent.setToolEventHandler(undefined);
     agent.setMcpPermissionAsker(undefined);
+    agent.setFilePermissionAsker(undefined);
     input.off('data', handleGlobalData);
     output.write(disableModifyOtherKeys);
     output.write(disableKittyKeyboard);
@@ -534,7 +547,17 @@ async function runAgentTurn(
   try {
     const { text, attachments } = extractImageAttachments(line);
     output.write(chalk.gray('thinking...\n'));
-    const response = await agent.ask(text, attachments, { signal: turnController.signal });
+    let streamed = false;
+    const response = await agent.ask(text, attachments, {
+      signal: turnController.signal,
+      onContentDelta: delta => {
+        if (!streamed) {
+          output.write(chalk.cyan('neo:stream '));
+          streamed = true;
+        }
+        output.write(delta);
+      }
+    });
     const durationMs = Date.now() - startedAt;
     state.lastTurn = {
       inputChars: text.length,
@@ -546,7 +569,8 @@ async function runAgentTurn(
       fileToolCalls: response.fileToolCalls?.length ?? 0,
       skillToolCalls: response.skillToolCalls?.length ?? 0
     };
-    output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n`);
+    if (streamed) output.write('\n');
+    else output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n`);
     output.write(`${formatStatusLine(state.lastTurn)}\n\n`);
     if (state.debugEnabled) output.write(`${formatDebugView(agent, state)}\n`);
     if (isInteractive && askQuestion && response.skillSuggestion && !turnController.signal.aborted) {
@@ -1024,6 +1048,18 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       await agent.transcripts.append('command', line, { command });
       printReplStatus(agent, state);
       return true;
+    case '/capabilities':
+    case '/caps': {
+      await agent.transcripts.append('command', line, { command });
+      console.log(await agent.formatCapabilities());
+      return true;
+    }
+    case '/assess': {
+      await agent.transcripts.append('command', line, { command, taskChars: arg.length });
+      if (!arg) console.log('用法：/assess <任务>');
+      else console.log(await agent.formatTaskAssessment(arg));
+      return true;
+    }
     case '/debug': {
       await agent.transcripts.append('command', line, { command, argsChars: arg.length });
       const mode = arg.trim().toLowerCase();
@@ -1226,10 +1262,39 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       console.log(formatUsageSummary(await agent.usage.summarize({ days: Number.isFinite(days) ? days : undefined })));
       return true;
     }
+    case '/hooks': {
+      await agent.transcripts.append('command', line, { command });
+      console.log('hooks: PostToolUse, PermissionRequest, Stop, Notification');
+      console.log(chalk.gray('status: reserved-only, external execution disabled'));
+      const events = agent.hooks.listRecent();
+      if (events.length === 0) console.log(chalk.gray('当前进程暂无 hook 事件。'));
+      for (const event of events) console.log(`${event.ts} ${event.event} ${event.name}`);
+      return true;
+    }
     case '/agent': {
       await agent.transcripts.append('command', line, { command, taskChars: arg.length });
-      if (!arg) console.log('用法：/agent <任务>');
-      else console.log(await agent.subAgent.run(arg));
+      const [subCommand, ...agentRest] = rest;
+      if (!arg) {
+        console.log('用法：/agent <任务> | /agent bg <任务> | /agent list | /agent show <id> | /agent stop <id>');
+      } else if (subCommand === 'list') {
+        const tasks = await agent.subAgent.listTasks(12);
+        if (tasks.length === 0) console.log(chalk.gray('没有 sub-agent 任务。'));
+        for (const task of tasks) console.log(formatSubAgentTask(task, false));
+      } else if (subCommand === 'show') {
+        const task = agentRest[0] ? await agent.subAgent.getTask(agentRest[0]) : undefined;
+        console.log(task ? formatSubAgentTask(task, true) : chalk.yellow('没有找到 sub-agent 任务。'));
+      } else if (subCommand === 'stop') {
+        const task = agentRest[0] ? await agent.subAgent.stopTask(agentRest[0]) : undefined;
+        console.log(task ? formatSubAgentTask(task, false) : chalk.yellow('没有找到 sub-agent 任务。'));
+      } else if (subCommand === 'bg' || subCommand === 'background') {
+        const record = await agent.subAgent.startTask(agentRest.join(' '), { background: true });
+        console.log(`${chalk.green('sub-agent 已后台启动')} ${record.id}`);
+        console.log(chalk.gray(record.transcriptPath));
+      } else {
+        const record = await agent.subAgent.startTask(arg, { background: false });
+        const latest = await agent.subAgent.getTask(record.id) ?? record;
+        console.log(formatSubAgentTask(latest, true));
+      }
       return true;
     }
     case '/dream': {
@@ -1333,6 +1398,8 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/help                 查看命令',
     '/exit                 退出',
     '/status               查看当前 REPL 状态',
+    '/capabilities         查看当前运行时能力快照',
+    '/assess <任务>        评估任务是否可完成',
     '/debug [on|off|last]  开关轻量 debug 视图',
     `换行                 当前推荐 ${support.recommended.join(' / ')}；${support.note}`,
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
@@ -1349,6 +1416,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/transcripts [数量]   查看最近会话 transcript 列表',
     '/resume [session]     恢复最近或指定会话上下文',
     '/usage [天数]          查看模型 token 和成本统计',
+    '/hooks                查看 hook 预留事件',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
     '/dream [--dry-run]    整理记忆并提炼灵感；支持 list/show/apply/review',
     '/web search <查询词>  联网搜索',
@@ -1381,6 +1449,29 @@ function formatSkillDetail(skill: { name: string; description: string; triggers:
   ].filter(line => line !== '').join('\n');
 }
 
+function formatSubAgentTask(task: {
+  id: string;
+  status: string;
+  mode: string;
+  task: string;
+  createdAt: string;
+  updatedAt: string;
+  model: string;
+  transcriptPath: string;
+  toolIsolation: string;
+  output?: string;
+  error?: string;
+}, includeOutput: boolean): string {
+  return [
+    `${chalk.cyan(task.id)}  ${task.status}  ${task.mode}`,
+    `任务：${task.task}`,
+    chalk.gray(`model=${task.model} isolation=${task.toolIsolation} created=${task.createdAt} updated=${task.updatedAt}`),
+    chalk.gray(task.transcriptPath),
+    includeOutput && task.output ? `\n${task.output.trimEnd()}` : '',
+    includeOutput && task.error ? chalk.red(`\n${task.error}`) : ''
+  ].filter(Boolean).join('\n');
+}
+
 function formatMcpPermissionPrompt(request: {
   fullName: string;
   serverName: string;
@@ -1409,6 +1500,24 @@ function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always'
   if (/^(d|deny always|始终拒绝|永久拒绝|总是拒绝)$/i.test(normalized)) return 'deny_always';
   if (/^(y|yes|允许|同意)$/i.test(normalized)) return 'allow_once';
   return 'deny';
+}
+
+function formatFilePermissionPrompt(request: FilePermissionRequest): string {
+  return [
+    '',
+    chalk.yellow('文件写入需要权限确认'),
+    `工具：${request.toolName}`,
+    `路径：${request.path}`,
+    `操作：${request.operation}`,
+    `摘要：${request.summary}`,
+    request.oldChars !== undefined ? `原内容/匹配：${request.oldChars} 字符` : '',
+    `新内容：${request.newChars} 字符`,
+    '选择：y=允许，其他=拒绝。'
+  ].filter(Boolean).join('\n');
+}
+
+function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
+  return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
 }
 
 function formatToolProgressEvent(event: ToolProgressEvent): string {

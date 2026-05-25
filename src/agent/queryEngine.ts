@@ -2,6 +2,7 @@ import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord,
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolExecutionResult, ToolRunner } from '../tools/tool.js';
+import type { HookBus } from '../hooks/hookBus.js';
 import { createAbortError, throwIfAborted } from '../utils/abort.js';
 import {
   buildSkippedToolResult,
@@ -31,6 +32,8 @@ type QueryEngineOptions = {
   maxToolRounds: number;
   toolTimeoutMs?: number;
   onToolEvent?: (event: ToolProgressEvent) => void;
+  onContentDelta?: (delta: string) => void;
+  hooks?: HookBus;
 };
 
 type QueryEngineRunOptions = {
@@ -65,7 +68,7 @@ export class QueryEngine {
 
     if (initialToolDefinitions.length === 0) {
       return {
-        text: await model.chat({ messages: loopMessages, signal: runOptions.signal }),
+        text: await model.chat({ messages: loopMessages, signal: runOptions.signal, stream: this.streamHandlers() }),
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
@@ -83,7 +86,8 @@ export class QueryEngine {
         messages: loopMessages,
         tools: toolDefinitions,
         toolChoice: 'auto',
-        signal: runOptions.signal
+        signal: runOptions.signal,
+        stream: this.streamHandlers()
       });
       throwIfAborted(runOptions.signal);
 
@@ -136,7 +140,8 @@ export class QueryEngine {
         }
       ],
       toolChoice: 'none',
-      signal: runOptions.signal
+      signal: runOptions.signal,
+      stream: this.streamHandlers()
     });
     throwIfAborted(runOptions.signal);
     return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs };
@@ -227,6 +232,11 @@ export class QueryEngine {
       const result = await this.runToolWithLifecycle(runner, toolCall, round, signal);
       throwIfAborted(signal);
       recordToolResult(result.record, state);
+      this.options.hooks?.emit('PostToolUse', toolCall.function.name, {
+        round,
+        terminal: Boolean(result.terminal),
+        resultChars: result.content.length
+      });
       const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, result.content, round);
       emitToolEvent(successEvent, state.toolEvents, this.options.onToolEvent);
       this.logger.info('tool.success', {
@@ -358,7 +368,8 @@ export class QueryEngine {
         }
       ],
       toolChoice: 'none',
-      signal: state.signal
+      signal: state.signal,
+      stream: this.streamHandlers()
     });
     throwIfAborted(state.signal);
     return {
@@ -370,6 +381,10 @@ export class QueryEngine {
       toolEvents: state.toolEvents,
       toolPairs: state.toolPairs
     };
+  }
+
+  private streamHandlers(): { onContentDelta?: (delta: string) => void } | undefined {
+    return this.options.onContentDelta ? { onContentDelta: this.options.onContentDelta } : undefined;
   }
 }
 

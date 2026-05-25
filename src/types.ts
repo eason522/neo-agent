@@ -36,6 +36,10 @@ export type ChatCompletionResult = {
   usage?: ModelUsage;
 };
 
+export type ChatStreamHandlers = {
+  onContentDelta?: (delta: string) => void;
+};
+
 export type ModelKind = 'main' | 'small' | 'vision';
 export type TextModelKind = Exclude<ModelKind, 'vision'>;
 
@@ -169,6 +173,10 @@ export type AppConfig = {
     selectDomains: string[];
     excludeDomains: string[];
     timeoutMs: number;
+  };
+  files: {
+    additionalReadDirs: string[];
+    additionalWriteDirs: string[];
   };
   skills: {
     autoCreate: boolean;
@@ -315,9 +323,10 @@ export type McpToolCallRecord = {
 };
 
 export type FileToolCallRecord = {
-  name: 'Read' | 'Glob' | 'Grep';
+  name: 'Read' | 'Glob' | 'Grep' | 'Write' | 'Edit';
   path?: string;
   pattern?: string;
+  operation?: 'read' | 'glob' | 'grep' | 'write' | 'edit';
   resultCount?: number;
   resultChars: number;
   durationMs: number;
@@ -340,6 +349,16 @@ export type ToolProgressEvent = {
   round: number;
   name: string;
   summary: string;
+  metadata: Record<string, unknown>;
+};
+
+export type HookEventName = 'PostToolUse' | 'PermissionRequest' | 'Stop' | 'Notification';
+
+export type HookEventRecord = {
+  id: string;
+  ts: string;
+  event: HookEventName;
+  name: string;
   metadata: Record<string, unknown>;
 };
 

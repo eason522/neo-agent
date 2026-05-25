@@ -41,6 +41,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - 模型客户端基础可靠性：请求超时、5xx/429/网络/超时重试、4xx 不重试、取消分类和 token usage 日志
 - 模型 usage 账本：token usage 落盘到 JSONL，`neo usage` 和 REPL `/usage` 可按模型/日期查看 token 和配置化估算成本
 - 聚焦任务的 sub-agent 执行器
+- sub-agent 任务系统：支持前台/后台、状态记录、停止、任务 transcript 回放和无工具隔离边界
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
 - tool loop 运行时状态事件：REPL 可见工具开始/成功/失败/达到上限，失败结果带恢复提示
@@ -56,7 +57,13 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - dreaming 记忆整理命令、定时门控、锁文件、报告回放、人工采纳和记忆复查
 - Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览，具备请求缓存、URL 去重、失败分类和多日期冲突提示
 - CC-Source 风格的联网 tool loop：`WebSearch` / `WebFetch` 作为模型可调用工具，过渡版小模型 planner 保留为兜底
-- 项目文件只读工具：`Read`、`Glob`、`Grep`，只能访问 neo 启动目录内的文件；`Grep` 后端已改为 `rg`，带超时、输出上限、二进制跳过和错误分类
+- 项目文件工具：`Read`、`Glob`、`Grep`、`Write`、`Edit`，只能访问 neo 启动目录内的文件；写入/编辑必须交互式确认；`Grep` 后端已改为 `rg`，带超时、输出上限、二进制跳过和错误分类
+- 模型流式输出：OpenAI-compatible SSE 增量解析，REPL 默认流式显示，`neo ask --stream` 支持单次流式输出，tool progress 独立显示
+- 发布与安装自检：`CHANGELOG.md`、`npm run release:check`、`neo self-check`
+- 轻量 skill/plugin marketplace 本地索引：复用 skill 安装和 plugin `skillsPath/skillsPaths` 导入，不启用完整插件生态
+- hooks 事件预留：`PostToolUse`、`PermissionRequest`、`Stop`、`Notification` 只进入内部事件总线，不执行外部 hook
+- 能力快照入口：`Capabilities` 模型工具、`neo capabilities` 和 REPL `/capabilities` 统一从运行时读取当前工具、skill、MCP、Web、文件权限、sub-agent 和 hooks 能力边界
+- 任务可行性评估：`TaskAssessment` 模型工具、`neo assess` 和 REPL `/assess` 基于能力快照判断任务 complete/partial/blocked，并返回缺失能力、约束和推荐策略
 - 联网工具具备域名 allow/deny 和本地/内网/私有地址保护
 - Tavily map/crawl 支持路径和域名正则过滤：select_paths、exclude_paths、select_domains、exclude_domains
 - 参考 CC-Source `QueryEngine.ts` / `query.ts` / `Tool.ts` 拆出的最小 `QueryEngine` 和 `ToolRunner` 分层
@@ -110,7 +117,7 @@ M1 后续对齐债务：
 - [x] transcript/session 补 resume、会话标题、会话元数据恢复、compact boundary、tool result pairing，参考 CC-Source sessionStorage 和 ResumeConversation。
 - [ ] doctor 补上下文体积、MCP、skill、配置权限、版本/更新、路径可写性等更细诊断，参考 CC-Source Doctor/context warnings。
 - [ ] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级，参考 CC-Source debug/log/analytics 思路。
-- [ ] sub-agent 从“一次性小模型调用”升级为任务状态模型，参考 CC-Source AgentTool、LocalAgentTask、任务 transcript 和停止/前后台能力。
+- [x] sub-agent 从“一次性小模型调用”升级为任务状态模型，参考 CC-Source AgentTool、LocalAgentTask、任务 transcript 和停止/前后台能力。
 
 ### M2：更好的记忆和个性化
 
@@ -186,12 +193,16 @@ M1 后续对齐债务：
 M4 后续硬化项：
 
 - [x] `Grep` 后端升级为 `rg`，补超时、最大输出、二进制跳过、错误分类和取消信号，参考 CC-Source `utils/ripgrep.ts` 和 `GrepTool`。
-- [ ] 文件工具补完整权限模型、项目/额外目录 scope、图片/PDF/二进制处理、读取预算和结果落盘，参考 CC-Source FileRead/Glob/Grep/filesystem permissions。
+- [x] 文件工具补额外目录 scope 第一阶段：默认项目内访问，`files.additionalReadDirs` / `files.additionalWriteDirs` 和环境变量显式授权项目外目录，写入仍需交互确认。
+- [ ] 文件工具补完整权限模型、会话级目录授权、图片/PDF/二进制处理、读取预算和结果落盘，参考 CC-Source FileRead/Glob/Grep/filesystem permissions。（P2 已补写入/编辑前交互式确认；更完整 permission rules 和二进制/图片/PDF 仍属 M4 硬化项。）
 - [x] QueryEngine 补并发工具策略、orphan tool result 处理和长运行工具真实 kill，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
-- [ ] QueryEngine 补工具结果预算和可恢复 transcript pairing，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
-- [ ] MCP 补 always allow/deny/ask 持久化、权限建议、远程 HTTP/SSE/OAuth、项目级 `.mcp.json`、企业 allow/deny 策略和更完整权限 UI，参考 CC-Source MCP manager、permission rules、settings schema。
-- [ ] Web 工具补缓存、来源去重、跨来源冲突标注、robots/站点限制策略、下载内容预算和失败分类，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
-- [ ] Tool hooks 预留：PostToolUse、PermissionRequest、Stop/Notification 等 hook 点暂不实现执行，但 QueryEngine 结构要避免后续难以接入。
+- [x] transcript/session 补 tool result pairing 摘要和恢复校验，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
+- [ ] QueryEngine 补统一工具结果预算、超大结果落盘引用和更精细的可恢复 transcript pairing，参考 CC-Source `query.ts`、`StreamingToolExecutor`、tool orchestration。
+- [x] MCP 补 always allow/deny/ask 持久化、远程 HTTP/SSE/OAuth 和 resource/deferred ToolSearch 第一阶段，参考 CC-Source MCP manager、permission rules、settings schema。
+- [ ] MCP 继续补项目级 `.mcp.json`、权限建议、企业 allow/deny 策略和更完整权限 UI，参考 CC-Source MCP manager、permission rules、settings schema。
+- [x] Web 工具补缓存、来源去重、跨来源冲突标注和失败分类，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
+- [ ] Web 工具继续补 robots/站点限制策略、下载内容统一预算和更细粒度进度，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
+- [x] Tool hooks 预留：PostToolUse、PermissionRequest、Stop/Notification 等 hook 点暂不实现执行，但 QueryEngine 结构要避免后续难以接入。
 
 ### M5：终端体验向 CC-Source 设计靠拢
 
@@ -227,19 +238,19 @@ M4 后续硬化项：
 - [x] 为 `Logger` 脱敏逻辑添加测试，覆盖 API key、URL query、MCP 参数、工具结果摘要。
 - [x] 为记忆搜索排序添加测试，并改进相关性评分。
 - [x] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
-- [x] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
+- [x] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和基础交互式权限确认。
 - [x] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
 - [x] M1/M5：transcript/session 增加 resume、compact boundary、tool result pairing、会话标题和恢复校验。
 - [x] M1：模型成本统计落盘，支持 `neo usage` 或 debug 视图查看。
 
 ### P2：生态、发布和长期能力
 
-- [ ] 添加模型流式输出，并让 tool progress 与流式文本共存。
-- [ ] 添加发布脚本、版本策略、变更日志和安装自检。
-- [ ] 添加轻量 plugin/skill marketplace 规划，兼容 CC-Source plugin manifest 的 `skillsPath/skillsPaths`，但先不引入完整插件生态。
-- [ ] sub-agent 升级为可恢复任务系统，支持状态、停止、前后台、任务 transcript 和工具隔离。
-- [ ] 文件工具后续补编辑/写入能力，但必须先完成权限模型和用户确认 UI。
-- [ ] hooks 生态预留：PostToolUse、PermissionRequest、Stop、Notification 等，不在权限模型成熟前执行外部 hook。
+- [x] 添加模型流式输出，并让 tool progress 与流式文本共存。
+- [x] 添加发布脚本、版本策略、变更日志和安装自检。
+- [x] 添加轻量 plugin/skill marketplace 规划，兼容 CC-Source plugin manifest 的 `skillsPath/skillsPaths`，但先不引入完整插件生态。
+- [x] sub-agent 升级为可恢复任务系统，支持状态、停止、前后台、任务 transcript 和工具隔离。
+- [x] 文件工具后续补编辑/写入能力，但必须先完成权限模型和用户确认 UI。
+- [x] hooks 生态预留：PostToolUse、PermissionRequest、Stop、Notification 等，不在权限模型成熟前执行外部 hook。
 
 ## CC-Source 对齐审查
 
@@ -264,30 +275,30 @@ neo 已完成文件型 skill 生命周期第一阶段：全局和项目 scope、
 
 用户指出不能只梳理 M3，已完成的 M1/M4 和待办池也要重新对齐 CC-Source。结论：
 
-- M1 已交付 MVP 核心，但仍缺 CC-Source 级别的配置 schema、redacted config、请求重试/超时、usage/cost、resume、compact boundary、结构化错误和 sub-agent 任务模型。M1 保持“已完成”，这些进入 M1 后续对齐债务和 P0/P1。
-- M4 已完成统一 tool loop 的第一阶段，并已补 `rg` 后端、工具级取消/超时、并发安全策略和 orphan result 日志；仍缺 CC-Source 的完整权限体系、远程 MCP、Web 结果缓存、工具结果预算、可恢复 transcript pairing 和 hook 接入点。M4 保持“已完成”，这些进入 M4 后续硬化项和 P1/P2。
+- M1 已交付 MVP 核心，配置 schema、redacted config、请求重试/超时、usage/cost、resume、compact boundary 和 sub-agent 任务模型已补到第一阶段；剩余 doctor 深度诊断、日志隐私分级和结构化错误继续放入 M1 对齐债务。
+- M4 已完成统一 tool loop 的第一阶段，并已补 `rg` 后端、工具级取消/超时、并发安全策略、orphan result 日志、流式输出和 hook 事件预留；仍缺 CC-Source 的完整权限体系、工具结果预算和更细文件能力。M4 保持“已完成”，这些进入 M4 后续硬化项。
 - 待办池从散乱列表改为 P0/P1/P2。后续开发优先级以 P0 为准；P0 完成前，除非用户明确要求，不应跳去做 P2 生态或发布类能力。
 
-M4 完成后复盘结论：主方向符合最高指导思想，联网、MCP、文件工具已经收敛到 `QueryEngine` / `ToolRunner`，工具结果通过同一 loop 回灌，权限和状态事件也进入统一链路。已立即修复两个安全收口点：transcript 不再记录完整 Web query 或完整 URL，只记录 query 长度和 URL 域名；Web/File 工具参数解析错误不再回显原始参数片段，只记录参数长度。P0 已补 `Grep` 的 `rg` 后端、工具取消/并发/orphan result；剩余增强继续放入待办池：MCP 持久化权限、远程 MCP、Web 缓存、工具结果预算、可恢复 transcript pairing 和 hook 接入点。
+M4 完成后复盘结论：主方向符合最高指导思想，联网、MCP、文件工具已经收敛到 `QueryEngine` / `ToolRunner`，工具结果通过同一 loop 回灌，权限和状态事件也进入统一链路。已立即修复两个安全收口点：transcript 不再记录完整 Web query 或完整 URL，只记录 query 长度和 URL 域名；Web/File 工具参数解析错误不再回显原始参数片段，只记录参数长度。P0 已补 `Grep` 的 `rg` 后端、工具取消/并发/orphan result；P1/P2 已补 MCP 持久权限、远程 MCP、Web 缓存和 hook 事件预留；剩余增强继续放入待办池：统一权限模型、工具结果预算、项目级 MCP 配置、robots/站点限制策略和更完整权限 UI。
 
 | neo-agent 模块 | CC-Source 参考 | 当前结论 | 后续动作 |
 | --- | --- | --- | --- |
 | system prompt / SOUL | `utils/messages.ts`、系统提示分层、memory/skill/tool 提示 | 基本符合。已采用分层 system prompt，SOUL 作为个人化扩展，不覆盖安全和事实规则。 | 持续随工具、权限、记忆变化同步提示词。 |
 | doctor | `commands/doctor` | 基本符合。采用分项诊断和可执行修复建议。 | 后续补 `config show --redacted` 和更细错误码。 |
-| transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 部分符合。已有 JSONL transcript、会话列表和 compact 事件记录，但 resume、compact boundary 链接、tool result pairing 还没有。 | M5 继续补可恢复 resume 和更完整 compact boundary。 |
+| transcript / session | `utils/sessionStorage*`、`QueryEngine` transcript 记录 | 基本符合第一阶段。已有 JSONL transcript、会话标题、`--resume`、REPL `/resume` 选择器、compact boundary 和 tool result pairing 校验。 | M5 继续补手动 `/compact`、更精细消息分组和超大工具结果恢复策略。 |
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，并加入自动 compact 摘要；但还缺 token 估算、手动 `/compact`、可恢复 boundary 和更精细的消息分组。 | M5 继续按 CC-Source compact/session 机制补齐。 |
-| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护、Tavily map/crawl 路径过滤、工具状态事件和失败恢复提示。 | 后续继续补流式输出和更细粒度进度。 |
-| 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts`、`StreamingToolExecutor` | 基本符合第一阶段。已拆出最小 `QueryEngine` 和 `ToolRunner`，工具结果按同一 loop 回灌；已补工具级 timeout/abort、只读工具并发、独占工具串行、重复 tool id 规整和 orphan result 日志。 | 后续补流式输出、工具结果预算、可恢复 transcript pairing、hook 点和更完整任务状态。 |
-| 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、`utils/ripgrep.ts`、filesystem permissions | 基本符合只读文件工具第一阶段。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内；`Grep` 后端已改为 `rg`，具备超时、输出上限、取消 kill、默认二进制跳过和错误分类。 | 后续补完整 permission rules、项目/额外目录 scope、图片/PDF/二进制专用处理和编辑前权限 UI。 |
-| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio 配置命令、resource 工具、deferred ToolSearch 和 REPL 一次性权限确认；但还缺 always allow/deny 持久化选择、HTTP/SSE/OAuth 和更完整的安全策略。 | M4/M5 继续补持久化权限规则、远程 MCP 和更完整权限 UI。 |
-| sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
-| skill | `skills/loadSkillsDir.ts`、`tools/SkillTool`、`tools/SkillTool/prompt.ts`、`utils/suggestions/skillUsageTracking.ts`、`utils/skills/skillChangeDetector.ts`、`utils/hooks/skillImprovement.ts`、plugin `skillsPath/skillsPaths`、zip cache/install helpers | 基本符合。已有 SKILL.md 发现、自动创建建议、CLI 生命周期命令和 REPL 管理命令；已补 `.md`/目录/`.zip` 安装、导出、校验、项目/全局 scope、dry-run、覆盖保护、zip-slip 防护、预算化 listing、`QueryEngine` 中的显式 Skill tool、usage tracking、按需轻量 reload、plugin manifest skill 导入、用户确认后写入、skill 改进建议、本目录资源引用和只读执行边界。 | 后续继续补 `allowed-tools`、forked skill、hooks 权限确认、资源读取专用工具和 marketplace。 |
+| 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护、Tavily map/crawl 路径过滤、工具状态事件、失败恢复提示和流式文本共存。 | 后续继续补更细粒度进度。 |
+| 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts`、`StreamingToolExecutor` | 基本符合第一阶段。已拆出最小 `QueryEngine` 和 `ToolRunner`，工具结果按同一 loop 回灌；已补工具级 timeout/abort、只读工具并发、独占工具串行、重复 tool id 规整、orphan result 日志、流式输出、终止型工具结果和 hook 事件预留。 | 后续补统一工具结果预算、超大结果落盘引用和更精细的恢复策略。 |
+| 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、`utils/ripgrep.ts`、filesystem permissions | 基本符合第一阶段。已加入 `Read` / `Glob` / `Grep` / `Write` / `Edit` 并进入 `QueryEngine`；默认限制在启动目录内，可通过配置显式加入额外 read/write roots；`Grep` 后端已改为 `rg`，写入/编辑必须交互确认。 | 后续补完整 permission rules、会话级目录授权、图片/PDF/二进制专用处理和统一工具结果预算。 |
+| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 基本符合第一阶段。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny、stdio/http/sse 配置、OAuth bearer、resource 工具、deferred ToolSearch 和 REPL 一次性/持久权限确认。 | M4/M5 继续补项目级 `.mcp.json`、权限建议、企业 allow/deny 策略和更完整权限 UI。 |
+| sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 基本符合任务记录第一阶段。已从一次性调用升级为前台/后台任务、状态落盘、停止、任务 transcript 和无工具隔离边界。 | 后续补真正可恢复后台执行、工具化 sub-agent、进度事件和更细隔离策略。 |
+| skill | `skills/loadSkillsDir.ts`、`tools/SkillTool`、`tools/SkillTool/prompt.ts`、`utils/suggestions/skillUsageTracking.ts`、`utils/skills/skillChangeDetector.ts`、`utils/hooks/skillImprovement.ts`、plugin `skillsPath/skillsPaths`、zip cache/install helpers | 基本符合。已有 SKILL.md 发现、自动创建建议、CLI 生命周期命令和 REPL 管理命令；已补 `.md`/目录/`.zip` 安装、导出、校验、项目/全局 scope、dry-run、覆盖保护、zip-slip 防护、预算化 listing、`QueryEngine` 中的显式 Skill tool、usage tracking、按需轻量 reload、plugin manifest skill 导入、用户确认后写入、skill 改进建议、本目录资源引用、只读执行边界和轻量 marketplace 本地索引。 | 后续继续补 `allowed-tools`、forked skill、hooks 权限确认和资源读取专用工具。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
 | terminal REPL | `components/App.tsx`、commands、permission UI、message rendering、`hooks/useInputBuffer.ts`、`hooks/useCancelRequest.ts` | 部分符合。当前 readline REPL 简洁可用，已有 MCP 一次性权限确认、工具事件、请求级取消、持久输入历史、多行输入、每轮状态行和轻量 debug 视图；但离 CC-Source 的完整 TUI、虚拟滚动、富消息渲染和可恢复 UI 状态仍有差距。 | M5 继续补更丰富消息渲染、路由/记忆状态和更完整 TUI。 |
-| logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏和工具结果摘要，但缺成本/usage、retry 统计和结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
-| vision | 附件处理、图片消息、文件读取限制 | 部分符合。MiMo 预分析适合 neo-agent 模型组合，但不是 CC-Source 原生多模态路径。 | 后续补附件大小限制、缓存、截断说明和测试。 |
+| logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏、工具结果摘要、usage 账本和 retry 事件基础记录，但缺统一 debug 开关、隐私分级和结构化错误码。 | 待办池继续补 debug/error code/privacy level。 |
+| vision | 附件处理、图片消息、文件读取限制 | 基本符合第一阶段。MiMo 预分析适合 neo-agent 模型组合；本地图片已做存在性、大小、文件头 mime 校验和测试。 | 后续补图片缓存、截断说明和 PDF/二进制附件处理。 |
 
-审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具和 Skill tool 接入该 loop，同时补上默认只读权限保护、deferred ToolSearch、resource 工具和 REPL 一次性权限确认。仍不充分的模块主要是 sub-agent、REPL、MCP 持久权限、远程 MCP 和更完整权限 UI。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
+审查结论：当前最明显的不合规点“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”已经校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具、Skill tool、文件工具、Capabilities 和 TaskAssessment 接入该 loop。仍不充分的模块主要是统一权限模型、工具结果预算、REPL 富消息渲染、项目级 MCP 配置和更完整权限 UI。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
 
 ## 决策记录
 
@@ -497,7 +508,7 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 ### 2026-05-25：MCP 配置命令先支持用户级 stdio server
 
-参考 CC-Source `mcp add/list/remove` 的命令结构，neo 先实现用户级 stdio MCP 配置管理：`neo mcp add/list/remove/test`。命令直接维护 `~/.neo-agent/config.json` 中的 `mcp.servers`，`list` 默认只展示 env 数量而不打印 env 值，`test` 会尝试连接并列出工具数量。HTTP/SSE/OAuth、项目级 scope、交互式导入和 token 安全存储暂不做，后续继续按 CC-Source 的 MCP config/service 分层补齐。
+参考 CC-Source `mcp add/list/remove` 的命令结构，neo 先实现用户级 stdio MCP 配置管理：`neo mcp add/list/remove/test`。命令直接维护 `~/.neo-agent/config.json` 中的 `mcp.servers`，`list` 默认只展示 env 数量而不打印 env 值，`test` 会尝试连接并列出工具数量。后续已补 HTTP/SSE/OAuth 和 REPL 持久权限确认；项目级 scope、交互式导入和 token 安全存储仍待继续按 CC-Source 的 MCP config/service 分层补齐。
 
 ### 2026-05-25：工具结果日志只记录脱敏摘要
 
@@ -574,6 +585,47 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 用户进一步指出：恢复会话不应该要求先 `/transcripts` 再复制 session id，CC-Source 已有无参数 `/resume` 打开历史会话选择器的交互。已重新对照 CC-Source `commands/resume/resume.tsx`、`screens/ResumeConversation.tsx`、`components/ResumeTask.tsx` 和 `CustomSelect`：其核心是无参数打开 picker、过滤当前 session、按最近更新时间排序、用 ↑/↓ 和 Enter 选择；带参数时才按 session id 或标题直接恢复。neo 已按这个模式补轻量 raw TTY 选择器：`/resume` 直接列出最近 50 个可恢复 transcript，支持 ↑/↓、j/k、PageUp/PageDown、Enter 恢复、Esc/q 取消；非交互输入仍保持 `/resume` 走 latest，便于脚本和 smoke 测试。验证方式：`npm run typecheck` 和 `npm run smoke`。
 
 用户测试发现 `/resume` 选择器在长中文标题下刷新错位。原因是 neo 的轻量选择器按逻辑行数清屏，而终端会把过长标题自动换行成多屏幕行；CC-Source 的 Ink/Select 会按终端宽度进行布局和渲染。neo 已修正为：每个 session 选项按 `stdout.columns` 计算显示宽度，标题按中英文显示宽度裁剪到单行；刷新清屏按实际屏幕行数计算，避免 wrapped line 残留。验证方式：`npm run typecheck` 和 `npm run smoke`。
+
+### 2026-05-25：P2 发布、生态和长期能力闭环
+
+参考 CC-Source `StreamingToolExecutor`、`LocalAgentTask`、`AgentTool`、`FileWriteTool`、`FileEditTool`、`schemas/hooks.ts`、`hookEvents.ts`、plugin marketplace 和 `releaseNotes` / `version` 命令后，neo 的 P2 按个人版边界完成第一阶段：
+
+1. 流式输出：`OpenAICompatibleClient` 支持 OpenAI-compatible SSE，能够增量拼接 `content`、`reasoning_content` 和 streaming tool call delta。`QueryEngine` 在 tool loop 内传递 `onContentDelta`，REPL 默认流式展示，`neo ask --stream` 支持单次流式输出；工具进度继续走独立 `ToolProgressEvent`。
+2. 发布与安装自检：新增 `CHANGELOG.md`、`neo self-check` 和 `npm run release:check`。release check 会校验 CHANGELOG 覆盖当前 package version，并运行 typecheck、build 和安装自检。
+3. marketplace：新增本地 `~/.neo-agent/marketplace/skills.json` 索引和 `neo marketplace init/list/show/install`。条目 source 可指向 `.md`、skill 目录、zip 或 plugin 目录；plugin source 继续复用已有 `skillsPath/skillsPaths` 导入能力，不启用完整插件安装、hooks、MCP 注入和远程 marketplace UI。
+4. sub-agent 任务系统：`SubAgentRunner` 从一次性调用升级为任务记录，写入 `~/.neo-agent/tasks/subagents/*.json`，支持前台/后台、list/show/stop、状态、输出/错误记录和无工具隔离边界。当前后台任务是当前 neo 进程内执行；进程退出后可恢复记录但不能恢复已中断推理。
+5. 文件写入：`FileToolRunner` 增加 `Write`/`Edit`，仅允许项目内普通文件，拒绝符号链接，写入前必须通过 REPL 权限确认；非交互入口默认拒绝。`Write` 用于创建/覆盖完整文本，`Edit` 用于精确字符串替换，默认要求唯一匹配。
+6. hooks 预留：新增 `HookBus`，已预留 `PostToolUse`、`PermissionRequest`、`Stop`、`Notification` 事件。当前只记录内部事件和日志，不执行 shell、HTTP、prompt 或 agent hook，避免在权限模型成熟前引入隐式外部执行。
+
+本阶段没有直接照搬 CC-Source 完整 TUI、后台任务运行器、插件市场和 hook 执行器，原因是 neo 当前是个人终端 MVP，权限、任务面板和插件信任模型还未达到完整承载条件。保留的接口和事件名与 CC-Source 对齐，后续可以继续向完整 permission rules、后台任务恢复、hook 执行和 marketplace 缓存演进。
+
+### 2026-05-25：运行时能力快照，避免模型凭记忆自述能力
+
+用户测试发现，问 neo “目前你的能力如何”时，neo 会基于 system prompt、记忆和已有上下文回答，但没有强制读取当前真实工具集，因此容易把“本轮没有调用工具”误理解成“没有工具变化”，也可能漏掉刚新增的能力。已新增统一能力快照：
+
+- `Capabilities` 工具：进入 `QueryEngine` 标准 tool loop，返回当前模型、工作目录、Web、文件工具、写入确认状态、skill、MCP、sub-agent、hooks 和 runtime tool definitions。
+- `neo capabilities` / `neo capabilities --json`：CLI 直接查看同一份快照。
+- REPL `/capabilities` / `/caps`：交互中查看同一份快照。
+- system prompt 新增规则：用户询问当前能力、能力范围、可用工具、是否能读写文件/联网/MCP/skill/sub-agent 时，必须先调用 `Capabilities`，不能只凭记忆回答。
+
+这让“neo 如何知道自己能做什么”从模型自述升级为运行时事实查询。后续如果新增 shell、浏览器、图片生成、完整 hooks 等能力，只要对应 ToolRunner 或配置进入快照，neo 的自我描述就会同步更新。
+
+### 2026-05-25：任务可行性评估，规划前先比对能力边界
+
+用户进一步追问：当用户给出任务时，neo 如何知道自己是否可以完成？如果只靠模型根据 prompt 自行判断，复杂任务会把“推理能力”和“执行环境能力”混在一起。已新增 `TaskAssessment`：
+
+- `TaskAssessment` 工具：从任务文本识别文件读写、联网、shell、MCP/API、sub-agent、hook、图片、vision、skill 等需求，并和 `Capabilities` 快照比对。
+- `neo assess <任务>` / `neo assess --json <任务>`：CLI 直接查看 complete/partial/blocked、缺失能力、需要用户输入和推荐策略。
+- REPL `/assess <任务>`：交互中快速判断任务边界。
+- system prompt 新增规则：复杂任务或用户询问能否完成时，先调用 `TaskAssessment`；partial/blocked 时要先说明缺失能力和替代路径，再继续能做的部分。
+
+这让“neo 如何知道自己能不能做某个任务”从模型主观估计升级为“任务需求解析 + 运行时能力快照”的显式判定。当前规则仍是轻量确定性分类，后续可继续加入模型辅助分解、任务 DAG、风险分级和执行后校验。
+
+### 2026-05-25：文件工具 scope 权限硬化第一步
+
+继续参考 CC-Source `utils/permissions/filesystem.ts`、`FilePermissionDialog/permissionOptions.tsx` 和 workspace directory 的设计后，neo 先补保守版额外目录 scope：默认仍只允许访问启动目录；用户可以通过 `files.additionalReadDirs` / `files.additionalWriteDirs` 或 `NEO_AGENT_FILE_READ_DIRS` / `NEO_AGENT_FILE_WRITE_DIRS` 显式加入项目外目录。写入目录会同时进入读取 scope，便于 `Edit` 先读后改；但所有 `Write` / `Edit` 仍必须走 REPL 交互式确认，非交互入口继续拒绝。
+
+本阶段没有实现 CC-Source 的会话内 “allow this directory during session” UI，也不持久化文件权限规则。原因是 neo 当前还没有完整权限面板和规则冲突检测；先做配置级白名单可以满足明确的项目外资料访问，又不会把一次性确认扩大成长期授权。验证覆盖额外读取目录的 `Read`/`Grep`、额外写入目录的 `Write`，以及未授权路径仍被拒绝。
 
 ## 恢复开发检查清单
 

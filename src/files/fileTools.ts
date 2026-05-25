@@ -1,14 +1,17 @@
 import { spawn } from 'node:child_process';
-import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../types.js';
 import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
+import type { HookBus } from '../hooks/hookBus.js';
 
 export const READ_TOOL_NAME = 'Read';
 export const GLOB_TOOL_NAME = 'Glob';
 export const GREP_TOOL_NAME = 'Grep';
+export const WRITE_TOOL_NAME = 'Write';
+export const EDIT_TOOL_NAME = 'Edit';
 
 const readInputSchema = z.object({
   file_path: z.string(),
@@ -31,6 +34,18 @@ const grepInputSchema = z.object({
   '-i': z.boolean().optional()
 });
 
+const writeInputSchema = z.object({
+  file_path: z.string(),
+  content: z.string()
+});
+
+const editInputSchema = z.object({
+  file_path: z.string(),
+  old_string: z.string().min(1),
+  new_string: z.string(),
+  replace_all: z.boolean().optional()
+});
+
 const ignoredDirectories = new Set(['.git', '.svn', '.hg', '.jj', 'node_modules', 'dist', 'build', '.neo-agent']);
 const maxReadBytes = 512 * 1024;
 const maxGlobResults = 100;
@@ -39,13 +54,49 @@ const maxSearchFiles = 5000;
 const grepTimeoutMs = 10_000;
 const maxGrepOutputChars = 100_000;
 
+export type FilePermissionRequest = {
+  toolName: typeof WRITE_TOOL_NAME | typeof EDIT_TOOL_NAME;
+  path: string;
+  operation: 'create' | 'overwrite' | 'edit';
+  summary: string;
+  oldChars?: number;
+  newChars: number;
+};
+
+export type FilePermissionAsker = (request: FilePermissionRequest) => Promise<'allow' | 'deny'>;
+
+export type FileToolScope = {
+  additionalReadDirs?: string[];
+  additionalWriteDirs?: string[];
+};
+
 export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
   private rootRealPath: string | undefined;
+  private readRoots: string[] = [];
+  private writeRoots: string[] = [];
 
-  constructor(private readonly projectRoot = process.cwd()) {}
+  constructor(
+    private readonly projectRoot = process.cwd(),
+    private permissionAsker?: FilePermissionAsker,
+    private readonly hooks?: HookBus,
+    private readonly scope: FileToolScope = {}
+  ) {}
+
+  setPermissionAsker(permissionAsker: FilePermissionAsker | undefined): void {
+    this.permissionAsker = permissionAsker;
+  }
+
+  hasPermissionAsker(): boolean {
+    return Boolean(this.permissionAsker);
+  }
 
   async refresh(): Promise<void> {
     this.rootRealPath = await realpath(this.projectRoot);
+    this.readRoots = await resolveScopeRoots(this.rootRealPath, [
+      ...(this.scope.additionalReadDirs ?? []),
+      ...(this.scope.additionalWriteDirs ?? [])
+    ]);
+    this.writeRoots = await resolveScopeRoots(this.rootRealPath, this.scope.additionalWriteDirs ?? []);
   }
 
   definitions(): ChatToolDefinition[] {
@@ -55,14 +106,14 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         function: {
           name: READ_TOOL_NAME,
           description: [
-            '读取当前项目目录内的文本文件。结果使用 cat -n 风格，带 1 起始行号。',
+            '读取当前项目目录和已授权额外目录内的文本文件。结果使用 cat -n 风格，带 1 起始行号。',
             '只能读取文件，不能读取目录；大文件请使用 offset 和 limit。'
           ].join('\n'),
           parameters: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              file_path: { type: 'string', description: '要读取的文件路径，可为相对当前项目目录的路径。' },
+              file_path: { type: 'string', description: '要读取的文件路径，可为相对当前项目目录的路径，或已授权额外目录内的绝对路径。' },
               offset: { type: 'number', description: '可选。跳过前 N 行。' },
               limit: { type: 'number', description: '可选。最多读取多少行，最大 2000。' }
             },
@@ -74,13 +125,13 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         type: 'function',
         function: {
           name: GLOB_TOOL_NAME,
-          description: '在当前项目目录内按文件名 glob 模式查找文件。只返回路径，不读取正文。',
+          description: '在当前项目目录或已授权额外目录内按文件名 glob 模式查找文件。只返回路径，不读取正文。',
           parameters: {
             type: 'object',
             additionalProperties: false,
             properties: {
               pattern: { type: 'string', description: 'glob 模式，例如 "*.ts"、"src/**/*.ts"。' },
-              path: { type: 'string', description: '可选。搜索目录，默认当前项目目录。' }
+              path: { type: 'string', description: '可选。搜索目录，默认当前项目目录；绝对路径必须位于已授权额外目录内。' }
             },
             required: ['pattern']
           }
@@ -90,13 +141,13 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         type: 'function',
         function: {
           name: GREP_TOOL_NAME,
-          description: '在当前项目目录内搜索文本内容。默认返回匹配文件列表；需要上下文时使用 output_mode=content。',
+          description: '在当前项目目录或已授权额外目录内搜索文本内容。默认返回匹配文件列表；需要上下文时使用 output_mode=content。',
           parameters: {
             type: 'object',
             additionalProperties: false,
             properties: {
               pattern: { type: 'string', description: '要搜索的正则表达式。' },
-              path: { type: 'string', description: '可选。文件或目录路径，默认当前项目目录。' },
+              path: { type: 'string', description: '可选。文件或目录路径，默认当前项目目录；绝对路径必须位于已授权额外目录内。' },
               glob: { type: 'string', description: '可选。限制文件名 glob，例如 "*.ts"。' },
               output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] },
               head_limit: { type: 'number', description: '最多返回条数。0 表示不限制，但仍受内部安全上限约束。' },
@@ -106,16 +157,56 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
             required: ['pattern']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: WRITE_TOOL_NAME,
+          description: [
+            '在当前项目目录或已授权额外写入目录内创建或完整覆盖一个文本文件。',
+            '执行前必须经过用户权限确认；不要用它做小范围替换，替换请使用 Edit。'
+          ].join('\n'),
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              file_path: { type: 'string', description: '目标文件路径，可为相对当前项目目录的路径，或已授权额外写入目录内的绝对路径。' },
+              content: { type: 'string', description: '要写入文件的完整内容。' }
+            },
+            required: ['file_path', 'content']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: EDIT_TOOL_NAME,
+          description: [
+            '在当前项目目录或已授权额外写入目录内对文本文件执行精确字符串替换。',
+            'old_string 必须在文件中唯一出现，除非 replace_all=true；执行前必须经过用户权限确认。'
+          ].join('\n'),
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              file_path: { type: 'string', description: '目标文件路径，可为相对当前项目目录的路径，或已授权额外写入目录内的绝对路径。' },
+              old_string: { type: 'string', description: '要替换的原始字符串，必须精确匹配。' },
+              new_string: { type: 'string', description: '替换后的字符串。' },
+              replace_all: { type: 'boolean', description: '是否替换所有匹配；默认 false，要求 old_string 唯一。' }
+            },
+            required: ['file_path', 'old_string', 'new_string']
+          }
+        }
       }
     ];
   }
 
   canExecute(name: string): boolean {
-    return name === READ_TOOL_NAME || name === GLOB_TOOL_NAME || name === GREP_TOOL_NAME;
+    return name === READ_TOOL_NAME || name === GLOB_TOOL_NAME || name === GREP_TOOL_NAME || name === WRITE_TOOL_NAME || name === EDIT_TOOL_NAME;
   }
 
-  executionMode(): 'parallel' {
-    return 'parallel';
+  executionMode(name: string): 'parallel' | 'exclusive' {
+    return name === WRITE_TOOL_NAME || name === EDIT_TOOL_NAME ? 'exclusive' : 'parallel';
   }
 
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: FileToolCallRecord }> {
@@ -123,6 +214,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     if (call.function.name === READ_TOOL_NAME) return this.read(call.function.arguments, options.signal);
     if (call.function.name === GLOB_TOOL_NAME) return this.glob(call.function.arguments, options.signal);
     if (call.function.name === GREP_TOOL_NAME) return this.grep(call.function.arguments, options.signal);
+    if (call.function.name === WRITE_TOOL_NAME) return this.write(call.function.arguments, options.signal);
+    if (call.function.name === EDIT_TOOL_NAME) return this.edit(call.function.arguments, options.signal);
     throw new Error(`未知文件工具：${call.function.name}`);
   }
 
@@ -130,7 +223,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const input = readInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
     throwIfAborted(signal);
-    const filePath = await this.resolveInsideProject(input.file_path);
+    const filePath = await this.resolveReadablePath(input.file_path);
     throwIfAborted(signal);
     const fileStat = await stat(filePath);
     if (!fileStat.isFile()) throw new Error(`Read 只能读取文件：${input.file_path}`);
@@ -144,12 +237,13 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       .map((line, index) => `${String(offset + index + 1).padStart(6, ' ')}\t${line}`)
       .join('\n') || '[空文件]';
     const truncated = offset + limit < lines.length ? '\n[结果已截断，请使用 offset/limit 继续读取]' : '';
-    const output = `${relativeToRoot(filePath, this.rootRealPath!)}\n${content}${truncated}`;
+    const output = `${this.relativeToScope(filePath)}\n${content}${truncated}`;
     return {
       content: truncate(output, 100_000),
       record: {
         name: READ_TOOL_NAME,
-        path: relativeToRoot(filePath, this.rootRealPath!),
+        path: this.relativeToScope(filePath),
+        operation: 'read',
         resultChars: output.length,
         durationMs: Date.now() - start
       }
@@ -160,14 +254,14 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const input = globInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
     throwIfAborted(signal);
-    const base = await this.resolveInsideProject(input.path ?? '.');
+    const base = await this.resolveReadablePath(input.path ?? '.');
     const baseStat = await stat(base);
     if (!baseStat.isDirectory()) throw new Error(`Glob path 必须是目录：${input.path ?? '.'}`);
     const matcher = globToRegExp(input.pattern);
     const files = await this.walkFiles(base, maxSearchFiles, signal);
     throwIfAborted(signal);
     const matches = files
-      .map(file => relativeToRoot(file, this.rootRealPath!))
+      .map(file => this.relativeToScope(file))
       .filter(relative => matcher.test(relative) || matcher.test(path.basename(relative)))
       .slice(0, maxGlobResults);
     const content = matches.length > 0
@@ -177,7 +271,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       content,
       record: {
         name: GLOB_TOOL_NAME,
-        path: relativeToRoot(base, this.rootRealPath!),
+        path: this.relativeToScope(base),
+        operation: 'glob',
         pattern: input.pattern,
         resultCount: matches.length,
         resultChars: content.length,
@@ -190,13 +285,13 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const input = grepInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
     throwIfAborted(signal);
-    const target = await this.resolveInsideProject(input.path ?? '.');
+    const target = await this.resolveReadablePath(input.path ?? '.');
     const mode = input.output_mode ?? 'files_with_matches';
     const offset = input.offset ?? 0;
     const limit = input.head_limit === 0 ? 1000 : input.head_limit ?? defaultGrepLimit;
     const result = await runRipgrep({
       root: this.rootRealPath!,
-      target: relativeToRoot(target, this.rootRealPath!),
+      target: path.relative(this.rootRealPath!, target) || '.',
       pattern: input.pattern,
       ignoreCase: input['-i'] ?? false,
       glob: input.glob,
@@ -210,13 +305,90 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       content: truncate(content, maxGrepOutputChars),
       record: {
         name: GREP_TOOL_NAME,
-        path: relativeToRoot(target, this.rootRealPath!),
+        path: this.relativeToScope(target),
+        operation: 'grep',
         pattern: input.pattern,
         resultCount: result.count,
         resultChars: content.length,
         durationMs: Date.now() - start
       }
     };
+  }
+
+  private async write(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = writeInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const target = await this.resolveWritableTarget(input.file_path);
+    const existing = await readFile(target, 'utf8').catch(() => undefined);
+    await this.requireWritePermission({
+      toolName: WRITE_TOOL_NAME,
+      path: this.relativeToScope(target),
+      operation: existing === undefined ? 'create' : 'overwrite',
+      summary: existing === undefined ? '创建新文件' : '完整覆盖已有文件',
+      oldChars: existing?.length,
+      newChars: input.content.length
+    });
+    throwIfAborted(signal);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, input.content, 'utf8');
+    const action = existing === undefined ? 'created' : 'updated';
+    const content = `${action} ${this.relativeToScope(target)} (${input.content.length} chars)`;
+    return {
+      content,
+      record: {
+        name: WRITE_TOOL_NAME,
+        path: this.relativeToScope(target),
+        operation: 'write',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async edit(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = editInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const filePath = await this.resolveWritableTarget(input.file_path);
+    const raw = await readFile(filePath, 'utf8');
+    const matches = countOccurrences(raw, input.old_string);
+    if (matches === 0) throw new Error('Edit old_string 没有在文件中找到。');
+    if (!input.replace_all && matches !== 1) throw new Error(`Edit old_string 出现 ${matches} 次；请提供更具体上下文，或设置 replace_all=true。`);
+    const next = input.replace_all ? raw.split(input.old_string).join(input.new_string) : raw.replace(input.old_string, input.new_string);
+    await this.requireWritePermission({
+      toolName: EDIT_TOOL_NAME,
+      path: this.relativeToScope(filePath),
+      operation: 'edit',
+      summary: `替换 ${input.replace_all ? matches : 1} 处文本`,
+      oldChars: input.old_string.length,
+      newChars: input.new_string.length
+    });
+    throwIfAborted(signal);
+    await writeFile(filePath, next, 'utf8');
+    const content = `edited ${this.relativeToScope(filePath)} (replacements=${input.replace_all ? matches : 1})`;
+    return {
+      content,
+      record: {
+        name: EDIT_TOOL_NAME,
+        path: this.relativeToScope(filePath),
+        operation: 'edit',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async requireWritePermission(request: FilePermissionRequest): Promise<void> {
+    this.hooks?.emit('PermissionRequest', request.toolName, {
+      path: request.path,
+      operation: request.operation,
+      oldChars: request.oldChars,
+      newChars: request.newChars
+    });
+    if (!this.permissionAsker) throw new Error(`文件写入需要交互式权限确认：${request.path}`);
+    const decision = await this.permissionAsker(request);
+    if (decision !== 'allow') throw new Error(`用户拒绝文件写入：${request.path}`);
   }
 
   private async walkFiles(directory: string, limit: number, signal?: AbortSignal): Promise<string[]> {
@@ -242,26 +414,83 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return output;
   }
 
-  private async resolveInsideProject(inputPath: string): Promise<string> {
+  private async resolveReadablePath(inputPath: string): Promise<string> {
     const root = this.rootRealPath ?? await realpath(this.projectRoot);
     this.rootRealPath = root;
     const absolute = path.isAbsolute(inputPath) ? inputPath : path.resolve(root, inputPath);
     const resolved = await realpath(absolute);
-    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-      throw new Error(`文件工具只能访问当前项目目录内的路径：${inputPath}`);
+    if (!this.isInsideReadScope(resolved)) {
+      throw new Error(`文件工具只能访问当前项目目录或已授权额外读取目录内的路径：${inputPath}`);
     }
     return resolved;
+  }
+
+  private async resolveWritableTarget(inputPath: string): Promise<string> {
+    const root = this.rootRealPath ?? await realpath(this.projectRoot);
+    this.rootRealPath = root;
+    const absolute = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(root, inputPath);
+    const parent = await realpath(path.dirname(absolute));
+    if (!this.isInsideWriteScope(parent)) {
+      throw new Error(`文件工具只能写入当前项目目录或已授权额外写入目录内的路径：${inputPath}`);
+    }
+    const target = path.resolve(parent, path.basename(absolute));
+    if (!this.isInsideWriteScope(target)) {
+      throw new Error(`文件工具只能写入当前项目目录或已授权额外写入目录内的路径：${inputPath}`);
+    }
+    const existing = await lstat(target).catch(() => undefined);
+    if (existing?.isSymbolicLink()) throw new Error(`拒绝写入符号链接：${inputPath}`);
+    if (existing && !existing.isFile()) throw new Error(`Write/Edit 只能写入文件：${inputPath}`);
+    return target;
+  }
+
+  private isInsideReadScope(filePath: string): boolean {
+    return [this.rootRealPath!, ...this.readRoots].some(root => pathInsideRoot(filePath, root));
+  }
+
+  private isInsideWriteScope(filePath: string): boolean {
+    return [this.rootRealPath!, ...this.writeRoots].some(root => pathInsideRoot(filePath, root));
+  }
+
+  private relativeToScope(filePath: string): string {
+    return relativeToBestRoot(filePath, [this.rootRealPath!, ...this.readRoots, ...this.writeRoots]);
   }
 }
 
 export function getFileToolPrompt(): string {
   return [
     '# 项目文件工具',
-    '- 你可以使用 Read 读取当前项目目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
-    '- 这些工具是只读的，不会修改文件。不要声称已经写入或删除文件。',
+    '- 你可以使用 Read 读取当前项目目录和已授权额外目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
+    '- 你也可以使用 Write 创建/覆盖文本文件，使用 Edit 做精确字符串替换；写入和编辑必须经过用户权限确认，非交互入口默认拒绝。',
     '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；不要反复读取大文件。',
-    '- 文件工具只能访问 neo 启动时所在的项目目录，不能读取项目外路径。'
+    '- 文件工具默认只能访问 neo 启动时所在的项目目录；额外目录必须由用户通过配置显式授权，不能访问其它路径。'
   ].join('\n');
+}
+
+async function resolveScopeRoots(projectRoot: string, inputs: string[]): Promise<string[]> {
+  const roots: string[] = [];
+  for (const input of inputs) {
+    const absolute = path.isAbsolute(input) ? input : path.resolve(projectRoot, input);
+    const resolved = await realpath(absolute).catch(() => undefined);
+    const resolvedStat = resolved ? await stat(resolved).catch(() => undefined) : undefined;
+    if (resolved && resolvedStat?.isDirectory() && !roots.some(root => root === resolved)) roots.push(resolved);
+  }
+  return roots;
+}
+
+function pathInsideRoot(filePath: string, root: string): boolean {
+  return filePath === root || filePath.startsWith(`${root}${path.sep}`);
+}
+
+function relativeToBestRoot(filePath: string, roots: string[]): string {
+  const matches = roots
+    .filter(root => pathInsideRoot(filePath, root))
+    .sort((a, b) => b.length - a.length);
+  const root = matches[0];
+  if (!root) return filePath;
+  const relative = path.relative(root, filePath);
+  if (!relative) return '.';
+  if (root === roots[0]) return relative;
+  return path.isAbsolute(filePath) ? filePath : relative;
 }
 
 function parseJsonObject(rawArguments: string): Record<string, unknown> {
@@ -457,4 +686,16 @@ function escapeRegex(input: string): string {
 function truncate(input: string, maxChars: number): string {
   if (input.length <= maxChars) return input;
   return `${input.slice(0, Math.max(0, maxChars - 20)).trimEnd()}\n[已截断]`;
+}
+
+function countOccurrences(input: string, search: string): number {
+  if (!search) return 0;
+  let count = 0;
+  let index = 0;
+  while (true) {
+    const next = input.indexOf(search, index);
+    if (next < 0) return count;
+    count += 1;
+    index = next + search.length;
+  }
 }

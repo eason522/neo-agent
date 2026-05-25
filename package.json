@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "smoke": "npm run build && node scripts/smoke-test.mjs"
+    "smoke": "npm run build && node scripts/smoke-test.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.3",

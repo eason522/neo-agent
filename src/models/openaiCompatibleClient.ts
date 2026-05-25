@@ -1,4 +1,4 @@
-import type { ChatCompletionResult, ChatMessage, ChatToolCall, ChatToolDefinition, ModelConfig, ModelKind, ModelUsage, ModelUsageRecordInput } from '../types.js';
+import type { ChatCompletionResult, ChatMessage, ChatStreamHandlers, ChatToolCall, ChatToolDefinition, ModelConfig, ModelKind, ModelUsage, ModelUsageRecordInput } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import { isAbortError } from '../utils/abort.js';
 
@@ -7,6 +7,7 @@ type ChatOptions = {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  stream?: ChatStreamHandlers;
 };
 
 type ChatWithToolsOptions = ChatOptions & {
@@ -49,13 +50,13 @@ export class OpenAICompatibleClient {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const response = await this.fetchChatCompletion(url, options, tools);
-        const payload = await response.json() as ChatCompletionPayload;
-        const choice = payload.choices?.[0];
-        const content = choice?.message?.content ?? '';
-        const reasoningContent = choice?.message?.reasoning_content ?? undefined;
-        const toolCalls = normalizeToolCalls(choice?.message?.tool_calls ?? []);
-        const usage = normalizeUsage(payload.usage);
+        const result = options.stream
+          ? await this.fetchStreamingChatCompletion(url, options, tools)
+          : await this.fetchBufferedChatCompletion(url, options, tools);
+        const content = result.content;
+        const reasoningContent = result.reasoningContent;
+        const toolCalls = result.toolCalls;
+        const usage = result.usage;
         if (!content && toolCalls.length === 0) throw new Error(`Model ${this.config.model} returned an empty response.`);
         this.logger?.info('model.request.success', {
           model: this.config.model,
@@ -63,7 +64,7 @@ export class OpenAICompatibleClient {
           outputChars: content.length,
           reasoningChars: reasoningContent?.length ?? 0,
           toolCallCount: toolCalls.length,
-          finishReason: choice?.finish_reason,
+          finishReason: result.finishReason,
           attempt,
           promptTokens: usage?.promptTokens,
           completionTokens: usage?.completionTokens,
@@ -82,7 +83,7 @@ export class OpenAICompatibleClient {
           content,
           reasoningContent,
           toolCalls,
-          finishReason: choice?.finish_reason,
+          finishReason: result.finishReason,
           usage
         };
       } catch (error) {
@@ -120,7 +121,68 @@ export class OpenAICompatibleClient {
     throw new Error(`Model ${this.config.model} request failed after ${maxAttempts} attempts.`);
   }
 
-  private async fetchChatCompletion(url: URL, options: ChatWithToolsOptions, tools: ChatToolDefinition[]): Promise<Response> {
+  private async fetchBufferedChatCompletion(url: URL, options: ChatWithToolsOptions, tools: ChatToolDefinition[]): Promise<ChatCompletionResult> {
+    const response = await this.fetchChatCompletion(url, options, tools, false);
+    const payload = await response.json() as ChatCompletionPayload;
+    const choice = payload.choices?.[0];
+    return {
+      content: choice?.message?.content ?? '',
+      reasoningContent: choice?.message?.reasoning_content ?? undefined,
+      toolCalls: normalizeToolCalls(choice?.message?.tool_calls ?? []),
+      finishReason: choice?.finish_reason,
+      usage: normalizeUsage(payload.usage)
+    };
+  }
+
+  private async fetchStreamingChatCompletion(url: URL, options: ChatWithToolsOptions, tools: ChatToolDefinition[]): Promise<ChatCompletionResult> {
+    const response = await this.fetchChatCompletion(url, options, tools, true);
+    const contentParts: string[] = [];
+    const reasoningParts: string[] = [];
+    const toolCallParts = new Map<number, {
+      id?: string;
+      type?: string;
+      function?: { name?: string; arguments?: string };
+    }>();
+    let finishReason: string | null | undefined;
+    let usage: ModelUsage | undefined;
+
+    for await (const payload of readOpenAISse(response, options.signal)) {
+      if (payload.usage) usage = normalizeUsage(payload.usage);
+      const choice = payload.choices?.[0];
+      if (!choice) continue;
+      finishReason = choice.finish_reason ?? finishReason;
+      const delta = choice.delta;
+      if (!delta) continue;
+      if (typeof delta.content === 'string' && delta.content.length > 0) {
+        contentParts.push(delta.content);
+        options.stream?.onContentDelta?.(delta.content);
+      }
+      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+        reasoningParts.push(delta.reasoning_content);
+      }
+      for (const call of delta.tool_calls ?? []) {
+        const index = call.index ?? toolCallParts.size;
+        const existing = toolCallParts.get(index) ?? { function: { name: '', arguments: '' } };
+        if (call.id) existing.id = call.id;
+        if (call.type) existing.type = call.type;
+        existing.function = {
+          name: `${existing.function?.name ?? ''}${call.function?.name ?? ''}`,
+          arguments: `${existing.function?.arguments ?? ''}${call.function?.arguments ?? ''}`
+        };
+        toolCallParts.set(index, existing);
+      }
+    }
+
+    return {
+      content: contentParts.join(''),
+      reasoningContent: reasoningParts.join('') || undefined,
+      toolCalls: normalizeToolCalls([...toolCallParts.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => call)),
+      finishReason,
+      usage
+    };
+  }
+
+  private async fetchChatCompletion(url: URL, options: ChatWithToolsOptions, tools: ChatToolDefinition[], stream: boolean): Promise<Response> {
     const { signal, cleanup } = composeTimeoutSignal(options.signal, this.config.requestTimeoutMs);
     try {
       const response = await fetch(url, {
@@ -134,6 +196,7 @@ export class OpenAICompatibleClient {
           messages: options.messages,
           temperature: options.temperature ?? this.config.temperature,
           max_tokens: options.maxTokens ?? this.config.maxTokens,
+          ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
           ...(tools.length > 0 ? {
             tools,
             tool_choice: options.toolChoice ?? 'auto'
@@ -163,6 +226,19 @@ export class OpenAICompatibleClient {
 type ChatCompletionPayload = {
   choices?: Array<{
     finish_reason?: string | null;
+    delta?: {
+      content?: string | null;
+      reasoning_content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
+    };
     message?: {
       content?: string | null;
       reasoning_content?: string | null;
@@ -182,6 +258,47 @@ type ChatCompletionPayload = {
     total_tokens?: number;
   };
 };
+
+async function* readOpenAISse(response: Response, signal?: AbortSignal): AsyncGenerator<ChatCompletionPayload> {
+  if (!response.body) throw new Error('Model streaming response has no body.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      if (signal?.aborted) throw signal.reason ?? new Error('Aborted');
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex: number;
+      while ((separatorIndex = buffer.search(/\r?\n\r?\n/)) >= 0) {
+        const frame = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(buffer[separatorIndex] === '\r' ? separatorIndex + 4 : separatorIndex + 2);
+        const dataLines = frame
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trim());
+        for (const data of dataLines) {
+          if (!data || data === '[DONE]') continue;
+          yield JSON.parse(data) as ChatCompletionPayload;
+        }
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      for (const line of tail.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        yield JSON.parse(data) as ChatCompletionPayload;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 class ModelRequestError extends Error {
   constructor(message: string, readonly status?: number, readonly category?: 'timeout' | 'network') {

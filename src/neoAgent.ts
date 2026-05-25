@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage, Skill, ToolProgressEvent, WebContext } from './types.js';
+import type { AgentResponse, AppConfig, Attachment, ChatMessage, Skill, ToolCallRecord, ToolProgressEvent, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -13,7 +13,7 @@ import { loadSoul } from './prompts/soul.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService, type TranscriptConversationSnapshot } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
-import { FileToolRunner, getFileToolPrompt } from './files/fileTools.js';
+import { FileToolRunner, getFileToolPrompt, type FilePermissionAsker } from './files/fileTools.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
 import { planWebUseWithModel } from './web/webPlanner.js';
 import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
@@ -25,9 +25,14 @@ import { createAbortError } from './utils/abort.js';
 import { updateMcpToolPermission } from './mcp/mcpConfigCommands.js';
 import { stableId } from './utils/fs.js';
 import { UsageTracker } from './usage/usageTracker.js';
+import { getHooksPrompt, HookBus } from './hooks/hookBus.js';
+import { buildCapabilitySnapshot, CapabilityToolRunner, formatCapabilitySnapshot, getCapabilitiesPrompt, type CapabilitySnapshot } from './capabilities/capabilities.js';
+import { assessTaskAgainstCapabilities, formatTaskAssessment, getTaskAssessmentPrompt, TaskAssessmentToolRunner, type TaskAssessmentResult } from './capabilities/taskAssessment.js';
+import type { ToolRunner } from './tools/tool.js';
 
 export type AskOptions = {
   signal?: AbortSignal;
+  onContentDelta?: (delta: string) => void;
 };
 
 export type NeoAgentOptions = {
@@ -51,6 +56,7 @@ export class NeoAgent {
   readonly dreams: DreamService;
   readonly web: TavilyClient;
   readonly usage: UsageTracker;
+  readonly hooks: HookBus;
 
   private readonly router: ModelRouter;
   private readonly vision: VisionAnalyzer;
@@ -61,13 +67,18 @@ export class NeoAgent {
   private readonly toolSearchRunner: ToolSearchRunner;
   private readonly mcpToolRunner: McpToolRunner;
   private readonly mcpResourceRunner: McpResourceRunner;
+  private readonly capabilityToolRunner: CapabilityToolRunner;
+  private readonly taskAssessmentToolRunner: TaskAssessmentToolRunner;
+  private readonly toolRunners: ToolRunner<ToolCallRecord>[];
   private readonly queryEngine: QueryEngine;
   private toolEventHandler?: (event: ToolProgressEvent) => void;
+  private contentDeltaHandler?: (delta: string) => void;
 
   constructor(readonly config: AppConfig, private readonly options: NeoAgentOptions = {}) {
     this.logger = new Logger(config);
     this.transcripts = new TranscriptService(config, this.logger);
     this.usage = new UsageTracker(config, this.logger);
+    this.hooks = new HookBus(this.logger);
     this.models = new ModelRegistry(config, this.logger, this.usage);
     this.memory = new MemoryService(config, this.logger);
     this.skills = new SkillManager(config);
@@ -77,15 +88,23 @@ export class NeoAgent {
     });
     this.toolSearchRunner = new ToolSearchRunner(this.mcpToolRunner);
     this.mcpResourceRunner = new McpResourceRunner(this.mcp);
-    this.subAgent = new SubAgentRunner(this.models, this.logger);
+    this.subAgent = new SubAgentRunner(this.models, this.logger, config);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
-    this.fileToolRunner = new FileToolRunner(process.cwd());
+    this.fileToolRunner = new FileToolRunner(process.cwd(), undefined, this.hooks, {
+      additionalReadDirs: config.files.additionalReadDirs,
+      additionalWriteDirs: config.files.additionalWriteDirs
+    });
     this.skillToolRunner = new SkillToolRunner(this.skills, process.cwd());
     this.webToolRunner = new WebToolRunner(config, this.web);
-    this.queryEngine = new QueryEngine(this.models, [this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
+    this.capabilityToolRunner = new CapabilityToolRunner(() => this.capabilitySnapshot());
+    this.taskAssessmentToolRunner = new TaskAssessmentToolRunner(() => this.capabilitySnapshot());
+    this.toolRunners = [this.capabilityToolRunner, this.taskAssessmentToolRunner, this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner];
+    this.queryEngine = new QueryEngine(this.models, this.toolRunners, this.logger, {
       maxToolRounds: config.web.maxToolRounds,
-      onToolEvent: event => this.toolEventHandler?.(event)
+      onToolEvent: event => this.toolEventHandler?.(event),
+      onContentDelta: delta => this.contentDeltaHandler?.(delta),
+      hooks: this.hooks
     });
     this.router = new ModelRouter(config);
     this.vision = new VisionAnalyzer(this.models);
@@ -161,12 +180,52 @@ export class NeoAgent {
     this.mcpToolRunner.setPermissionAsker(permissionAsker);
   }
 
+  setFilePermissionAsker(permissionAsker: FilePermissionAsker | undefined): void {
+    this.fileToolRunner.setPermissionAsker(permissionAsker);
+  }
+
   setToolEventHandler(handler: ((event: ToolProgressEvent) => void) | undefined): void {
     this.toolEventHandler = handler;
   }
 
+  setContentDeltaHandler(handler: ((delta: string) => void) | undefined): void {
+    this.contentDeltaHandler = handler;
+  }
+
+  async capabilitySnapshot(): Promise<CapabilitySnapshot> {
+    await Promise.all(this.toolRunners.map(tool => tool.refresh?.() ?? Promise.resolve()));
+    const [skills, mcpTools] = await Promise.all([
+      this.skills.loadSkills(),
+      this.mcp.listTools().catch(() => [])
+    ]);
+    return buildCapabilitySnapshot({
+      config: this.config,
+      cwd: process.cwd(),
+      skills,
+      mcpTools,
+      connectedMcpServers: this.mcp.connectedServerNames(),
+      runtimeTools: this.queryEngine.toolDefinitions(),
+      fileWriteConfirmationAvailable: this.fileToolRunner.hasPermissionAsker(),
+      hookRecentEventCount: this.hooks.listRecent().length
+    });
+  }
+
+  async formatCapabilities(): Promise<string> {
+    return formatCapabilitySnapshot(await this.capabilitySnapshot());
+  }
+
+  async assessTask(task: string): Promise<TaskAssessmentResult> {
+    return assessTaskAgainstCapabilities(task, await this.capabilitySnapshot());
+  }
+
+  async formatTaskAssessment(task: string): Promise<string> {
+    return formatTaskAssessment(await this.assessTask(task));
+  }
+
   async ask(input: string, attachments: Attachment[] = [], options: AskOptions = {}): Promise<AgentResponse> {
     const start = Date.now();
+    const previousContentDeltaHandler = this.contentDeltaHandler;
+    if (options.onContentDelta) this.contentDeltaHandler = options.onContentDelta;
     this.logger.info('agent.ask.start', {
       inputChars: input.length,
       attachmentCount: attachments.length
@@ -239,7 +298,7 @@ export class NeoAgent {
     try {
       const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
-        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal, stream: options.onContentDelta ? { onContentDelta: options.onContentDelta } : undefined }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -275,6 +334,7 @@ export class NeoAgent {
         fileToolCalls: fileToolCalls.map(call => ({
           name: call.name,
           path: call.path,
+          operation: call.operation,
           pattern: call.pattern,
           resultCount: call.resultCount,
           resultChars: call.resultChars,
@@ -405,6 +465,8 @@ export class NeoAgent {
         durationMs: Date.now() - start
       });
       throw error;
+    } finally {
+      this.contentDeltaHandler = previousContentDeltaHandler;
     }
   }
 
@@ -423,12 +485,15 @@ export class NeoAgent {
   private withToolPrompt(systemPrompt: string, enabled: { skills: Skill[]; file: boolean; web: boolean; mcp: boolean }): string {
     return [
       systemPrompt,
+      getCapabilitiesPrompt(),
+      getTaskAssessmentPrompt(),
       getSkillToolPrompt(enabled.skills),
       enabled.file ? getFileToolPrompt() : '',
       enabled.web ? getWebToolPrompt() : '',
       enabled.mcp ? getToolSearchPrompt() : '',
       enabled.mcp ? getMcpToolPrompt() : '',
-      enabled.mcp ? getMcpResourcePrompt() : ''
+      enabled.mcp ? getMcpResourcePrompt() : '',
+      getHooksPrompt()
     ].filter(Boolean).join('\n\n');
   }
 
