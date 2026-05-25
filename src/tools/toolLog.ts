@@ -1,4 +1,4 @@
-import type { ChatToolCall, McpToolCallRecord, ToolCallRecord, WebToolCallRecord } from '../types.js';
+import type { ChatToolCall, FileToolCallRecord, McpToolCallRecord, ToolCallRecord, WebToolCallRecord } from '../types.js';
 
 export function summarizeToolArguments(call: ChatToolCall): Record<string, unknown> {
   const base = {
@@ -30,6 +30,17 @@ export function summarizeToolResult(record: ToolCallRecord | undefined, content:
       name: record.name,
       serverName: record.serverName,
       toolName: record.toolName,
+      resultChars: record.resultChars,
+      durationMs: record.durationMs
+    };
+  }
+  if (isFileRecord(record)) {
+    return {
+      resultKind: 'file',
+      name: record.name,
+      path: record.path,
+      patternChars: record.pattern?.length,
+      resultCount: record.resultCount,
       resultChars: record.resultChars,
       durationMs: record.durationMs
     };
@@ -88,4 +99,8 @@ function categorizeError(message: string): string {
 
 function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
   return 'serverName' in record && 'toolName' in record;
+}
+
+function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
+  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record);
 }

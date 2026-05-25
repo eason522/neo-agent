@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolDefinition, McpToolCallRecord, TextModelKind, ToolCallRecord, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, TextModelKind, ToolCallRecord, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
@@ -8,6 +8,7 @@ export type QueryEngineResult = {
   text: string;
   webToolCalls: WebToolCallRecord[];
   mcpToolCalls: McpToolCallRecord[];
+  fileToolCalls: FileToolCallRecord[];
 };
 
 type QueryEngineOptions = {
@@ -33,12 +34,14 @@ export class QueryEngine {
     const toolDefinitions = this.toolDefinitions();
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
+    const fileToolCalls: FileToolCallRecord[] = [];
 
     if (toolDefinitions.length === 0) {
       return {
         text: await model.chat({ messages: loopMessages }),
         webToolCalls,
-        mcpToolCalls
+        mcpToolCalls,
+        fileToolCalls
       };
     }
 
@@ -50,7 +53,7 @@ export class QueryEngine {
       });
 
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls, mcpToolCalls };
+        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls };
       }
 
       loopMessages.push({
@@ -81,6 +84,7 @@ export class QueryEngine {
           const result = await runner.execute(toolCall);
           if (result.record) {
             if (isMcpRecord(result.record)) mcpToolCalls.push(result.record);
+            else if (isFileRecord(result.record)) fileToolCalls.push(result.record);
             else webToolCalls.push(result.record);
           }
           loopMessages.push({
@@ -111,7 +115,7 @@ export class QueryEngine {
 
     this.logger.warn('tool.max_rounds_reached', {
       maxToolRounds: this.options.maxToolRounds,
-      toolCallCount: webToolCalls.length + mcpToolCalls.length
+      toolCallCount: webToolCalls.length + mcpToolCalls.length + fileToolCalls.length
     });
     const finalResponse = await model.chatWithTools({
       messages: [
@@ -123,7 +127,7 @@ export class QueryEngine {
       ],
       toolChoice: 'none'
     });
-    return { text: finalResponse.content, webToolCalls, mcpToolCalls };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls };
   }
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
@@ -133,4 +137,8 @@ export class QueryEngine {
 
 function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
   return 'serverName' in record && 'toolName' in record;
+}
+
+function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
+  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record);
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -112,6 +112,53 @@ test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
 
   const error = summarizeToolError(new Error('MCP 工具未获授权：mcp__github__create_issue'));
   assertIncludes(JSON.stringify(error), 'permission');
+});
+
+test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-files-'));
+  await mkdir(path.join(projectDir, 'src'), { recursive: true });
+  await writeFile(path.join(projectDir, 'src', 'app.ts'), 'export const answer = 42;\nconsole.log(answer);\n', 'utf8');
+  await writeFile(path.join(projectDir, 'README.md'), '# Demo\nanswer lives in src/app.ts\n', 'utf8');
+  try {
+    const { FileToolRunner, GLOB_TOOL_NAME, GREP_TOOL_NAME, READ_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
+    const runner = new FileToolRunner(projectDir);
+    await runner.refresh();
+    const names = runner.definitions().map(tool => tool.function.name).join(',');
+    assertIncludes(names, READ_TOOL_NAME);
+    assertIncludes(names, GLOB_TOOL_NAME);
+    assertIncludes(names, GREP_TOOL_NAME);
+
+    const read = await runner.execute({
+      id: 'read_1',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/app.ts', limit: 1 }) }
+    });
+    assertIncludes(read.content, 'export const answer');
+    assertIncludes(read.record.name, READ_TOOL_NAME);
+
+    const glob = await runner.execute({
+      id: 'glob_1',
+      type: 'function',
+      function: { name: GLOB_TOOL_NAME, arguments: JSON.stringify({ pattern: 'src/*.ts' }) }
+    });
+    assertIncludes(glob.content, 'src/app.ts');
+
+    const grep = await runner.execute({
+      id: 'grep_1',
+      type: 'function',
+      function: { name: GREP_TOOL_NAME, arguments: JSON.stringify({ pattern: 'answer', output_mode: 'content' }) }
+    });
+    assertIncludes(grep.content, 'src/app.ts');
+    assertIncludes(grep.content, 'answer');
+
+    await assertRejects(() => runner.execute({
+      id: 'read_2',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: '/etc/passwd' }) }
+    }), '当前项目目录');
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
 });
 
 test('Tavily crawler 过滤参数会合并配置和命令输入', async () => {
@@ -398,4 +445,15 @@ function assertThrows(fn, expectedMessage) {
     return;
   }
   throw new Error(`期望抛出包含 ${JSON.stringify(expectedMessage)} 的错误，但函数正常返回。`);
+}
+
+async function assertRejects(fn, expectedMessage) {
+  try {
+    await fn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assertIncludes(message, expectedMessage);
+    return;
+  }
+  throw new Error(`期望异步抛出包含 ${JSON.stringify(expectedMessage)} 的错误，但函数正常返回。`);
 }

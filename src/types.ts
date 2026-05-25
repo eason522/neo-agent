@@ -190,6 +190,7 @@ export type AgentResponse = {
   webContext?: WebContext;
   webToolCalls?: WebToolCallRecord[];
   mcpToolCalls?: McpToolCallRecord[];
+  fileToolCalls?: FileToolCallRecord[];
   memories: MemoryHit[];
   skills: Skill[];
 };
@@ -211,7 +212,16 @@ export type McpToolCallRecord = {
   durationMs: number;
 };
 
-export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord;
+export type FileToolCallRecord = {
+  name: 'Read' | 'Glob' | 'Grep';
+  path?: string;
+  pattern?: string;
+  resultCount?: number;
+  resultChars: number;
+  durationMs: number;
+};
+
+export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord;
 
 export type WebSearchResult = {
   title: string;

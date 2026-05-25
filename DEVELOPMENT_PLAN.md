@@ -38,6 +38,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - dreaming 记忆整理命令和定时门控基础
 - Tavily Search/Extract/Map/Crawl 联网搜索和网页浏览
 - CC-Source 风格的联网 tool loop：`WebSearch` / `WebFetch` 作为模型可调用工具，过渡版小模型 planner 保留为兜底
+- 项目文件只读工具：`Read`、`Glob`、`Grep`，只能访问 neo 启动目录内的文件
 - 联网工具具备域名 allow/deny 和本地/内网/私有地址保护
 - Tavily map/crawl 支持路径和域名正则过滤：select_paths、exclude_paths、select_domains、exclude_domains
 - 参考 CC-Source `QueryEngine.ts` / `query.ts` / `Tool.ts` 拆出的最小 `QueryEngine` 和 `ToolRunner` 分层
@@ -129,7 +130,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 添加 MCP 配置命令：添加、删除、列表、测试
 - [x] 添加 MCP resource 工具：列出和读取已连接 server 暴露的只读资源
 - [x] 添加工具结果日志，并做好脱敏
-- [ ] 添加项目感知的文件系统工具支持
+- [x] 添加项目感知的文件系统工具支持
 
 ### M5：终端体验向 CC-Source 设计靠拢
 
@@ -171,6 +172,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，但还缺 token 估算和 auto compact。 | M5 添加自动 compact，避免只靠字符预算裁剪。 |
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
+| 项目文件工具 | `FileReadTool`、`GlobTool`、`GrepTool`、filesystem permissions | 部分符合。已加入只读 `Read` / `Glob` / `Grep` 并进入 `QueryEngine`，限制在启动目录内，带读取/搜索上限和默认忽略目录。 | 后续补完整 permission rules、二进制/图片/PDF 支持、ripgrep 后端和 UI 状态。 |
 | MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny 的最小权限保护、stdio 配置命令和 resource 读取工具；但还缺 deferred ToolSearch、交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4 继续补 deferred ToolSearch 和交互式权限 UI。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
@@ -296,6 +298,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：MCP resources 进入 QueryEngine
 
 参考 CC-Source 的 `ListMcpResourcesTool` 和 `ReadMcpResourceTool`，neo 新增 `McpResourceRunner`，在已有 MCP server 连接后暴露只读 `ListMcpResources` / `ReadMcpResource`。资源读取结果通过同一个 `QueryEngine` 回灌给模型，文本内容会截断到 100K 字符；二进制 blob 不直接写入上下文，只记录字节数和说明，避免把大块 base64 塞进模型输入。后续仍需继续补资源缓存、变更通知、二进制落盘和 deferred ToolSearch。
+
+### 2026-05-25：项目文件工具先做只读、项目内访问
+
+参考 CC-Source `FileReadTool`、`GlobTool` 和 `GrepTool`，neo 新增 `FileToolRunner`，默认向普通 ask/REPL 暴露 `Read`、`Glob`、`Grep`。第一版只允许访问 neo 启动目录内的真实路径，拒绝项目外路径和 symlink 跳转；默认跳过 `.git`、`node_modules`、`dist` 等噪声目录，并限制读取大小、读取行数、搜索文件数和返回条数。当前不支持编辑、写入、图片/PDF 原生读取、完整 permission rules 或 ripgrep 后端；后续继续对齐 CC-Source 的 filesystem permission 和更完整文件能力。
 
 ## 恢复开发检查清单
 
