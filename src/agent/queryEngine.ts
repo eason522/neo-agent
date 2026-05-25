@@ -1,9 +1,10 @@
-import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
-import type { ToolRunner } from '../tools/tool.js';
+import type { ToolExecutionResult, ToolRunner } from '../tools/tool.js';
 import { createAbortError, throwIfAborted } from '../utils/abort.js';
 import {
+  buildSkippedToolResult,
   buildToolErrorResult,
   buildUnknownToolResult,
   createMaxRoundsEvent,
@@ -27,6 +28,7 @@ export type QueryEngineResult = {
 
 type QueryEngineOptions = {
   maxToolRounds: number;
+  toolTimeoutMs?: number;
   onToolEvent?: (event: ToolProgressEvent) => void;
 };
 
@@ -86,81 +88,31 @@ export class QueryEngine {
         return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents };
       }
 
+      const toolCalls = normalizeToolCallIds(response.toolCalls);
       loopMessages.push({
         role: 'assistant',
         content: response.content,
-        tool_calls: response.toolCalls,
+        tool_calls: toolCalls,
         ...(response.reasoningContent ? { reasoning_content: response.reasoningContent } : {})
       });
 
-      for (const toolCall of response.toolCalls) {
-        throwIfAborted(runOptions.signal);
-        const runner = this.findRunner(toolCall.function.name);
-        const startEvent = createToolStartEvent(toolCall, round);
-        emitToolEvent(startEvent, toolEvents, this.options.onToolEvent);
-        this.logger.info('tool.start', {
-          ...summarizeToolArguments(toolCall),
-          round
+      const roundResult = await this.executeToolRound(toolCalls, round, runOptions.signal, {
+        webToolCalls,
+        mcpToolCalls,
+        fileToolCalls,
+        skillToolCalls,
+        toolEvents
+      });
+      loopMessages.push(...roundResult.messages);
+      if (roundResult.terminal) {
+        return this.finalizeAfterTerminalTool(modelKind, loopMessages, {
+          webToolCalls,
+          mcpToolCalls,
+          fileToolCalls,
+          skillToolCalls,
+          toolEvents,
+          signal: runOptions.signal
         });
-
-        if (!runner) {
-          const unknownEvent = createUnknownToolEvent(toolCall.function.name, round);
-          emitToolEvent(unknownEvent, toolEvents, this.options.onToolEvent);
-          loopMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: buildUnknownToolResult(toolCall.function.name, round)
-          });
-          this.logger.warn('tool.unknown', { name: toolCall.function.name, round });
-          continue;
-        }
-
-        try {
-          const result = await runner.execute(toolCall, { signal: runOptions.signal });
-          throwIfAborted(runOptions.signal);
-          if (result.record) {
-            if (isMcpRecord(result.record)) mcpToolCalls.push(result.record);
-            else if (isFileRecord(result.record)) fileToolCalls.push(result.record);
-            else if (isSkillRecord(result.record)) skillToolCalls.push(result.record);
-            else webToolCalls.push(result.record);
-          }
-          loopMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: result.content
-          });
-          const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, result.content, round);
-          emitToolEvent(successEvent, toolEvents, this.options.onToolEvent);
-          this.logger.info('tool.success', {
-            name: toolCall.function.name,
-            ...summarizeToolResult(result.record, result.content),
-            round
-          });
-          if (result.terminal) {
-            return this.finalizeAfterTerminalTool(modelKind, loopMessages, {
-              webToolCalls,
-              mcpToolCalls,
-              fileToolCalls,
-              skillToolCalls,
-              toolEvents,
-              signal: runOptions.signal
-            });
-          }
-        } catch (error) {
-          if (runOptions.signal?.aborted) throw createAbortError();
-          loopMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: buildToolErrorResult(toolCall.function.name, error, round)
-          });
-          const errorEvent = createToolErrorEvent(toolCall.function.name, error, round);
-          emitToolEvent(errorEvent, toolEvents, this.options.onToolEvent);
-          this.logger.warn('tool.error', {
-            name: toolCall.function.name,
-            ...summarizeToolError(error),
-            round
-          });
-        }
       }
     }
 
@@ -187,6 +139,203 @@ export class QueryEngine {
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
     return this.tools.find(tool => tool.canExecute(name));
+  }
+
+  private async executeToolRound(
+    toolCalls: ChatToolCall[],
+    round: number,
+    signal: AbortSignal | undefined,
+    state: Omit<QueryEngineResult, 'text'>
+  ): Promise<{ messages: ChatMessage[]; terminal: boolean }> {
+    const tasks = toolCalls.map(toolCall => {
+      const runner = this.findRunner(toolCall.function.name);
+      const mode = runner?.executionMode?.(toolCall.function.name) ?? 'serial';
+      return { toolCall, runner, mode };
+    });
+    const outputs = new Map<string, { message: ChatMessage; terminal: boolean }>();
+    const exclusiveIndex = tasks.findIndex(task => task.runner && task.mode === 'exclusive');
+
+    for (const task of tasks) {
+      this.emitToolStart(task.toolCall, round, state.toolEvents);
+    }
+
+    if (exclusiveIndex >= 0) {
+      for (let index = 0; index < tasks.length; index += 1) {
+        const task = tasks[index];
+        if (index === exclusiveIndex) {
+          const result = await this.executeSingleTool(task.toolCall, task.runner, round, signal, state);
+          outputs.set(task.toolCall.id, result);
+          continue;
+        }
+        const reason = `同一轮存在独占工具 ${tasks[exclusiveIndex].toolCall.function.name}，为避免并发写入或状态竞争，已跳过 ${task.toolCall.function.name}。`;
+        outputs.set(task.toolCall.id, this.skipTool(task.toolCall, reason, round, state.toolEvents));
+      }
+      return orderedRoundOutput(toolCalls, outputs);
+    }
+
+    const parallelTasks = tasks.filter(task => task.runner && task.mode === 'parallel');
+    await Promise.all(parallelTasks.map(async task => {
+      const result = await this.executeSingleTool(task.toolCall, task.runner, round, signal, state);
+      outputs.set(task.toolCall.id, result);
+    }));
+
+    for (const task of tasks.filter(item => !item.runner || item.mode !== 'parallel')) {
+      const result = await this.executeSingleTool(task.toolCall, task.runner, round, signal, state);
+      outputs.set(task.toolCall.id, result);
+    }
+
+    return orderedRoundOutput(toolCalls, outputs);
+  }
+
+  private emitToolStart(toolCall: ChatToolCall, round: number, toolEvents: ToolProgressEvent[]): void {
+    const startEvent = createToolStartEvent(toolCall, round);
+    emitToolEvent(startEvent, toolEvents, this.options.onToolEvent);
+    this.logger.info('tool.start', {
+      ...summarizeToolArguments(toolCall),
+      round
+    });
+  }
+
+  private async executeSingleTool(
+    toolCall: ChatToolCall,
+    runner: ToolRunner<ToolCallRecord> | undefined,
+    round: number,
+    signal: AbortSignal | undefined,
+    state: Omit<QueryEngineResult, 'text'>
+  ): Promise<{ message: ChatMessage; terminal: boolean }> {
+    throwIfAborted(signal);
+    if (!runner) {
+      const unknownEvent = createUnknownToolEvent(toolCall.function.name, round);
+      emitToolEvent(unknownEvent, state.toolEvents, this.options.onToolEvent);
+      this.logger.warn('tool.unknown', { name: toolCall.function.name, round });
+      return {
+        message: {
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: buildUnknownToolResult(toolCall.function.name, round)
+        },
+        terminal: false
+      };
+    }
+
+    try {
+      const result = await this.runToolWithLifecycle(runner, toolCall, round, signal);
+      throwIfAborted(signal);
+      recordToolResult(result.record, state);
+      const successEvent = createToolSuccessEvent(toolCall.function.name, result.record, result.content, round);
+      emitToolEvent(successEvent, state.toolEvents, this.options.onToolEvent);
+      this.logger.info('tool.success', {
+        name: toolCall.function.name,
+        ...summarizeToolResult(result.record, result.content),
+        round
+      });
+      return {
+        message: {
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: result.content
+        },
+        terminal: Boolean(result.terminal)
+      };
+    } catch (error) {
+      if (signal?.aborted) throw createAbortError();
+      const errorEvent = createToolErrorEvent(toolCall.function.name, error, round);
+      emitToolEvent(errorEvent, state.toolEvents, this.options.onToolEvent);
+      this.logger.warn('tool.error', {
+        name: toolCall.function.name,
+        ...summarizeToolError(error),
+        round
+      });
+      return {
+        message: {
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: buildToolErrorResult(toolCall.function.name, error, round)
+        },
+        terminal: false
+      };
+    }
+  }
+
+  private async runToolWithLifecycle(
+    runner: ToolRunner<ToolCallRecord>,
+    toolCall: ChatToolCall,
+    round: number,
+    parentSignal: AbortSignal | undefined
+  ): Promise<ToolExecutionResult<ToolCallRecord>> {
+    const timeoutMs = this.options.toolTimeoutMs ?? 120_000;
+    const controller = new AbortController();
+    const abortFromParent = (): void => controller.abort(parentSignal?.reason ?? createAbortError());
+    if (parentSignal) {
+      if (parentSignal.aborted) abortFromParent();
+      else parentSignal.addEventListener('abort', abortFromParent, { once: true });
+    }
+    let timedOut = false;
+    let settledByRace = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error(`工具超时：${toolCall.function.name} 超过 ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const execution = Promise.resolve().then(() => runner.execute(toolCall, { signal: controller.signal }));
+    execution.then(
+      result => {
+        if (!settledByRace) return;
+        this.logger.warn('tool.orphan_result', {
+          name: toolCall.function.name,
+          toolCallId: toolCall.id,
+          round,
+          resultChars: result.content.length,
+          reason: timedOut ? 'timeout' : 'aborted'
+        });
+      },
+      error => {
+        if (!settledByRace) return;
+        this.logger.warn('tool.orphan_result', {
+          name: toolCall.function.name,
+          toolCallId: toolCall.id,
+          round,
+          reason: timedOut ? 'timeout' : 'aborted',
+          ...summarizeToolError(error)
+        });
+      }
+    );
+
+    try {
+      return await Promise.race([
+        execution,
+        new Promise<ToolExecutionResult<ToolCallRecord>>((_, reject) => {
+          const onAbort = (): void => {
+            reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error('工具已取消'));
+          };
+          if (controller.signal.aborted) onAbort();
+          else controller.signal.addEventListener('abort', onAbort, { once: true });
+        })
+      ]);
+    } finally {
+      settledByRace = true;
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    }
+  }
+
+  private skipTool(toolCall: ChatToolCall, reason: string, round: number, toolEvents: ToolProgressEvent[]): { message: ChatMessage; terminal: boolean } {
+    const error = new Error(reason);
+    const errorEvent = createToolErrorEvent(toolCall.function.name, error, round);
+    emitToolEvent(errorEvent, toolEvents, this.options.onToolEvent);
+    this.logger.warn('tool.skipped', {
+      name: toolCall.function.name,
+      round,
+      reason
+    });
+    return {
+      message: {
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: buildSkippedToolResult(toolCall.function.name, reason, round)
+      },
+      terminal: false
+    };
   }
 
   private async finalizeAfterTerminalTool(
@@ -225,6 +374,47 @@ function emitToolEvent(
 ): void {
   events.push(event);
   handler?.(event);
+}
+
+function normalizeToolCallIds(toolCalls: ChatToolCall[]): ChatToolCall[] {
+  const seen = new Set<string>();
+  return toolCalls.map((toolCall, index) => {
+    const baseId = toolCall.id || `tool_call_${index}`;
+    const id = seen.has(baseId) ? `${baseId}_${index}` : baseId;
+    seen.add(id);
+    if (id === toolCall.id) return toolCall;
+    return { ...toolCall, id };
+  });
+}
+
+function orderedRoundOutput(
+  toolCalls: ChatToolCall[],
+  outputs: Map<string, { message: ChatMessage; terminal: boolean }>
+): { messages: ChatMessage[]; terminal: boolean } {
+  const messages: ChatMessage[] = [];
+  let terminal = false;
+  for (const toolCall of toolCalls) {
+    const output = outputs.get(toolCall.id);
+    if (!output) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: buildSkippedToolResult(toolCall.function.name, '工具执行器没有返回结果，已生成占位 tool result，避免 orphan tool_use。', 0)
+      });
+      continue;
+    }
+    messages.push(output.message);
+    terminal = terminal || output.terminal;
+  }
+  return { messages, terminal };
+}
+
+function recordToolResult(record: ToolCallRecord | undefined, state: Omit<QueryEngineResult, 'text'>): void {
+  if (!record) return;
+  if (isMcpRecord(record)) state.mcpToolCalls.push(record);
+  else if (isFileRecord(record)) state.fileToolCalls.push(record);
+  else if (isSkillRecord(record)) state.skillToolCalls.push(record);
+  else state.webToolCalls.push(record);
 }
 
 function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {

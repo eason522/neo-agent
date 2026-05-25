@@ -112,6 +112,10 @@ export class WebToolRunner implements ToolRunner<WebToolCallRecord> {
     return this.isEnabled() && (name === WEB_SEARCH_TOOL_NAME || name === WEB_FETCH_TOOL_NAME);
   }
 
+  executionMode(): 'parallel' {
+    return 'parallel';
+  }
+
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<WebToolResult> {
     throwIfAborted(options.signal);
     if (call.function.name === WEB_SEARCH_TOOL_NAME) {

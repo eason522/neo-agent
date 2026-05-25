@@ -164,12 +164,13 @@ export class McpManager {
     }));
   }
 
-  async callTool(qualifiedName: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(qualifiedName: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<unknown> {
     const [serverName, toolName] = qualifiedName.split('.', 2);
     if (!serverName || !toolName) throw new Error('Use qualified MCP tool name: server.tool');
     const server = this.servers.get(serverName);
     if (!server) throw new Error(`MCP server is not connected: ${serverName}`);
-    return server.client.callTool({ name: toolName, arguments: args });
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('MCP 工具已取消');
+    return await this.abortableMcpRequest(server, () => server.client.callTool({ name: toolName, arguments: args }), options.signal);
   }
 
   async close(): Promise<void> {
@@ -184,6 +185,40 @@ export class McpManager {
     const server = this.servers.get(serverName);
     if (!server) throw new Error(`MCP server is not connected: ${serverName}`);
     return [server];
+  }
+
+  private async abortableMcpRequest<T>(server: ConnectedServer, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return run();
+    let settled = false;
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        void server.client.close?.().catch(error => {
+          this.logger?.warn('mcp.abort.close_error', {
+            server: server.name,
+            errorMessage: error instanceof Error ? error.message : String(error)
+          });
+        });
+        this.servers.delete(server.name);
+        reject(signal.reason instanceof Error ? signal.reason : new Error(`MCP 请求已取消：${server.name}`));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      run().then(
+        result => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', onAbort);
+          resolve(result);
+        },
+        error => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        }
+      );
+    });
   }
 }
 

@@ -80,6 +80,10 @@ export class McpResourceRunner implements ToolRunner<McpToolCallRecord> {
     return name === LIST_MCP_RESOURCES_TOOL_NAME || name === READ_MCP_RESOURCE_TOOL_NAME;
   }
 
+  executionMode(): 'serial' {
+    return 'serial';
+  }
+
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: McpToolCallRecord }> {
     throwIfAborted(options.signal);
     const start = Date.now();

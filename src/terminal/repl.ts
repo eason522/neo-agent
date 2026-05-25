@@ -1,5 +1,7 @@
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
@@ -7,9 +9,35 @@ import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSug
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 
+type ReplState = {
+  debugEnabled: boolean;
+  lastTurn?: {
+    inputChars: number;
+    modelKind: string;
+    durationMs: number;
+    toolEvents: ToolProgressEvent[];
+    webToolCalls: number;
+    mcpToolCalls: number;
+    fileToolCalls: number;
+    skillToolCalls: number;
+  };
+};
+
 export async function startRepl(agent: NeoAgent): Promise<void> {
-  const rl = readline.createInterface({ input, output, prompt: chalk.gray('neo> ') });
   const isInteractive = Boolean(input.isTTY);
+  const historyFile = path.join(agent.config.homeDir, 'repl_history');
+  const rl = readline.createInterface({
+    input,
+    output,
+    prompt: chalk.gray('neo> '),
+    historySize: 200,
+    removeHistoryDuplicates: true
+  });
+  installPersistentHistory(rl, await loadReplHistory(historyFile));
+  const state: ReplState = {
+    debugEnabled: process.env.NEO_AGENT_REPL_DEBUG === '1'
+  };
+  let multilineBuffer: string[] | undefined;
   let activeController: AbortController | undefined;
   agent.setMcpPermissionAsker(isInteractive ? async request => {
     const answer = activeController
@@ -34,39 +62,64 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
   try {
     if (isInteractive) rl.prompt();
     for await (const raw of rl) {
-      const line = raw.trim();
+      const rawLine = raw.trimEnd();
+      const line = rawLine.trim();
+      if (multilineBuffer) {
+        if (line === '/cancel') {
+          multilineBuffer = undefined;
+          rl.setPrompt(chalk.gray('neo> '));
+          output.write(chalk.gray('已取消多行输入。\n'));
+          if (isInteractive) rl.prompt();
+          continue;
+        }
+        if (line === '.' || line === '/end') {
+          const combined = multilineBuffer.join('\n').trim();
+          multilineBuffer = undefined;
+          rl.setPrompt(chalk.gray('neo> '));
+          if (!combined) {
+            if (isInteractive) rl.prompt();
+            continue;
+          }
+          await saveReplHistory(historyFile, combined);
+          await runAgentTurn(agent, combined, isInteractive, rl, state, controller => {
+            activeController = controller;
+          });
+          activeController = undefined;
+          if (isInteractive) rl.prompt();
+          continue;
+        }
+        multilineBuffer.push(rawLine);
+        if (isInteractive) rl.prompt();
+        continue;
+      }
       if (!line) {
         if (isInteractive) rl.prompt();
         continue;
       }
+      if (line === '/multi') {
+        multilineBuffer = [];
+        rl.setPrompt(chalk.gray('neo… '));
+        output.write(chalk.gray('进入多行输入：单独输入 . 或 /end 提交，/cancel 取消。\n'));
+        if (isInteractive) rl.prompt();
+        continue;
+      }
+      if (rawLine.endsWith('\\')) {
+        multilineBuffer = [rawLine.slice(0, -1)];
+        rl.setPrompt(chalk.gray('neo… '));
+        if (isInteractive) rl.prompt();
+        continue;
+      }
       if (line === '/exit' || line === '/quit') break;
-      if (await handleCommand(agent, line)) {
+      await saveReplHistory(historyFile, line);
+      if (await handleCommand(agent, line, state)) {
         if (isInteractive) rl.prompt();
         continue;
       }
 
-      const { text, attachments } = extractImageAttachments(line);
-      output.write(chalk.gray('thinking...\n'));
-      const turnController = new AbortController();
-      activeController = turnController;
-      try {
-        const response = await agent.ask(text, attachments, { signal: turnController.signal });
-        output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n\n`);
-        if (isInteractive && response.skillSuggestion && !turnController.signal.aborted) {
-          await confirmSkillSuggestion(agent, rl, response.skillSuggestion, turnController.signal);
-        }
-        if (isInteractive && response.skillImprovementSuggestion && !turnController.signal.aborted) {
-          await confirmSkillImprovement(agent, rl, response.skillImprovementSuggestion, turnController.signal);
-        }
-      } catch (error) {
-        if (isAbortError(error) || turnController.signal.aborted) {
-          output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
-        } else {
-          output.write(`${chalk.red('error')} ${error instanceof Error ? error.message : String(error)}\n\n`);
-        }
-      } finally {
-        activeController = undefined;
-      }
+      await runAgentTurn(agent, line, isInteractive, rl, state, controller => {
+        activeController = controller;
+      });
+      activeController = undefined;
       if (isInteractive) rl.prompt();
     }
   } finally {
@@ -75,6 +128,125 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     rl.close();
     await agent.close();
   }
+}
+
+async function runAgentTurn(
+  agent: NeoAgent,
+  line: string,
+  isInteractive: boolean,
+  rl: ReturnType<typeof readline.createInterface>,
+  state: ReplState,
+  setActiveController: (controller: AbortController | undefined) => void
+): Promise<void> {
+  const { text, attachments } = extractImageAttachments(line);
+  output.write(chalk.gray('thinking...\n'));
+  const startedAt = Date.now();
+  const turnController = new AbortController();
+  setActiveController(turnController);
+  try {
+    const response = await agent.ask(text, attachments, { signal: turnController.signal });
+    const durationMs = Date.now() - startedAt;
+    state.lastTurn = {
+      inputChars: text.length,
+      modelKind: response.modelKind,
+      durationMs,
+      toolEvents: response.toolEvents ?? [],
+      webToolCalls: response.webToolCalls?.length ?? 0,
+      mcpToolCalls: response.mcpToolCalls?.length ?? 0,
+      fileToolCalls: response.fileToolCalls?.length ?? 0,
+      skillToolCalls: response.skillToolCalls?.length ?? 0
+    };
+    output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n`);
+    output.write(`${formatStatusLine(state.lastTurn)}\n\n`);
+    if (state.debugEnabled) output.write(`${formatDebugView(agent, state)}\n`);
+    if (isInteractive && response.skillSuggestion && !turnController.signal.aborted) {
+      await confirmSkillSuggestion(agent, rl, response.skillSuggestion, turnController.signal);
+    }
+    if (isInteractive && response.skillImprovementSuggestion && !turnController.signal.aborted) {
+      await confirmSkillImprovement(agent, rl, response.skillImprovementSuggestion, turnController.signal);
+    }
+  } catch (error) {
+    if (isAbortError(error) || turnController.signal.aborted) {
+      output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
+    } else {
+      output.write(`${chalk.red('error')} ${error instanceof Error ? error.message : String(error)}\n\n`);
+    }
+  } finally {
+    setActiveController(undefined);
+  }
+}
+
+async function loadReplHistory(filePath: string): Promise<string[]> {
+  const raw = await readFile(filePath, 'utf8').catch(() => '');
+  return raw
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(-200);
+}
+
+function installPersistentHistory(rl: ReturnType<typeof readline.createInterface>, history: string[]): void {
+  const target = rl as unknown as { history?: string[] };
+  target.history = [...history].reverse();
+}
+
+async function saveReplHistory(filePath: string, line: string): Promise<void> {
+  const normalized = line.trim();
+  if (!normalized || !shouldPersistHistory(normalized)) return;
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const existing = await loadReplHistory(filePath);
+  const next = [...existing.filter(item => item !== normalized), normalized].slice(-200);
+  await writeFile(filePath, `${next.join('\n')}\n`, 'utf8');
+}
+
+function shouldPersistHistory(line: string): boolean {
+  return !/(api[-_ ]?key|sk-[A-Za-z0-9]{12,}|tp-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9_-]{12,})/i.test(line);
+}
+
+function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
+  const toolCount = turn.toolEvents.filter(event => event.phase === 'start').length;
+  const parts = [
+    `模型=${turn.modelKind}`,
+    `工具=${toolCount}`,
+    `耗时=${turn.durationMs}ms`
+  ];
+  const detail = [
+    turn.webToolCalls > 0 ? `web=${turn.webToolCalls}` : '',
+    turn.fileToolCalls > 0 ? `file=${turn.fileToolCalls}` : '',
+    turn.mcpToolCalls > 0 ? `mcp=${turn.mcpToolCalls}` : '',
+    turn.skillToolCalls > 0 ? `skill=${turn.skillToolCalls}` : ''
+  ].filter(Boolean);
+  if (detail.length > 0) parts.push(detail.join(','));
+  return chalk.gray(`status ${parts.join(' ')}`);
+}
+
+function printReplStatus(agent: NeoAgent, state: ReplState): void {
+  console.log([
+    chalk.bold('neo REPL 状态'),
+    `homeDir: ${agent.config.homeDir}`,
+    `log: ${agent.logger.filePath}`,
+    `transcript: ${agent.transcripts.filePath}`,
+    `main: ${agent.config.models.main.model}`,
+    `small: ${agent.config.models.small.model}`,
+    `toolRounds: ${agent.config.web.maxToolRounds}`,
+    `debug: ${state.debugEnabled ? 'on' : 'off'}`,
+    state.lastTurn ? formatStatusLine(state.lastTurn) : chalk.gray('status 尚无本轮对话')
+  ].join('\n'));
+}
+
+function formatDebugView(agent: NeoAgent, state: ReplState): string {
+  const turn = state.lastTurn;
+  if (!turn) return chalk.gray('debug 暂无最近一轮对话。');
+  const events = turn.toolEvents.length > 0
+    ? turn.toolEvents.map(event => `- ${event.phase} round=${event.round + 1} ${event.name}: ${event.summary}`).join('\n')
+    : chalk.gray('- 无工具事件');
+  return [
+    chalk.gray('debug'),
+    chalk.gray(`inputChars=${turn.inputChars} durationMs=${turn.durationMs}`),
+    chalk.gray(`log=${agent.logger.filePath}`),
+    chalk.gray(`transcript=${agent.transcripts.filePath}`),
+    events
+  ].join('\n');
 }
 
 async function confirmSkillSuggestion(
@@ -142,7 +314,7 @@ async function confirmSkillImprovement(
   });
 }
 
-async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
+async function handleCommand(agent: NeoAgent, line: string, state: ReplState): Promise<boolean> {
   if (!line.startsWith('/')) return false;
   const [command, ...rest] = line.split(/\s+/);
   const arg = rest.join(' ').trim();
@@ -152,6 +324,27 @@ async function handleCommand(agent: NeoAgent, line: string): Promise<boolean> {
       await agent.transcripts.append('command', line, { command });
       printHelp();
       return true;
+    case '/status':
+      await agent.transcripts.append('command', line, { command });
+      printReplStatus(agent, state);
+      return true;
+    case '/debug': {
+      await agent.transcripts.append('command', line, { command, argsChars: arg.length });
+      const mode = arg.trim().toLowerCase();
+      if (mode === 'on') {
+        state.debugEnabled = true;
+        console.log(chalk.green('debug 已开启'));
+      } else if (mode === 'off') {
+        state.debugEnabled = false;
+        console.log(chalk.gray('debug 已关闭'));
+      } else if (mode === 'last') {
+        console.log(formatDebugView(agent, state));
+      } else {
+        state.debugEnabled = !state.debugEnabled;
+        console.log(state.debugEnabled ? chalk.green('debug 已开启') : chalk.gray('debug 已关闭'));
+      }
+      return true;
+    }
     case '/memory': {
       await agent.transcripts.append('command', line, { command, queryChars: arg.length });
       const parsed = parseMemoryQuery(arg);
@@ -372,6 +565,9 @@ function printHelp(): void {
   console.log([
     '/help                 查看命令',
     '/exit                 退出',
+    '/status               查看当前 REPL 状态',
+    '/debug [on|off|last]  开关轻量 debug 视图',
+    '/multi                多行输入，. 或 /end 提交',
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
     '/memory [查询词]      查看或搜索记忆，支持 --type',
     '/memory-update <id|uri> <新内容>',

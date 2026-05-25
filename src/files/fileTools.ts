@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -35,6 +36,8 @@ const maxReadBytes = 512 * 1024;
 const maxGlobResults = 100;
 const defaultGrepLimit = 250;
 const maxSearchFiles = 5000;
+const grepTimeoutMs = 10_000;
+const maxGrepOutputChars = 100_000;
 
 export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
   private rootRealPath: string | undefined;
@@ -111,6 +114,10 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return name === READ_TOOL_NAME || name === GLOB_TOOL_NAME || name === GREP_TOOL_NAME;
   }
 
+  executionMode(): 'parallel' {
+    return 'parallel';
+  }
+
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: FileToolCallRecord }> {
     throwIfAborted(options.signal);
     if (call.function.name === READ_TOOL_NAME) return this.read(call.function.arguments, options.signal);
@@ -184,20 +191,23 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const start = Date.now();
     throwIfAborted(signal);
     const target = await this.resolveInsideProject(input.path ?? '.');
-    const targetStat = await stat(target);
-    const regex = new RegExp(input.pattern, input['-i'] ? 'i' : '');
-    const globMatcher = input.glob ? globToRegExp(input.glob) : undefined;
-    const files = targetStat.isFile() ? [target] : await this.walkFiles(target, maxSearchFiles, signal);
-    const filteredFiles = globMatcher
-      ? files.filter(file => globMatcher.test(relativeToRoot(file, this.rootRealPath!)) || globMatcher.test(path.basename(file)))
-      : files;
     const mode = input.output_mode ?? 'files_with_matches';
     const offset = input.offset ?? 0;
     const limit = input.head_limit === 0 ? 1000 : input.head_limit ?? defaultGrepLimit;
-    const result = await this.searchFiles(filteredFiles, regex, mode, offset, limit, signal);
+    const result = await runRipgrep({
+      root: this.rootRealPath!,
+      target: relativeToRoot(target, this.rootRealPath!),
+      pattern: input.pattern,
+      ignoreCase: input['-i'] ?? false,
+      glob: input.glob,
+      mode,
+      offset,
+      limit,
+      signal
+    });
     const content = formatGrepResult(result, mode);
     return {
-      content: truncate(content, 100_000),
+      content: truncate(content, maxGrepOutputChars),
       record: {
         name: GREP_TOOL_NAME,
         path: relativeToRoot(target, this.rootRealPath!),
@@ -207,42 +217,6 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         durationMs: Date.now() - start
       }
     };
-  }
-
-  private async searchFiles(
-    files: string[],
-    regex: RegExp,
-    mode: 'content' | 'files_with_matches' | 'count',
-    offset: number,
-    limit: number,
-    signal?: AbortSignal
-  ): Promise<{ lines: string[]; count: number; truncated: boolean }> {
-    const lines: string[] = [];
-    let count = 0;
-    for (const file of files) {
-      throwIfAborted(signal);
-      const fileStat = await stat(file).catch(() => undefined);
-      if (!fileStat?.isFile() || fileStat.size > maxReadBytes) continue;
-      const raw = await readFile(file, 'utf8').catch(() => undefined);
-      if (raw === undefined || raw.includes('\u0000')) continue;
-      const fileLines = raw.split(/\r?\n/);
-      let fileMatchCount = 0;
-      const contentMatches: string[] = [];
-      fileLines.forEach((line, index) => {
-        if (regex.test(line)) {
-          fileMatchCount += 1;
-          if (mode === 'content') contentMatches.push(`${relativeToRoot(file, this.rootRealPath!)}:${index + 1}:${line}`);
-        }
-      });
-      if (fileMatchCount === 0) continue;
-      if (mode === 'files_with_matches') lines.push(relativeToRoot(file, this.rootRealPath!));
-      else if (mode === 'count') lines.push(`${relativeToRoot(file, this.rootRealPath!)}:${fileMatchCount}`);
-      else lines.push(...contentMatches);
-      count += mode === 'content' ? contentMatches.length : 1;
-      if (lines.length >= offset + limit) break;
-    }
-    const sliced = lines.slice(offset, offset + limit);
-    return { lines: sliced, count, truncated: lines.length > offset + limit };
   }
 
   private async walkFiles(directory: string, limit: number, signal?: AbortSignal): Promise<string[]> {
@@ -329,6 +303,140 @@ function formatGrepResult(result: { lines: string[]; count: number; truncated: b
     ...result.lines,
     result.truncated ? '[结果已截断，请使用 offset/head_limit 继续查看]' : ''
   ].filter(Boolean).join('\n');
+}
+
+type RipgrepOptions = {
+  root: string;
+  target: string;
+  pattern: string;
+  ignoreCase: boolean;
+  glob?: string;
+  mode: 'content' | 'files_with_matches' | 'count';
+  offset: number;
+  limit: number;
+  signal?: AbortSignal;
+};
+
+async function runRipgrep(options: RipgrepOptions): Promise<{ lines: string[]; count: number; truncated: boolean }> {
+  const args = [
+    '--no-messages',
+    '--color=never',
+    '--hidden',
+    ...ignoredRipgrepGlobs(),
+    ...(options.ignoreCase ? ['-i'] : []),
+    ...(options.glob ? ['--glob', options.glob] : []),
+    ...modeArgs(options.mode),
+    '--regexp',
+    options.pattern,
+    options.target
+  ];
+  const output = await runCommand('rg', args, {
+    cwd: options.root,
+    timeoutMs: grepTimeoutMs,
+    maxOutputChars: maxGrepOutputChars,
+    signal: options.signal,
+    noMatchExitCode: 1
+  });
+  if (!output.stdout.trim()) return { lines: [], count: 0, truncated: false };
+  const lines = output.stdout.split(/\r?\n/).filter(Boolean);
+  const sliced = lines.slice(options.offset, options.offset + options.limit);
+  return {
+    lines: sliced,
+    count: lines.length,
+    truncated: output.truncated || lines.length > options.offset + options.limit
+  };
+}
+
+function modeArgs(mode: 'content' | 'files_with_matches' | 'count'): string[] {
+  if (mode === 'files_with_matches') return ['--files-with-matches'];
+  if (mode === 'count') return ['--count'];
+  return ['--line-number', '--no-heading'];
+}
+
+function ignoredRipgrepGlobs(): string[] {
+  return [...ignoredDirectories].flatMap(directory => ['--glob', `!${directory}/**`]);
+}
+
+async function runCommand(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    maxOutputChars: number;
+    signal?: AbortSignal;
+    noMatchExitCode?: number;
+  }
+): Promise<{ stdout: string; truncated: boolean }> {
+  throwIfAborted(options.signal);
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let closed = false;
+    let truncated = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error);
+      else resolve({ stdout, truncated });
+    };
+    const kill = (): void => {
+      if (process.platform === 'win32') child.kill();
+      else {
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!closed) child.kill('SIGKILL');
+        }, 2000).unref();
+      }
+    };
+    const timer = setTimeout(() => {
+      kill();
+      finish(new Error(`${command} 超时：${options.timeoutMs}ms`));
+    }, options.timeoutMs);
+    const onAbort = (): void => {
+      kill();
+      finish(options.signal?.reason instanceof Error ? options.signal.reason : new Error('工具已取消'));
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', chunk => {
+      if (stdout.length >= options.maxOutputChars) {
+        truncated = true;
+        kill();
+        return;
+      }
+      stdout += String(chunk);
+      if (stdout.length > options.maxOutputChars) {
+        stdout = stdout.slice(0, options.maxOutputChars);
+        truncated = true;
+        kill();
+      }
+    });
+    child.stderr?.on('data', chunk => {
+      stderr += String(chunk).slice(0, 2000);
+    });
+    child.on('error', error => {
+      if ('code' in error && error.code === 'ENOENT') {
+        finish(new Error('rg 不可用：请安装 ripgrep，或确认 rg 在 PATH 中。'));
+        return;
+      }
+      finish(error);
+    });
+    child.on('close', code => {
+      closed = true;
+      if (truncated) return finish();
+      if (code === 0 || code === options.noMatchExitCode) return finish();
+      finish(new Error(`${command} 失败：exit=${code ?? 'unknown'} ${stderr.trim()}`.trim()));
+    });
+  });
 }
 
 function relativeToRoot(filePath: string, root: string): string {

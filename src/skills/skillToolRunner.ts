@@ -120,6 +120,10 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
     return (name === SKILL_TOOL_NAME && this.callableSkills().length > 0) || name === INSTALL_SKILL_PACKAGE_TOOL_NAME;
   }
 
+  executionMode(name: string): 'parallel' | 'exclusive' {
+    return name === INSTALL_SKILL_PACKAGE_TOOL_NAME ? 'exclusive' : 'parallel';
+  }
+
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<ToolExecutionResult<SkillToolCallRecord>> {
     throwIfAborted(options.signal);
     if (call.function.name === INSTALL_SKILL_PACKAGE_TOOL_NAME) return this.installSkillPackage(call, options);

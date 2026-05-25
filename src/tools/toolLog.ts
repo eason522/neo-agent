@@ -153,6 +153,18 @@ export function buildUnknownToolResult(name: string, round: number): string {
   });
 }
 
+export function buildSkippedToolResult(name: string, reason: string, round: number): string {
+  return JSON.stringify({
+    error: {
+      tool: name,
+      category: 'skipped',
+      message: reason,
+      round
+    },
+    recoveryHint: '这个工具调用没有执行。请不要声称它已经完成；基于已执行工具的结果继续，或说明限制。'
+  });
+}
+
 function summarizeWebRecord(record: WebToolCallRecord, content: string): Record<string, unknown> {
   return {
     resultKind: 'web',
@@ -232,6 +244,7 @@ function categorizeError(message: string): string {
   if (/api key|401|403|unauthorized|forbidden/i.test(message)) return 'auth';
   if (/invalid|无效|JSON|schema/i.test(message)) return 'validation';
   if (/network|fetch|ECONN|ENOTFOUND|连接/i.test(message)) return 'network';
+  if (/skipped|跳过|独占/i.test(message)) return 'skipped';
   return 'unknown';
 }
 

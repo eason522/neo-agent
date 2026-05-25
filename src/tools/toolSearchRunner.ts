@@ -47,6 +47,10 @@ export class ToolSearchRunner implements ToolRunner<ToolCallRecord> {
     return name === TOOL_SEARCH_TOOL_NAME && this.mcpToolRunner.hasDeferredTools();
   }
 
+  executionMode(): 'exclusive' {
+    return 'exclusive';
+  }
+
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<ToolExecutionResult<ToolCallRecord>> {
     throwIfAborted(options.signal);
     const input = inputSchema.parse(parseJsonObject(call.function.arguments));

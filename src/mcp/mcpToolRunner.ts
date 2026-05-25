@@ -64,6 +64,10 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
     return this.activeToolNames.has(name) && this.tools.some(tool => tool.fullName === name);
   }
 
+  executionMode(): 'serial' {
+    return 'serial';
+  }
+
   hasDeferredTools(): boolean {
     return this.shouldDeferTools() && this.tools.some(tool => !this.activeToolNames.has(tool.fullName));
   }
@@ -97,7 +101,7 @@ export class McpToolRunner implements ToolRunner<McpToolCallRecord> {
     throwIfAborted(options.signal);
     if (!permission.allowed) throw new Error(permission.reason);
     const start = Date.now();
-    const result = await this.mcp.callTool(`${tool.serverName}.${tool.toolName}`, args);
+    const result = await this.mcp.callTool(`${tool.serverName}.${tool.toolName}`, args, { signal: options.signal });
     const content = truncate(formatMcpResult(result), 100_000);
     return {
       content,

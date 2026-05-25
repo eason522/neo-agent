@@ -411,11 +411,113 @@ test('QueryEngine 支持请求级取消并停止后续工具执行', async () =>
   if (toolExecuted) throw new Error('请求取消后不应该继续执行工具。');
 });
 
+test('QueryEngine 按工具安全策略并发执行并保持 tool result 配对顺序', async () => {
+  const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+  let active = 0;
+  let maxActive = 0;
+  let modelCalls = 0;
+  const model = {
+    chatWithTools: async options => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: '',
+          toolCalls: ['SafeA', 'SafeB', 'SerialC'].map((name, index) => ({
+            id: `call_${index}`,
+            type: 'function',
+            function: { name, arguments: '{}' }
+          }))
+        };
+      }
+      const toolMessages = options.messages.filter(message => message.role === 'tool');
+      const paired = toolMessages.map(message => `${message.tool_call_id}:${message.content}`).join('|');
+      assertIncludes(paired, 'call_0:SafeA done');
+      assertIncludes(paired, 'call_1:SafeB done');
+      assertIncludes(paired, 'call_2:SerialC done');
+      if (!paired.startsWith('call_0:SafeA done|call_1:SafeB done|call_2:SerialC done')) {
+        throw new Error(`tool result 顺序应与 tool_calls 一致：${paired}`);
+      }
+      return { content: '工具完成', toolCalls: [] };
+    },
+    chat: async () => 'unused'
+  };
+  const runner = {
+    definitions: () => ['SafeA', 'SafeB', 'SerialC'].map(name => ({
+      type: 'function',
+      function: { name, description: name, parameters: { type: 'object', properties: {} } }
+    })),
+    canExecute: name => ['SafeA', 'SafeB', 'SerialC'].includes(name),
+    executionMode: name => name.startsWith('Safe') ? 'parallel' : 'serial',
+    execute: async call => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await delay(call.function.name.startsWith('Safe') ? 30 : 1);
+      active -= 1;
+      return { content: `${call.function.name} done` };
+    }
+  };
+  const logger = { info() {}, warn() {}, debug() {}, error() {} };
+  const engine = new QueryEngine({ get: () => model }, [runner], logger, { maxToolRounds: 2, toolTimeoutMs: 1000 });
+  const result = await engine.run('main', [{ role: 'user', content: '并发工具测试' }]);
+  assertIncludes(result.text, '工具完成');
+  if (maxActive < 2) throw new Error(`Safe 工具应该并发执行，maxActive=${maxActive}`);
+});
+
+test('QueryEngine 超时后取消工具并忽略迟到 orphan result', async () => {
+  const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+  const warns = [];
+  let modelCalls = 0;
+  let signalSeen = false;
+  const model = {
+    chatWithTools: async options => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'slow_call',
+            type: 'function',
+            function: { name: 'SlowTool', arguments: '{}' }
+          }]
+        };
+      }
+      const last = options.messages.at(-1);
+      if (last?.role !== 'tool') throw new Error('超时后仍应给模型回灌结构化 tool result。');
+      assertIncludes(last.content, '工具超时');
+      return { content: '已处理超时', toolCalls: [] };
+    },
+    chat: async () => 'unused'
+  };
+  const runner = {
+    definitions: () => [{
+      type: 'function',
+      function: { name: 'SlowTool', description: 'Slow', parameters: { type: 'object', properties: {} } }
+    }],
+    canExecute: name => name === 'SlowTool',
+    executionMode: () => 'parallel',
+    execute: async (_call, options) => {
+      await delay(40);
+      signalSeen = Boolean(options.signal?.aborted);
+      return { content: 'late result' };
+    }
+  };
+  const logger = { info() {}, debug() {}, error() {}, warn(event, fields) { warns.push({ event, fields }); } };
+  const engine = new QueryEngine({ get: () => model }, [runner], logger, { maxToolRounds: 2, toolTimeoutMs: 5 });
+  const result = await engine.run('main', [{ role: 'user', content: '超时工具测试' }]);
+  assertIncludes(result.text, '超时');
+  await delay(60);
+  if (!signalSeen) throw new Error('超时后应该向工具传递 aborted signal。');
+  if (!warns.some(item => item.event === 'tool.orphan_result')) {
+    throw new Error(`迟到工具结果应该被记录为 orphan result：${JSON.stringify(warns)}`);
+  }
+});
+
 test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-files-'));
   await mkdir(path.join(projectDir, 'src'), { recursive: true });
   await writeFile(path.join(projectDir, 'src', 'app.ts'), 'export const answer = 42;\nconsole.log(answer);\n', 'utf8');
   await writeFile(path.join(projectDir, 'README.md'), '# Demo\nanswer lives in src/app.ts\n', 'utf8');
+  await writeFile(path.join(projectDir, 'src', 'binary.bin'), Buffer.from([0, 1, 2, 97, 110, 115, 119, 101, 114, 0, 3]));
   try {
     const { FileToolRunner, GLOB_TOOL_NAME, GREP_TOOL_NAME, READ_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
     const runner = new FileToolRunner(projectDir);
@@ -446,7 +548,16 @@ test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async (
       function: { name: GREP_TOOL_NAME, arguments: JSON.stringify({ pattern: 'answer', output_mode: 'content' }) }
     });
     assertIncludes(grep.content, 'src/app.ts');
+    assertIncludes(grep.content, 'src/app.ts:1:export const answer');
     assertIncludes(grep.content, 'answer');
+    if (grep.content.includes('binary.bin')) throw new Error(`Grep 不应返回二进制文件匹配：${grep.content}`);
+
+    const dashPattern = await runner.execute({
+      id: 'grep_2',
+      type: 'function',
+      function: { name: GREP_TOOL_NAME, arguments: JSON.stringify({ pattern: '- 42', output_mode: 'content' }) }
+    });
+    assertIncludes(dashPattern.content, 'No matches found');
 
     await assertRejects(() => runner.execute({
       id: 'read_2',
@@ -1069,6 +1180,13 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   const result = await run([], {
     input: [
       '/help',
+      '/status',
+      '/debug on',
+      '/debug last',
+      '/debug off',
+      '/multi',
+      '这是一段不会提交给模型的多行输入',
+      '/cancel',
       '/remember --type workflow --tag cli --pin 我喜欢简洁直接的回答',
       '/memory --type workflow 简洁',
       '/memory-export 5',
@@ -1084,6 +1202,11 @@ test('REPL 常用命令不触发模型也能运行', async () => {
     ].join('\n')
   });
   assertIncludes(result.stdout, '/help                 查看命令');
+  assertIncludes(result.stdout, '/multi                多行输入');
+  assertIncludes(result.stdout, 'neo REPL 状态');
+  assertIncludes(result.stdout, 'debug 已开启');
+  assertIncludes(result.stdout, 'debug 暂无最近一轮对话');
+  assertIncludes(result.stdout, '已取消多行输入');
   assertIncludes(result.stdout, '已记住');
   assertIncludes(result.stdout, '置顶 workflow');
   assertIncludes(result.stdout, '我喜欢简洁直接的回答');
@@ -1210,4 +1333,8 @@ async function assertRejects(fn, expectedMessage) {
     return;
   }
   throw new Error(`期望异步抛出包含 ${JSON.stringify(expectedMessage)} 的错误，但函数正常返回。`);
+}
+
+async function delay(ms) {
+  await new Promise(resolve => setTimeout(resolve, ms));
 }
