@@ -26,6 +26,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - MCP 配置命令：`neo mcp list/add/remove/test`
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
+- 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
 - 严格参考 CC-Source 分层结构重写的 system prompt
 - `SOUL.md` 长期人格设定
 - 对话 transcript 持久化
@@ -125,7 +126,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 为 MCP 工具执行添加安全调用协议和权限确认
 - [ ] 针对高风险工具添加权限确认
 - [x] 添加 MCP 配置命令：添加、删除、列表、测试
-- [ ] 添加工具结果日志，并做好脱敏
+- [x] 添加工具结果日志，并做好脱敏
 - [ ] 添加项目感知的文件系统工具支持
 
 ### M5：终端体验向 CC-Source 设计靠拢
@@ -173,7 +174,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
 | terminal REPL | `components/App.tsx`、commands、permission UI、message rendering | 不充分。当前 readline REPL 简洁可用，但离 CC-Source TUI、状态行、中断、权限确认、消息渲染差距明显。 | M5 按 CC-Source 终端体验分阶段校正。 |
-| logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏，但缺工具结果摘要、成本/usage、结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
+| logging | 日志、debug、analytics 相关模块 | 部分符合。已有 JSONL、轮转、脱敏和工具结果摘要，但缺成本/usage、retry 统计和结构化错误码。 | 待办池继续补 usage/cost/retry/error code。 |
 | vision | 附件处理、图片消息、文件读取限制 | 部分符合。MiMo 预分析适合 neo-agent 模型组合，但不是 CC-Source 原生多模态路径。 | 后续补附件大小限制、缓存、截断说明和测试。 |
 
 审查结论：当前最明显的不合规点是“主 agent loop 和工具循环曾内嵌在 `NeoAgent` 中”。已立即校正为最小 `QueryEngine` / `ToolRunner` 分层，并已把 MCP 工具接入该 loop，同时补上默认只读权限保护。仍不充分的模块主要是 sub-agent、REPL、自动 compact 和 skill 生命周期；MCP 仍需继续补 deferred ToolSearch、资源读取工具和交互式权限 UI。开发这些模块时不得继续做孤立实现，必须先对照 CC-Source 对应源代码。
@@ -285,6 +286,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：MCP 配置命令先支持用户级 stdio server
 
 参考 CC-Source `mcp add/list/remove` 的命令结构，neo 先实现用户级 stdio MCP 配置管理：`neo mcp add/list/remove/test`。命令直接维护 `~/.neo-agent/config.json` 中的 `mcp.servers`，`list` 默认只展示 env 数量而不打印 env 值，`test` 会尝试连接并列出工具数量。HTTP/SSE/OAuth、项目级 scope、交互式导入和 token 安全存储暂不做，后续继续按 CC-Source 的 MCP config/service 分层补齐。
+
+### 2026-05-25：工具结果日志只记录脱敏摘要
+
+参考 CC-Source 对工具执行状态、权限和 sandbox 规则的处理方式，neo 的 `QueryEngine` 现在会在 `tool.start`、`tool.success`、`tool.error` 中记录统一摘要：参数字符数、参数 key、Web URL 域名、查询字符数、结果字符数、MCP server/tool、耗时和错误类别。日志不记录完整查询词、完整 URL query、MCP 参数或工具返回正文，避免调试日志变成敏感数据仓库。
 
 ## 恢复开发检查清单
 

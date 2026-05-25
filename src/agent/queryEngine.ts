@@ -2,6 +2,7 @@ import type { ChatMessage, ChatToolDefinition, McpToolCallRecord, TextModelKind,
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
+import { summarizeToolArguments, summarizeToolError, summarizeToolResult } from '../tools/toolLog.js';
 
 export type QueryEngineResult = {
   text: string;
@@ -62,8 +63,7 @@ export class QueryEngine {
       for (const toolCall of response.toolCalls) {
         const runner = this.findRunner(toolCall.function.name);
         this.logger.info('tool.start', {
-          name: toolCall.function.name,
-          argumentChars: toolCall.function.arguments.length,
+          ...summarizeToolArguments(toolCall),
           round
         });
 
@@ -90,6 +90,7 @@ export class QueryEngine {
           });
           this.logger.info('tool.success', {
             name: toolCall.function.name,
+            ...summarizeToolResult(result.record, result.content),
             round
           });
         } catch (error) {
@@ -101,7 +102,7 @@ export class QueryEngine {
           });
           this.logger.warn('tool.error', {
             name: toolCall.function.name,
-            error: message,
+            ...summarizeToolError(error),
             round
           });
         }

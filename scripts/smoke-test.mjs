@@ -85,6 +85,35 @@ test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
   assertIncludes(domainPolicy.blockedDomains.join(','), 'news.example.com');
 });
 
+test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
+  const { summarizeToolArguments, summarizeToolError, summarizeToolResult } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'toolLog.js')).href);
+  const args = summarizeToolArguments({
+    id: 'call_1',
+    type: 'function',
+    function: {
+      name: 'WebSearch',
+      arguments: JSON.stringify({ query: '这是一个不应该进入日志的完整搜索词', url: 'https://docs.example.com/a?token=secret' })
+    }
+  });
+  if (JSON.stringify(args).includes('完整搜索词')) throw new Error(`工具参数日志泄露了完整查询：${JSON.stringify(args)}`);
+  if (JSON.stringify(args).includes('token=secret')) throw new Error(`工具参数日志泄露了 URL query：${JSON.stringify(args)}`);
+  assertIncludes(JSON.stringify(args), 'docs.example.com');
+  assertIncludes(JSON.stringify(args), 'queryChars');
+
+  const result = summarizeToolResult({
+    name: 'WebFetch',
+    url: 'https://docs.example.com/private?token=secret',
+    searchedAt: '2026-05-25T00:00:00.000Z',
+    resultCount: 1,
+    failedCount: 0
+  }, 'very long result body');
+  if (JSON.stringify(result).includes('token=secret')) throw new Error(`工具结果日志泄露了 URL query：${JSON.stringify(result)}`);
+  assertIncludes(JSON.stringify(result), 'docs.example.com');
+
+  const error = summarizeToolError(new Error('MCP 工具未获授权：mcp__github__create_issue'));
+  assertIncludes(JSON.stringify(error), 'permission');
+});
+
 test('Tavily crawler 过滤参数会合并配置和命令输入', async () => {
   const { buildCrawlerFilters } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'tavilyClient.js')).href);
   const filters = buildCrawlerFilters({
