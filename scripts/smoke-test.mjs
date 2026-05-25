@@ -1217,7 +1217,7 @@ test('REPL 常用命令不触发模型也能运行', async () => {
 });
 
 test('REPL 会根据终端环境提示多行输入方式', async () => {
-  const result = await run([], {
+  const wezterm = await run([], {
     env: {
       WEZTERM_PANE: '1',
       TERM_PROGRAM: '',
@@ -1228,8 +1228,39 @@ test('REPL 会根据终端环境提示多行输入方式', async () => {
       ''
     ].join('\n')
   });
-  assertIncludes(result.stdout, '终端=WezTerm');
-  assertIncludes(result.stdout, '推荐换行=Ctrl+Enter / Alt+Enter / Ctrl+J');
+  assertIncludes(wezterm.stdout, '终端=WezTerm');
+  assertIncludes(wezterm.stdout, '推荐换行=Ctrl+Enter / Alt+Enter / Ctrl+J');
+
+  const sshUnknown = await run([], {
+    env: {
+      TERM_PROGRAM: '',
+      TERM: 'xterm-256color',
+      SSH_CONNECTION: '127.0.0.1 50000 127.0.0.1 22'
+    },
+    input: [
+      '/exit',
+      ''
+    ].join('\n')
+  });
+  assertIncludes(sshUnknown.stdout, '终端=SSH 远程会话（本地终端未知）');
+  assertIncludes(sshUnknown.stdout, '推荐换行=/multi / 行尾 \\');
+  assertIncludes(sshUnknown.stdout, 'SSH 默认不会告诉 neo 本机外层是 PowerShell');
+
+  const powerShell = await run([], {
+    env: {
+      TERM_PROGRAM: '',
+      TERM: 'xterm-256color',
+      SSH_CONNECTION: '127.0.0.1 50000 127.0.0.1 22',
+      NEO_AGENT_TERMINAL: 'powershell'
+    },
+    input: [
+      '/exit',
+      ''
+    ].join('\n')
+  });
+  assertIncludes(powerShell.stdout, '终端=PowerShell over SSH');
+  assertIncludes(powerShell.stdout, '推荐换行=/multi / 行尾 \\');
+  assertIncludes(powerShell.stdout, 'Alt+Enter 用作全屏');
 });
 
 test('transcripts 命令能列出会话', async () => {

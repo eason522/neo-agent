@@ -198,7 +198,7 @@ M4 后续硬化项：
 - [x] 添加自动 compact：接近上下文上限时生成可恢复摘要
 - [x] 添加中断/取消行为
 - [ ] 添加更丰富的消息渲染
-- [x] 添加输入历史和多行编辑，支持 `/multi`、行尾 `\`，并按终端环境智能提示 `Ctrl+Enter` / `Alt+Enter` / `Ctrl+J` 等快捷换行方式
+- [x] 添加输入历史和多行编辑，支持 `/multi`、行尾 `\`，并按终端/SSH 环境智能提示 `Ctrl+Enter` / `Alt+Enter` / `Ctrl+J` 或稳定兜底方式
 - [x] 添加状态行，展示模型、工具调用和耗时
 - [x] 添加轻量 debug 视图，展示最近一轮工具事件、日志路径和 transcript 路径
 - [ ] 状态行继续补记忆命中数、路由原因和更接近 CC-Source 的 TUI 渲染
@@ -538,7 +538,7 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 
 ### 2026-05-25：REPL 先补日常可用性的最小 TUI 能力
 
-参考 CC-Source `hooks/useInputBuffer.ts`、`useCancelRequest.ts`、命令系统和工具状态渲染，neo 的 readline REPL 先补四个日常能力：持久输入历史、多行输入、每轮状态行和轻量 debug 视图。历史写入 `~/.neo-agent/repl_history`，但会跳过疑似 API key/token 的输入；多行输入用 `/multi` 进入，`.` 或 `/end` 提交，`/cancel` 取消，也支持行尾 `\` 继续输入，并根据 `TERM_PROGRAM`、`TERM`、`WEZTERM_PANE`、`KITTY_WINDOW_ID`、`WT_SESSION`、`TMUX`、`VTE_VERSION` 等环境变量识别常见终端，启动时提示当前推荐的 `Ctrl+Enter` / `Alt+Enter` / `Ctrl+J` 换行方式和稳定兜底方式；每轮回答后显示模型、工具调用数和耗时；`/debug on|off|last` 可查看最近一轮工具事件、日志路径和 transcript 路径。
+参考 CC-Source `hooks/useInputBuffer.ts`、`useCancelRequest.ts`、命令系统和工具状态渲染，neo 的 readline REPL 先补四个日常能力：持久输入历史、多行输入、每轮状态行和轻量 debug 视图。历史写入 `~/.neo-agent/repl_history`，但会跳过疑似 API key/token 的输入；多行输入用 `/multi` 进入，`.` 或 `/end` 提交，`/cancel` 取消，也支持行尾 `\` 继续输入，并根据 `TERM_PROGRAM`、`TERM`、`WEZTERM_PANE`、`KITTY_WINDOW_ID`、`WT_SESSION`、`TMUX`、`VTE_VERSION`、`SSH_CONNECTION` 等环境变量识别常见终端和 SSH 场景，启动时提示当前推荐的 `Ctrl+Enter` / `Alt+Enter` / `Ctrl+J` 换行方式或稳定兜底方式。SSH 场景下如果本地终端没有通过环境变量转发给服务器，neo 会明确标注“本地终端未知”，不再误报组合键可用；可用 `NEO_AGENT_TERMINAL=powershell|wezterm|kitty|vscode|iterm|windows-terminal` 手动覆盖。每轮回答后显示模型、工具调用数和耗时；`/debug on|off|last` 可查看最近一轮工具事件、日志路径和 transcript 路径。
 
 这里没有直接复制 CC-Source 的 Ink TUI。原因是 neo 当前仍是轻量 CLI，直接引入完整 TUI 会显著增加复杂度；先把最影响日常使用的输入和调试能力补齐。后续 M5 继续补更丰富消息渲染、路由/记忆状态和更接近 CC-Source 的交互层。
 

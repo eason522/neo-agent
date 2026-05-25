@@ -252,10 +252,14 @@ function isMultilineShortcut(sequence: string, key: { name?: string; ctrl?: bool
 }
 
 function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): TerminalMultilineSupport {
+  const override = (env.NEO_AGENT_TERMINAL ?? env.NEO_AGENT_TERMINAL_PROFILE ?? '').toLowerCase();
   const termProgram = (env.TERM_PROGRAM ?? '').toLowerCase();
   const term = (env.TERM ?? '').toLowerCase();
   const colorTerm = (env.COLORTERM ?? '').toLowerCase();
   const isTmux = Boolean(env.TMUX);
+  const isSsh = Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY);
+
+  if (override) return terminalSupportFromOverride(override, isTmux, isSsh);
 
   if (env.WEZTERM_PANE) {
     return buildTerminalSupport('WezTerm', ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
@@ -284,7 +288,36 @@ function detectTerminalMultilineSupport(env: NodeJS.ProcessEnv = process.env): T
   if (isTmux) {
     return buildTerminalSupport('tmux', ['Ctrl+J'], true, 'tmux 未开启 extended-keys 时通常不能传递 Ctrl+Enter；可在 tmux 配置里开启 extended-keys 后重试。');
   }
+  if (isSsh) {
+    return buildTerminalSupport(
+      'SSH 远程会话（本地终端未知）',
+      ['/multi', '行尾 \\'],
+      false,
+      'neo 运行在远端服务器上，SSH 默认不会告诉 neo 本机外层是 PowerShell、Windows Terminal 还是其它终端；组合键可能已经被本地终端或 SSH 客户端截获。可设置 NEO_AGENT_TERMINAL=powershell、wezterm、kitty、vscode 等手动覆盖。'
+    );
+  }
   return buildTerminalSupport('未知终端', ['Ctrl+J', 'Alt+Enter'], false, '当前无法可靠识别终端类型；如果快捷键无效，请使用 /multi。');
+}
+
+function terminalSupportFromOverride(override: string, isTmux: boolean, isSsh: boolean): TerminalMultilineSupport {
+  const suffix = isSsh ? ' over SSH' : '';
+  if (override.includes('powershell') || override.includes('pwsh') || override.includes('conhost')) {
+    return buildTerminalSupport(
+      `PowerShell${suffix}`,
+      ['/multi', '行尾 \\'],
+      isTmux,
+      'PowerShell/conhost 常会把 Alt+Enter 用作全屏，Ctrl+Enter/Ctrl+J 也常被当作普通回车或被 SSH 截获；不要把这些组合键当作可靠换行。'
+    );
+  }
+  if (override.includes('windows') || override.includes('wt')) {
+    return buildTerminalSupport(`Windows Terminal${suffix}`, ['Ctrl+J', 'Ctrl+Enter'], isTmux, 'Windows Terminal 的 Ctrl+Enter 支持取决于输入协议、PowerShell/SSH 和快捷键配置；如果在 SSH 中无效，请使用 /multi。');
+  }
+  if (override.includes('wezterm')) return buildTerminalSupport(`WezTerm${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  if (override.includes('kitty')) return buildTerminalSupport(`Kitty${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  if (override.includes('ghostty')) return buildTerminalSupport(`Ghostty${suffix}`, ['Ctrl+Enter', 'Alt+Enter', 'Ctrl+J'], isTmux);
+  if (override.includes('vscode')) return buildTerminalSupport(`VS Code Terminal${suffix}`, ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'VS Code 的快捷键可能被编辑器或终端配置拦截；若 Ctrl+Enter 无效，优先用 Alt+Enter 或 Ctrl+J。');
+  if (override.includes('iterm')) return buildTerminalSupport(`iTerm2${suffix}`, ['Alt+Enter', 'Ctrl+J', 'Ctrl+Enter'], isTmux, 'iTerm2 默认不一定把 Ctrl+Enter 单独发给程序；开启 CSI u 或键盘映射后可用。');
+  return buildTerminalSupport(`手动终端配置：${override}${suffix}`, ['/multi', '行尾 \\'], isTmux, '未知手动终端配置，使用稳定多行方式。');
 }
 
 function buildTerminalSupport(
