@@ -771,6 +771,22 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
     'Always answer in two short lines.',
     'Do not add filler.'
   ], { scope: 'project' });
+  const skillFile = path.join(projectRoot, '.neo-agent', 'skills', 'answer-style', 'SKILL.md');
+  await mkdir(path.join(projectRoot, '.neo-agent', 'skills', 'answer-style', 'examples'), { recursive: true });
+  await writeFile(path.join(projectRoot, '.neo-agent', 'skills', 'answer-style', 'examples', 'template.md'), 'template body should not be in tool result', 'utf8');
+  await writeFile(skillFile, [
+    '# answer-style',
+    '',
+    'Description: Use a concise answer style',
+    '',
+    'Triggers: answer, style',
+    '',
+    '## Workflow',
+    '1. Always answer in two short lines.',
+    '2. Use ${NEO_SKILL_DIR}/examples/template.md as the local template path.',
+    '3. Keep ${CLAUDE_SKILL_DIR} compatible with CC-Source imports.',
+    ''
+  ].join('\n'), 'utf8');
 
   const skillPrompt = getSkillToolPrompt(await manager.loadSkills());
   assertIncludes(skillPrompt, 'answer-style');
@@ -797,7 +813,17 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
       const last = options.messages.at(-1);
       if (last?.role !== 'tool') throw new Error(`第二轮模型调用前应该收到 Skill 工具结果：${JSON.stringify(last)}`);
       assertIncludes(last.content, 'answer-style');
+      assertIncludes(last.content, 'Base directory for this skill');
       assertIncludes(last.content, 'Always answer in two short lines.');
+      assertIncludes(last.content, '/examples/template.md');
+      assertIncludes(last.content, '"path": "examples/template.md"');
+      assertIncludes(last.content, '不会自动执行');
+      if (last.content.includes('${NEO_SKILL_DIR}') || last.content.includes('${CLAUDE_SKILL_DIR}')) {
+        throw new Error(`Skill 目录变量应该已经替换：${last.content}`);
+      }
+      if (last.content.includes('template body should not be in tool result')) {
+        throw new Error('Skill 资源清单不应该直接读取资源正文。');
+      }
       return { content: '已按 skill 回答', toolCalls: [] };
     },
     chat: async () => 'unused'
@@ -817,7 +843,6 @@ test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => 
   }
   const listAfterUsage = await run(['skill', 'list', '--scope', 'project'], { cwd: projectRoot });
   assertIncludes(listAfterUsage.stdout, '使用=1');
-  const skillFile = path.join(projectRoot, '.neo-agent', 'skills', 'answer-style', 'SKILL.md');
   await writeFile(skillFile, [
     '# answer-style',
     '',

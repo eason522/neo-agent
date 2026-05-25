@@ -1,3 +1,5 @@
+import { lstat, readdir } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, Skill, SkillToolCallRecord } from '../types.js';
 import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
@@ -11,6 +13,13 @@ export const SKILL_TOOL_NAME = 'Skill';
 const skillListingBudgetChars = 8000;
 const maxListingDescriptionChars = 250;
 const maxSkillBodyChars = 100_000;
+const maxSkillResources = 30;
+const maxSkillResourceDepth = 3;
+
+type SkillResourceSummary = {
+  path: string;
+  bytes: number;
+};
 
 const skillInputSchema = z.object({
   skill: z.string().min(1),
@@ -73,6 +82,9 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
       throw new Error(`Skill ${normalizedName} 禁止模型自动调用。`);
     }
 
+    const skillDir = path.resolve(skill.path);
+    const body = formatSkillBody(skill.body, skillDir);
+    const resources = await listSkillResources(skillDir);
     const content = truncate(JSON.stringify({
       tool: SKILL_TOOL_NAME,
       skill: {
@@ -81,13 +93,20 @@ export class SkillToolRunner implements ToolRunner<SkillToolCallRecord> {
         description: skill.description,
         whenToUse: skill.whenToUse,
         triggers: skill.triggers,
-        skillDir: skill.path
+        skillDir
       },
       args: input.args,
-      body: skill.body,
+      body,
+      resources,
+      resourcePolicy: [
+        '资源路径只允许指向这个 skill 根目录内的文件。',
+        '资源清单仅用于定位，不代表文件内容已经进入上下文。',
+        '不要读取 skill 根目录外的文件；如果确实需要外部文件，必须由用户明确提供或通过已授权工具访问。'
+      ].join(' '),
       instruction: [
         '这个 skill 已经加载到当前轮次。不要再次调用 Skill 读取同一个 skill。',
         '请严格参考 body 中的流程、约束和风格完成用户任务。',
+        'NEO_SKILL_DIR 和 CLAUDE_SKILL_DIR 占位符已替换为当前 skill 根目录，兼容 CC-Source 风格资源引用。',
         'skill 中的 shell、hook 或命令片段不会自动执行；如需执行外部动作，必须通过已授权工具或向用户说明。'
       ].join(' ')
     }, null, 2), maxSkillBodyChars);
@@ -177,6 +196,57 @@ function parseJsonObject(rawArguments: string): unknown {
     return JSON.parse(rawArguments || '{}');
   } catch {
     throw new Error(`Skill 工具参数不是有效 JSON，参数长度 ${rawArguments.length} 字符。`);
+  }
+}
+
+function formatSkillBody(body: string, skillDir: string): string {
+  const replaced = body
+    .replaceAll('${NEO_SKILL_DIR}', skillDir)
+    .replaceAll('${CLAUDE_SKILL_DIR}', skillDir);
+  return [
+    `Base directory for this skill: ${skillDir}`,
+    '',
+    replaced
+  ].join('\n');
+}
+
+async function listSkillResources(skillDir: string): Promise<SkillResourceSummary[]> {
+  const resources: SkillResourceSummary[] = [];
+  await collectSkillResources(skillDir, skillDir, 0, resources);
+  return resources.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function collectSkillResources(root: string, currentDir: string, depth: number, output: SkillResourceSummary[]): Promise<void> {
+  if (depth > maxSkillResourceDepth || output.length >= maxSkillResources) return;
+  let entries;
+  try {
+    entries = await readdir(currentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (output.length >= maxSkillResources) return;
+    if (entry.name === 'SKILL.md') continue;
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+
+    const absolutePath = path.join(currentDir, entry.name);
+    const relativePath = path.relative(root, absolutePath).replaceAll(path.sep, '/');
+    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) continue;
+
+    if (entry.isDirectory()) {
+      await collectSkillResources(root, absolutePath, depth + 1, output);
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+    try {
+      const stat = await lstat(absolutePath);
+      if (!stat.isFile()) continue;
+      output.push({ path: relativePath, bytes: stat.size });
+    } catch {
+      continue;
+    }
   }
 }
 
