@@ -36,11 +36,12 @@ export class LocalMemory {
   async search(query: string, limit = this.config.memory.maxHits): Promise<MemoryHit[]> {
     const store = await this.readStore();
     const queryTerms = tokenize(query);
+    const normalizedQuery = normalizeText(query);
     return store.records
       .filter(record => record.status === 'active')
       .map(record => ({
         ...record,
-        score: scoreRecord(record, queryTerms),
+        score: scoreRecord(record, queryTerms, normalizedQuery),
         source: 'local' as const
       }))
       .filter(hit => hit.score > 0)
@@ -128,22 +129,59 @@ export class LocalMemory {
 function tokenize(input: string): string[] {
   const lower = input.toLowerCase();
   const ascii = lower.match(/[a-z0-9_]{2,}/g) ?? [];
-  const cjk = lower.match(/[\u4e00-\u9fa5]{1,2}/g) ?? [];
-  return [...new Set([...ascii, ...cjk])];
+  const cjkSegments = lower.match(/[\u4e00-\u9fa5]+/g) ?? [];
+  const cjk = cjkSegments.flatMap(segment => {
+    if (segment.length <= 2) return [segment];
+    const grams = segment.length <= 8 ? [segment] : [];
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      grams.push(segment.slice(index, index + 2));
+    }
+    return grams;
+  });
+  return [...new Set([...ascii, ...cjk])].filter(term => term.length >= 2);
 }
 
-function scoreRecord(record: MemoryRecord, queryTerms: string[]): number {
+function scoreRecord(record: MemoryRecord, queryTerms: string[], normalizedQuery: string): number {
   if (queryTerms.length === 0) return record.pinned ? 2 : 1;
-  const haystack = `${record.category} ${record.content} ${record.tags.join(' ')}`.toLowerCase();
-  let termScore = 0;
-  for (const term of queryTerms) {
-    if (haystack.includes(term)) termScore += term.length > 2 ? 2 : 1;
+  const category = normalizeText(record.category);
+  const content = normalizeText(record.content);
+  const tags = record.tags.map(normalizeText);
+  let relevanceScore = 0;
+  const matchedTerms = new Set<string>();
+
+  if (normalizedQuery.length >= 4) {
+    if (content.includes(normalizedQuery)) relevanceScore += 12;
+    if (tags.some(tag => tag === normalizedQuery)) relevanceScore += 8;
   }
-  if (termScore === 0) return 0;
+
+  for (const term of queryTerms) {
+    let termScore = 0;
+    if (category === term) termScore += 5;
+    else if (category.includes(term)) termScore += 3;
+
+    for (const tag of tags) {
+      if (tag === term) termScore += 6;
+      else if (tag.includes(term)) termScore += 4;
+    }
+
+    if (content.includes(term)) termScore += term.length > 2 ? 3 : 1.5;
+    if (termScore > 0) {
+      relevanceScore += termScore;
+      matchedTerms.add(term);
+    }
+  }
+  if (matchedTerms.size === 0 && relevanceScore === 0) return 0;
+
+  const coverage = matchedTerms.size / queryTerms.length;
   const ageMs = Date.now() - Date.parse(record.updatedAt);
-  const recencyBoost = Math.max(0, 1 - ageMs / (1000 * 60 * 60 * 24 * 30));
-  const pinnedBoost = record.pinned ? 3 : 0;
-  return termScore + recencyBoost + pinnedBoost;
+  const ageDays = Number.isFinite(ageMs) ? Math.max(0, ageMs / (1000 * 60 * 60 * 24)) : 30;
+  const recencyBoost = Math.pow(0.5, ageDays / 30);
+  const pinnedBoost = record.pinned ? Math.min(2, 0.5 + relevanceScore * 0.15) : 0;
+  return relevanceScore * (1 + coverage) + recencyBoost + pinnedBoost;
+}
+
+function normalizeText(input: string): string {
+  return input.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 function normalizeRecord(raw: LegacyMemoryRecord): MemoryRecord | undefined {

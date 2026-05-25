@@ -319,6 +319,71 @@ test('Logger 脱敏覆盖密钥、URL query、MCP 参数和错误栈', async () 
   await rm(logHome, { recursive: true, force: true });
 });
 
+test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () => {
+  const { LocalMemory } = await import(pathToFileURL(path.join(root, 'dist', 'memory', 'localMemory.js')).href);
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const memoryHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-memory-ranking-'));
+  const config = defaultConfig();
+  config.homeDir = memoryHome;
+  config.memory.maxHits = 5;
+  const now = Date.now();
+  const isoDaysAgo = days => new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+  const record = (id, content, options = {}) => ({
+    id,
+    uri: `viking://user/memories/2026-05-25/${id}`,
+    category: options.category ?? 'preference',
+    content,
+    tags: options.tags ?? [],
+    origin: options.origin ?? 'manual',
+    pinned: options.pinned ?? false,
+    status: options.status ?? 'active',
+    createdAt: options.createdAt ?? isoDaysAgo(options.daysAgo ?? 0),
+    updatedAt: options.updatedAt ?? isoDaysAgo(options.daysAgo ?? 0),
+    metadata: options.metadata
+  });
+  await mkdir(path.join(memoryHome, 'memory'), { recursive: true });
+  await writeFile(path.join(memoryHome, 'memory', 'memories.json'), JSON.stringify({
+    version: 2,
+    records: [
+      record('weak-pinned', 'neo 相关偏好：回答要简洁。', { pinned: true, tags: ['neo'] }),
+      record('exact-web-context', 'neo 在回答时需要根据上下文判断是否联网搜索，不要答非所问。', {
+        category: 'workflow',
+        tags: ['联网搜索', '上下文'],
+        daysAgo: 20
+      }),
+      record('tag-only', 'Tavily 工具配置记录。', {
+        category: 'project_fact',
+        tags: ['联网搜索', '上下文']
+      }),
+      record('workflow-style', '我喜欢简洁直接的回答，但处理开发任务时要说明关键取舍。', {
+        category: 'workflow',
+        tags: ['回答风格']
+      }),
+      record('archived-exact', '归档：neo 上下文 联网搜索。', {
+        status: 'archived',
+        tags: ['联网搜索', '上下文']
+      })
+    ]
+  }, null, 2));
+
+  const memory = new LocalMemory(config);
+  const webHits = await memory.search('neo 联网搜索 上下文', 5);
+  if (webHits[0]?.id !== 'exact-web-context') {
+    throw new Error(`强相关记忆应该排第一：${JSON.stringify(webHits.map(hit => ({ id: hit.id, score: hit.score })))}`);
+  }
+  if (webHits.some(hit => hit.id === 'archived-exact')) throw new Error(`归档记忆不应出现在搜索结果：${JSON.stringify(webHits)}`);
+  const weakIndex = webHits.findIndex(hit => hit.id === 'weak-pinned');
+  const exactIndex = webHits.findIndex(hit => hit.id === 'exact-web-context');
+  if (weakIndex >= 0 && weakIndex < exactIndex) throw new Error(`弱相关置顶记忆不应压过强相关记忆：${JSON.stringify(webHits)}`);
+
+  const workflowHits = await memory.search('简洁回答 workflow', 5);
+  if (workflowHits[0]?.id !== 'workflow-style') {
+    throw new Error(`分类和内容共同命中的 workflow 记忆应该排第一：${JSON.stringify(workflowHits.map(hit => ({ id: hit.id, score: hit.score })))}`);
+  }
+
+  await rm(memoryHome, { recursive: true, force: true });
+});
+
 test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
   const { summarizeToolArguments, summarizeToolError, summarizeToolResult } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'toolLog.js')).href);
   const args = summarizeToolArguments({

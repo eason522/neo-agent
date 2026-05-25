@@ -224,7 +224,7 @@ M4 后续硬化项：
 
 - [x] 为 `extractImageAttachments` 添加测试，覆盖不存在文件、非图片、大小限制和 mime 推断。
 - [x] 为 `Logger` 脱敏逻辑添加测试，覆盖 API key、URL query、MCP 参数、工具结果摘要。
-- [ ] 为记忆搜索排序添加测试，并改进相关性评分。
+- [x] 为记忆搜索排序添加测试，并改进相关性评分。
 - [ ] M2：dreaming 增加锁文件、报告回放、人工采纳和记忆复查。
 - [ ] M4：MCP 权限增加 always allow/deny 持久化规则、远程 MCP、HTTP/SSE/OAuth 和更完整权限 UI。
 - [ ] M4：Web 工具增加缓存、来源去重、失败分类和冲突事实提示。
@@ -555,6 +555,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：P1 Logger 脱敏测试和日志隐私兜底
 
 参考 CC-Source 日志和隐私处理思路，日志只应记录调试所需的结构化摘要，不应落盘完整密钥、Bearer token、URL query、图片 base64 或 MCP/tool 原始参数。neo 的 `Logger` 现在会对 URL query 做统一脱敏，对 `arguments/args/params/parameters` 只保留 `keys/chars/items` 摘要；具体工具层仍由 `toolLog` 保留域名、参数键、查询长度、结果长度等可调试信息。新增 smoke 测试覆盖 `redact`、`serializeError` 和真实日志文件写入，确保 API key、URL query、MCP 参数和错误栈不会泄露原文。
+
+### 2026-05-25：P1 记忆搜索排序相关性硬化
+
+参考 CC-Source `memdir/findRelevantMemories.ts` 和 `memoryScan.ts` 的思路，记忆召回不能只靠“命中任意词 + 新近/置顶”排序，否则弱相关置顶记忆会压过真正有用的上下文。neo 当前仍是本地 JSON 记忆阶段，先在 `LocalMemory` 层增强候选评分：中文改为连续片段和重叠二元词，评分区分 category、tag、content、完整短语、命中覆盖率、指数新近度和受限置顶加分。新增 smoke 测试覆盖强相关优先、归档过滤、弱相关置顶不抢首位，以及 workflow 分类和内容共同命中的排序。
 
 ## 恢复开发检查清单
 
