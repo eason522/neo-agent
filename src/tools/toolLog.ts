@@ -1,4 +1,4 @@
-import type { ChatToolCall, FileToolCallRecord, McpToolCallRecord, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatToolCall, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 
 export function summarizeToolArguments(call: ChatToolCall): Record<string, unknown> {
   const base = {
@@ -41,6 +41,17 @@ export function summarizeToolResult(record: ToolCallRecord | undefined, content:
       path: record.path,
       patternChars: record.pattern?.length,
       resultCount: record.resultCount,
+      resultChars: record.resultChars,
+      durationMs: record.durationMs
+    };
+  }
+  if (isSkillRecord(record)) {
+    return {
+      resultKind: 'skill',
+      name: record.name,
+      skillName: record.skillName,
+      scope: record.scope,
+      bodyChars: record.bodyChars,
       resultChars: record.resultChars,
       durationMs: record.durationMs
     };
@@ -160,6 +171,7 @@ function formatToolStartSummary(name: string, metadata: Record<string, unknown>)
   if (name === 'Read') return `Read 读取文件：${metadata.argumentKeys ? '参数已解析' : '参数未解析'}`;
   if (name === 'Glob') return 'Glob 查找文件';
   if (name === 'Grep') return `Grep 搜索内容：pattern ${metadata.argumentKeys ? '已提供' : '未解析'}`;
+  if (name === 'Skill') return 'Skill 加载技能说明';
   if (name.startsWith('mcp__')) return `MCP 工具：${name}`;
   return `${name} 调用中`;
 }
@@ -175,6 +187,9 @@ function formatToolSuccessSummary(name: string, metadata: Record<string, unknown
   }
   if (kind === 'mcp') {
     return `${name} 完成：${metadata.serverName}.${metadata.toolName}，${metadata.resultChars ?? 0} 字符`;
+  }
+  if (kind === 'skill') {
+    return `${name} 完成：${metadata.skillName ?? 'unknown'}，${metadata.resultChars ?? 0} 字符`;
   }
   return `${name} 完成：${metadata.resultChars ?? 0} 字符`;
 }
@@ -220,5 +235,9 @@ function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
 }
 
 function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
-  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record);
+  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record) && !('skillName' in record);
+}
+
+function isSkillRecord(record: ToolCallRecord): record is SkillToolCallRecord {
+  return record.name === 'Skill' && 'skillName' in record;
 }

@@ -7,6 +7,9 @@ export type SkillValidationResult = {
   valid: boolean;
   name: string;
   description: string;
+  whenToUse?: string;
+  disableModelInvocation: boolean;
+  userInvocable: boolean;
   triggers: string[];
   warnings: string[];
   errors: string[];
@@ -122,7 +125,10 @@ export async function exportSkillPackage(input: {
 export function validateSkillContent(body: string, nameHint?: string): SkillValidationResult {
   const name = sanitizeName(readFrontmatterValue(body, 'name') ?? firstHeading(body) ?? nameHint ?? 'skill');
   const description = readFrontmatterValue(body, 'description') ?? body.match(/^Description:\s*(.+)$/m)?.[1]?.trim() ?? '';
-  const triggers = parseList(readFrontmatterValue(body, 'triggers') ?? readFrontmatterValue(body, 'when_to_use') ?? body.match(/^Triggers:\s*(.+)$/m)?.[1]);
+  const whenToUse = readFrontmatterValue(body, 'when_to_use');
+  const triggers = parseList(readFrontmatterValue(body, 'triggers') ?? body.match(/^Triggers:\s*(.+)$/m)?.[1]);
+  const disableModelInvocation = parseBoolean(readFrontmatterValue(body, 'disable-model-invocation'));
+  const userInvocable = parseBoolean(readFrontmatterValue(body, 'user-invocable'), true);
   const errors: string[] = [];
   const warnings: string[] = [];
   const bytes = Buffer.byteLength(body, 'utf8');
@@ -138,6 +144,9 @@ export function validateSkillContent(body: string, nameHint?: string): SkillVali
     valid: errors.length === 0,
     name,
     description,
+    whenToUse,
+    disableModelInvocation,
+    userInvocable,
     triggers,
     warnings,
     errors,
@@ -298,4 +307,9 @@ function parseList(input: string | undefined): string[] {
     .split(/[,，]/)
     .map(item => item.trim().replace(/^["']|["']$/g, ''))
     .filter(Boolean);
+}
+
+function parseBoolean(input: string | undefined, fallback = false): boolean {
+  if (input === undefined) return fallback;
+  return /^(true|1|yes|y|on)$/i.test(input.trim());
 }

@@ -63,11 +63,16 @@ export class SkillManager {
 
   async match(input: string, limit = 4): Promise<Skill[]> {
     const skills = await this.loadSkills();
+    return this.matchLoaded(input, skills, limit);
+  }
+
+  matchLoaded(input: string, skills: Skill[], limit = 4): Skill[] {
     const lower = input.toLowerCase();
     return skills
       .map(skill => ({
         skill,
         score: skill.triggers.reduce((sum, trigger) => sum + (lower.includes(trigger.toLowerCase()) ? 2 : 0), 0) +
+          (skill.whenToUse && lower.includes(skill.whenToUse.toLowerCase()) ? 1 : 0) +
           (lower.includes(skill.name.toLowerCase()) ? 3 : 0)
       }))
       .filter(item => item.score > 0)
@@ -137,6 +142,9 @@ function parseSkill(name: string, skillPath: string, filePath: string, scope: Sk
     filePath,
     scope,
     description,
+    whenToUse: validation.whenToUse,
+    disableModelInvocation: validation.disableModelInvocation,
+    userInvocable: validation.userInvocable,
     triggers,
     body
   };

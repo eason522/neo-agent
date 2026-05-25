@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage, ToolProgressEvent, WebContext } from './types.js';
+import type { AgentResponse, AppConfig, Attachment, ChatMessage, Skill, ToolProgressEvent, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -20,6 +20,7 @@ import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
 import { ConversationHistory } from './conversation/history.js';
 import { QueryEngine } from './agent/queryEngine.js';
 import { getToolSearchPrompt, ToolSearchRunner } from './tools/toolSearchRunner.js';
+import { getSkillToolPrompt, SkillToolRunner } from './skills/skillToolRunner.js';
 import { createAbortError } from './utils/abort.js';
 
 export type AskOptions = {
@@ -42,6 +43,7 @@ export class NeoAgent {
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
   private readonly fileToolRunner: FileToolRunner;
+  private readonly skillToolRunner: SkillToolRunner;
   private readonly toolSearchRunner: ToolSearchRunner;
   private readonly mcpToolRunner: McpToolRunner;
   private readonly mcpResourceRunner: McpResourceRunner;
@@ -62,8 +64,9 @@ export class NeoAgent {
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.fileToolRunner = new FileToolRunner(process.cwd());
+    this.skillToolRunner = new SkillToolRunner(this.skills);
     this.webToolRunner = new WebToolRunner(config, this.web);
-    this.queryEngine = new QueryEngine(this.models, [this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
+    this.queryEngine = new QueryEngine(this.models, [this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
       maxToolRounds: config.web.maxToolRounds,
       onToolEvent: event => this.toolEventHandler?.(event)
     });
@@ -116,14 +119,15 @@ export class NeoAgent {
       }))
     });
     const useWebToolLoop = this.shouldUseWebToolLoop();
-    const [memories, matchedSkills, mcpTools, visionContext, soul, webContext] = await Promise.all([
+    const [memories, allSkills, mcpTools, visionContext, soul, webContext] = await Promise.all([
       this.memory.search(input),
-      this.skills.match(input),
+      this.skills.loadSkills(),
       this.mcp.listTools().catch(() => []),
       this.vision.analyze(attachments, input),
       loadSoul(),
       useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);
+    const matchedSkills = this.skills.matchLoaded(input, allSkills);
 
     const decision = this.router.decide(input, attachments);
     const hasMcpServers = this.mcp.connectedServerNames().length > 0;
@@ -145,6 +149,7 @@ export class NeoAgent {
       soul,
       modelName: this.config.models[decision.modelKind].model
     }), {
+      skills: allSkills,
       file: true,
       web: useWebToolLoop,
       mcp: hasMcpServers
@@ -162,9 +167,9 @@ export class NeoAgent {
     const historyStats = this.conversationHistory.stats();
 
     try {
-      const { text, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents } = useToolLoop
+      const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
-        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], toolEvents: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [] };
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -202,6 +207,14 @@ export class NeoAgent {
           path: call.path,
           pattern: call.pattern,
           resultCount: call.resultCount,
+          resultChars: call.resultChars,
+          durationMs: call.durationMs
+        })),
+        skillToolCalls: skillToolCalls.map(call => ({
+          name: call.name,
+          skillName: call.skillName,
+          scope: call.scope,
+          bodyChars: call.bodyChars,
           resultChars: call.resultChars,
           durationMs: call.durationMs
         })),
@@ -247,6 +260,7 @@ export class NeoAgent {
         webToolCallCount: webToolCalls.length,
         mcpToolCallCount: mcpToolCalls.length,
         fileToolCallCount: fileToolCalls.length,
+        skillToolCallCount: skillToolCalls.length,
         toolEventCount: toolEvents.length,
         durationMs: Date.now() - start
       });
@@ -260,6 +274,7 @@ export class NeoAgent {
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
+        skillToolCalls,
         toolEvents
       };
     } catch (error) {
@@ -292,9 +307,10 @@ export class NeoAgent {
     return this.config.web.autoSearch && this.config.web.toolLoopEnabled && Boolean(this.config.web.apiKey);
   }
 
-  private withToolPrompt(systemPrompt: string, enabled: { file: boolean; web: boolean; mcp: boolean }): string {
+  private withToolPrompt(systemPrompt: string, enabled: { skills: Skill[]; file: boolean; web: boolean; mcp: boolean }): string {
     return [
       systemPrompt,
+      getSkillToolPrompt(enabled.skills),
       enabled.file ? getFileToolPrompt() : '',
       enabled.web ? getWebToolPrompt() : '',
       enabled.mcp ? getToolSearchPrompt() : '',

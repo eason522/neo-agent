@@ -187,6 +187,9 @@ export type Skill = {
   filePath: string;
   scope: SkillScope;
   description: string;
+  whenToUse?: string;
+  disableModelInvocation: boolean;
+  userInvocable: boolean;
   triggers: string[];
   body: string;
 };
@@ -199,6 +202,7 @@ export type AgentResponse = {
   webToolCalls?: WebToolCallRecord[];
   mcpToolCalls?: McpToolCallRecord[];
   fileToolCalls?: FileToolCallRecord[];
+  skillToolCalls?: SkillToolCallRecord[];
   toolEvents?: ToolProgressEvent[];
   memories: MemoryHit[];
   skills: Skill[];
@@ -230,7 +234,16 @@ export type FileToolCallRecord = {
   durationMs: number;
 };
 
-export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord;
+export type SkillToolCallRecord = {
+  name: 'Skill';
+  skillName: string;
+  scope: SkillScope;
+  bodyChars: number;
+  resultChars: number;
+  durationMs: number;
+};
+
+export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord | SkillToolCallRecord;
 
 export type ToolProgressEvent = {
   phase: 'start' | 'success' | 'error' | 'unknown' | 'max_rounds';

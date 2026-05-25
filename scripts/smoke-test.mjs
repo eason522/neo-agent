@@ -663,6 +663,62 @@ test('skill install/validate/export 支持 md 和 zip，并拒绝 zip-slip', asy
   await assertRejects(() => buildSkillInstallPlan({ source: path.join(tempHome, 'evil.zip') }), '不安全');
 });
 
+test('Skill tool 能在 tool loop 中按需加载 SKILL.md 正文', async () => {
+  const projectRoot = path.join(tempHome, 'skill-tool-project');
+  await mkdir(projectRoot, { recursive: true });
+  const { SkillManager } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillManager.js')).href);
+  const { SkillToolRunner, getSkillToolPrompt } = await import(pathToFileURL(path.join(root, 'dist', 'skills', 'skillToolRunner.js')).href);
+  const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+  const manager = new SkillManager({ homeDir: tempHome, skills: { autoCreate: false, autoCreateThreshold: 3 } }, projectRoot);
+  await manager.createSkill('answer-style', 'Use a concise answer style', ['answer', 'style'], [
+    'Always answer in two short lines.',
+    'Do not add filler.'
+  ], { scope: 'project' });
+
+  const skillPrompt = getSkillToolPrompt(await manager.loadSkills());
+  assertIncludes(skillPrompt, 'answer-style');
+  assertIncludes(skillPrompt, '先调用 Skill');
+
+  const runner = new SkillToolRunner(manager);
+  const events = [];
+  let calls = 0;
+  const model = {
+    chatWithTools: async options => {
+      calls += 1;
+      if (calls === 1) {
+        const skillTool = options.tools.find(tool => tool.function.name === 'Skill');
+        if (!skillTool) throw new Error(`应该暴露 Skill 工具：${JSON.stringify(options.tools)}`);
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_skill',
+            type: 'function',
+            function: { name: 'Skill', arguments: JSON.stringify({ skill: 'answer-style', args: '当前任务' }) }
+          }]
+        };
+      }
+      const last = options.messages.at(-1);
+      if (last?.role !== 'tool') throw new Error(`第二轮模型调用前应该收到 Skill 工具结果：${JSON.stringify(last)}`);
+      assertIncludes(last.content, 'answer-style');
+      assertIncludes(last.content, 'Always answer in two short lines.');
+      return { content: '已按 skill 回答', toolCalls: [] };
+    },
+    chat: async () => 'unused'
+  };
+  const logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const engine = new QueryEngine({ get: () => model }, [runner], logger, {
+    maxToolRounds: 3,
+    onToolEvent: event => events.push(event)
+  });
+  const result = await engine.run('main', [{ role: 'user', content: 'answer this with the style skill' }]);
+  assertIncludes(result.text, '已按 skill 回答');
+  if (result.skillToolCalls.length !== 1) throw new Error(`应该记录一次 Skill 调用：${JSON.stringify(result.skillToolCalls)}`);
+  assertIncludes(result.skillToolCalls[0].skillName, 'answer-style');
+  if (!events.some(event => event.phase === 'success' && event.name === 'Skill')) {
+    throw new Error(`应该产生 Skill 成功事件：${JSON.stringify(events)}`);
+  }
+});
+
 test('REPL 常用命令不触发模型也能运行', async () => {
   const result = await run([], {
     input: [

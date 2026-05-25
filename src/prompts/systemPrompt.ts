@@ -181,15 +181,22 @@ function getSkillsSection(skills: Skill[]): string {
     return [
       '# Skill',
       ...bullets([
-        '当前没有匹配到现有 skill。',
+        '当前没有按关键词命中的 skill。可用 skill 的预算化列表会在 Skill 工具说明中提供。',
         '如果发现任务会重复出现，或用户明确要求沉淀流程，可以建议或自动创建 skill。'
       ])
     ].join('\n');
   }
 
   return [
-    '# 匹配到的 Skill',
-    ...bullets(skills.map(skill => `${skill.name}: ${skill.description}`))
+    '# 可能相关的 Skill',
+    ...bullets([
+      '下面只是轻量匹配提示。如果确实要使用某个 skill，必须先调用 Skill 工具加载完整 SKILL.md，再继续回答。',
+      ...skills.map(skill => {
+        const whenToUse = skill.whenToUse ? `；when_to_use=${skill.whenToUse}` : '';
+        const disabled = skill.disableModelInvocation ? '；禁止模型自动调用' : '';
+        return `${skill.name} (${skill.scope}): ${skill.description}${whenToUse}${disabled}`;
+      })
+    ])
   ].join('\n');
 }
 

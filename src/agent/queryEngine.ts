@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import type { ToolRunner } from '../tools/tool.js';
@@ -21,6 +21,7 @@ export type QueryEngineResult = {
   webToolCalls: WebToolCallRecord[];
   mcpToolCalls: McpToolCallRecord[];
   fileToolCalls: FileToolCallRecord[];
+  skillToolCalls: SkillToolCallRecord[];
   toolEvents: ToolProgressEvent[];
 };
 
@@ -54,6 +55,7 @@ export class QueryEngine {
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
     const fileToolCalls: FileToolCallRecord[] = [];
+    const skillToolCalls: SkillToolCallRecord[] = [];
     const toolEvents: ToolProgressEvent[] = [];
     const initialToolDefinitions = this.toolDefinitions();
 
@@ -63,6 +65,7 @@ export class QueryEngine {
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
+        skillToolCalls,
         toolEvents
       };
     }
@@ -80,7 +83,7 @@ export class QueryEngine {
       throwIfAborted(runOptions.signal);
 
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
+        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents };
       }
 
       loopMessages.push({
@@ -118,6 +121,7 @@ export class QueryEngine {
           if (result.record) {
             if (isMcpRecord(result.record)) mcpToolCalls.push(result.record);
             else if (isFileRecord(result.record)) fileToolCalls.push(result.record);
+            else if (isSkillRecord(result.record)) skillToolCalls.push(result.record);
             else webToolCalls.push(result.record);
           }
           loopMessages.push({
@@ -152,7 +156,7 @@ export class QueryEngine {
 
     this.logger.warn('tool.max_rounds_reached', {
       maxToolRounds: this.options.maxToolRounds,
-      toolCallCount: webToolCalls.length + mcpToolCalls.length + fileToolCalls.length
+      toolCallCount: webToolCalls.length + mcpToolCalls.length + fileToolCalls.length + skillToolCalls.length
     });
     const maxRoundsEvent = createMaxRoundsEvent(this.options.maxToolRounds, toolEvents.filter(event => event.phase === 'start').length);
     emitToolEvent(maxRoundsEvent, toolEvents, this.options.onToolEvent);
@@ -168,7 +172,7 @@ export class QueryEngine {
       signal: runOptions.signal
     });
     throwIfAborted(runOptions.signal);
-    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, toolEvents };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents };
   }
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
@@ -190,5 +194,9 @@ function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
 }
 
 function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
-  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record);
+  return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record) && !('skillName' in record);
+}
+
+function isSkillRecord(record: ToolCallRecord): record is SkillToolCallRecord {
+  return record.name === 'Skill' && 'skillName' in record;
 }
