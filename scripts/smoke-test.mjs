@@ -155,6 +155,44 @@ test('MCP 工具命名沿用 CC-Source 风格', async () => {
   assertIncludes(name, 'mcp__github_server__create_issue');
 });
 
+test('MCP resource runner 能列出和读取只读资源', async () => {
+  const { LIST_MCP_RESOURCES_TOOL_NAME, McpResourceRunner, READ_MCP_RESOURCE_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpResourceRunner.js')).href);
+  const runner = new McpResourceRunner({
+    connectedServerNames: () => ['demo'],
+    listResources: async server => [{
+      serverName: server ?? 'demo',
+      uri: 'file://demo/readme.md',
+      name: 'readme',
+      mimeType: 'text/markdown'
+    }],
+    readResource: async () => [{
+      uri: 'file://demo/readme.md',
+      mimeType: 'text/markdown',
+      text: 'hello resource'
+    }]
+  });
+  await runner.refresh();
+  const names = runner.definitions().map(tool => tool.function.name).join(',');
+  assertIncludes(names, LIST_MCP_RESOURCES_TOOL_NAME);
+  assertIncludes(names, READ_MCP_RESOURCE_TOOL_NAME);
+
+  const list = await runner.execute({
+    id: 'call_list',
+    type: 'function',
+    function: { name: LIST_MCP_RESOURCES_TOOL_NAME, arguments: JSON.stringify({ server: 'demo' }) }
+  });
+  assertIncludes(list.content, 'file://demo/readme.md');
+  assertIncludes(list.record.toolName, 'resources/list');
+
+  const read = await runner.execute({
+    id: 'call_read',
+    type: 'function',
+    function: { name: READ_MCP_RESOURCE_TOOL_NAME, arguments: JSON.stringify({ server: 'demo', uri: 'file://demo/readme.md' }) }
+  });
+  assertIncludes(read.content, 'hello resource');
+  assertIncludes(read.record.toolName, 'resources/read');
+});
+
 test('MCP 权限默认只允许只读工具', async () => {
   const { evaluateMcpToolPermission } = await import(pathToFileURL(path.join(root, 'dist', 'mcp', 'mcpToolRunner.js')).href);
   const permissions = { mode: 'readOnly', allowedTools: [], deniedTools: [] };

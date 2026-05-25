@@ -24,6 +24,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - skill 发现和自动创建的基础框架
 - MCP stdio server 连接基础框架，已连接工具会以 `mcp__server__tool` 形式进入 `QueryEngine`，并具备默认只读的权限保护
 - MCP 配置命令：`neo mcp list/add/remove/test`
+- MCP resource 工具：`ListMcpResources` / `ReadMcpResource`
 - 聚焦任务的 sub-agent 执行器
 - 用于调试的 JSONL 日志系统
 - 工具调用日志摘要：记录结果大小、域名、耗时和错误类别，不记录完整工具参数或工具正文
@@ -126,6 +127,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 - [x] 为 MCP 工具执行添加安全调用协议和权限确认
 - [ ] 针对高风险工具添加权限确认
 - [x] 添加 MCP 配置命令：添加、删除、列表、测试
+- [x] 添加 MCP resource 工具：列出和读取已连接 server 暴露的只读资源
 - [x] 添加工具结果日志，并做好脱敏
 - [ ] 添加项目感知的文件系统工具支持
 
@@ -169,7 +171,7 @@ neo-agent 本质上是基于 CC-Source 的二次开发和深入个人定制。CC
 | 上下文历史 | `query.ts`、`services/compact/*`、`sessionStoragePortable.ts` | 部分符合。已从固定几轮改为预算化历史，但还缺 token 估算和 auto compact。 | M5 添加自动 compact，避免只靠字符预算裁剪。 |
 | 联网工具 | `tools/WebSearchTool`、`tools/WebFetchTool`、`query.ts` 工具循环 | 当前核心路径基本符合。已改为 `WebSearch` / `WebFetch` function tools，由 `QueryEngine` 处理 tool call/result 回灌，并补上域名 allow/deny、私有地址保护和 Tavily map/crawl 路径过滤。 | 继续补工具摘要、失败恢复和 UI 状态。 |
 | 主 agent loop | `QueryEngine.ts`、`query.ts`、`Tool.ts` | 已完成第一轮校正。原来工具循环内嵌在 `NeoAgent`，现已拆出最小 `QueryEngine` 和 `ToolRunner`。 | 后续 MCP、文件系统、skill 工具都应进入同一 `QueryEngine`，不要再在 `NeoAgent` 里分散实现。 |
-| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny 的最小权限保护和 stdio 配置命令；但还缺 deferred ToolSearch、资源读取工具、交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4 继续补 deferred tool、resource tool 和交互式权限 UI。 |
+| MCP | `MCPTool`、`ListMcpResourcesTool`、`ReadMcpResourceTool`、`ToolSearchTool`、`services/mcp/mcpStringUtils.ts` | 部分符合。已连接 MCP 工具会以 `mcp__server__tool` 形式进入 `QueryEngine` 标准 tool loop，并加入默认只读、显式 allow/deny 的最小权限保护、stdio 配置命令和 resource 读取工具；但还缺 deferred ToolSearch、交互式 ask、HTTP/SSE/OAuth 和更完整的安全策略。 | M4 继续补 deferred ToolSearch 和交互式权限 UI。 |
 | sub-agent | `tools/AgentTool`、`tasks/LocalAgentTask`、agent memory snapshot | 不充分。当前只是小模型一次性子任务，不具备 CC-Source 的任务状态、进度、工具隔离、resume。 | M4/M5 增加任务状态和 agent 工具化，避免继续扩展一轮式 sub-agent。 |
 | skill | `tools/SkillTool`、`commands/skills`、plugin/skill discovery | 部分符合。已有 SKILL.md 发现和自动创建，但缺生命周期、使用统计、显式 show/edit/delete 和动态发现。 | M3 按 CC-Source skill 生命周期补齐。 |
 | memory / dreaming | `memdir`、auto-memory、compact/session memory | 部分符合。已有 schema、显式记忆和 dream，但相关性评分、复查、采纳、OpenViking 写入不完整。 | M2 继续按 memdir 和 session memory 思路推进。 |
@@ -290,6 +292,10 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 ### 2026-05-25：工具结果日志只记录脱敏摘要
 
 参考 CC-Source 对工具执行状态、权限和 sandbox 规则的处理方式，neo 的 `QueryEngine` 现在会在 `tool.start`、`tool.success`、`tool.error` 中记录统一摘要：参数字符数、参数 key、Web URL 域名、查询字符数、结果字符数、MCP server/tool、耗时和错误类别。日志不记录完整查询词、完整 URL query、MCP 参数或工具返回正文，避免调试日志变成敏感数据仓库。
+
+### 2026-05-25：MCP resources 进入 QueryEngine
+
+参考 CC-Source 的 `ListMcpResourcesTool` 和 `ReadMcpResourceTool`，neo 新增 `McpResourceRunner`，在已有 MCP server 连接后暴露只读 `ListMcpResources` / `ReadMcpResource`。资源读取结果通过同一个 `QueryEngine` 回灌给模型，文本内容会截断到 100K 字符；二进制 blob 不直接写入上下文，只记录字节数和说明，避免把大块 base64 塞进模型输入。后续仍需继续补资源缓存、变更通知、二进制落盘和 deferred ToolSearch。
 
 ## 恢复开发检查清单
 

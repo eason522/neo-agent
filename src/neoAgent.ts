@@ -5,6 +5,7 @@ import { VisionAnalyzer } from './vision/visionAnalyzer.js';
 import { MemoryService } from './memory/memoryService.js';
 import { SkillManager } from './skills/skillManager.js';
 import { McpManager } from './mcp/mcpManager.js';
+import { getMcpResourcePrompt, McpResourceRunner } from './mcp/mcpResourceRunner.js';
 import { getMcpToolPrompt, McpToolRunner } from './mcp/mcpToolRunner.js';
 import { SubAgentRunner } from './agents/subAgent.js';
 import { buildSystemPrompt } from './prompts/systemPrompt.js';
@@ -34,6 +35,7 @@ export class NeoAgent {
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
   private readonly mcpToolRunner: McpToolRunner;
+  private readonly mcpResourceRunner: McpResourceRunner;
   private readonly queryEngine: QueryEngine;
 
   constructor(readonly config: AppConfig) {
@@ -44,11 +46,12 @@ export class NeoAgent {
     this.skills = new SkillManager(config);
     this.mcp = new McpManager(config, this.logger);
     this.mcpToolRunner = new McpToolRunner(this.mcp, config.mcp.permissions);
+    this.mcpResourceRunner = new McpResourceRunner(this.mcp);
     this.subAgent = new SubAgentRunner(this.models, this.logger);
     this.dreams = new DreamService(config, this.models, this.memory, this.logger);
     this.web = new TavilyClient(config, this.logger);
     this.webToolRunner = new WebToolRunner(config, this.web);
-    this.queryEngine = new QueryEngine(this.models, [this.webToolRunner, this.mcpToolRunner], this.logger, {
+    this.queryEngine = new QueryEngine(this.models, [this.webToolRunner, this.mcpToolRunner, this.mcpResourceRunner], this.logger, {
       maxToolRounds: config.web.maxToolRounds
     });
     this.router = new ModelRouter(config);
@@ -222,7 +225,8 @@ export class NeoAgent {
     return [
       systemPrompt,
       getWebToolPrompt(),
-      getMcpToolPrompt()
+      getMcpToolPrompt(),
+      getMcpResourcePrompt()
     ].join('\n\n');
   }
 

@@ -12,6 +12,21 @@ export type McpToolDetail = {
   openWorldHint?: boolean;
 };
 
+export type McpResourceDetail = {
+  serverName: string;
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+};
+
+export type McpResourceContent = {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  blobBytes?: number;
+};
+
 type ConnectedServer = {
   name: string;
   client: {
@@ -26,6 +41,18 @@ type ConnectedServer = {
       };
     }> }>;
     callTool: (input: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown>;
+    listResources?: () => Promise<{ resources?: Array<{
+      uri: string;
+      name?: string;
+      description?: string;
+      mimeType?: string;
+    }> }>;
+    readResource?: (input: { uri: string }) => Promise<{ contents?: Array<{
+      uri: string;
+      mimeType?: string;
+      text?: string;
+      blob?: string;
+    }> }>;
     close?: () => Promise<void>;
   };
 };
@@ -100,6 +127,43 @@ export class McpManager {
     return output;
   }
 
+  connectedServerNames(): string[] {
+    return [...this.servers.keys()];
+  }
+
+  async listResources(serverName?: string): Promise<McpResourceDetail[]> {
+    const servers = this.getTargetServers(serverName);
+    const output: McpResourceDetail[] = [];
+    for (const server of servers) {
+      if (!server.client.listResources) continue;
+      const result = await server.client.listResources();
+      for (const resource of result.resources ?? []) {
+        output.push({
+          serverName: server.name,
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType
+        });
+      }
+    }
+    this.logger?.debug('mcp.resources.list', { server: serverName, resourceCount: output.length });
+    return output;
+  }
+
+  async readResource(serverName: string, uri: string): Promise<McpResourceContent[]> {
+    const server = this.servers.get(serverName);
+    if (!server) throw new Error(`MCP server is not connected: ${serverName}`);
+    if (!server.client.readResource) throw new Error(`MCP server does not support resources/read: ${serverName}`);
+    const result = await server.client.readResource({ uri });
+    return (result.contents ?? []).map(content => ({
+      uri: content.uri,
+      mimeType: content.mimeType,
+      text: content.text,
+      blobBytes: content.blob ? Buffer.byteLength(content.blob, 'base64') : undefined
+    }));
+  }
+
   async callTool(qualifiedName: string, args: Record<string, unknown>): Promise<unknown> {
     const [serverName, toolName] = qualifiedName.split('.', 2);
     if (!serverName || !toolName) throw new Error('Use qualified MCP tool name: server.tool');
@@ -113,6 +177,13 @@ export class McpManager {
       await server.client.close?.();
     }
     this.servers.clear();
+  }
+
+  private getTargetServers(serverName?: string): ConnectedServer[] {
+    if (!serverName) return [...this.servers.values()];
+    const server = this.servers.get(serverName);
+    if (!server) throw new Error(`MCP server is not connected: ${serverName}`);
+    return [server];
   }
 }
 
