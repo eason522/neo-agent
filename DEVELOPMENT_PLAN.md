@@ -20,7 +20,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 - 分支：`main`
 - 远端：开发前检查为 `main...origin/main`
-- 最近提交：`112dccb feat: add web fetch preflight checks`
+- 最近提交：以 `git log -1 --oneline` 为准，避免计划文档因每次提交反复产生无意义 churn。
 - 校验：2026-05-26 已运行 `npm run typecheck` 和 `npm run smoke` 通过
 
 产品状态：
@@ -79,9 +79,13 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 范围：在不引入完整 Ink TUI 的前提下，改善 assistant/tool/status/compact 输出分组、折叠长内容、错误提示和 transcript 路径展示。
   - CC-Source 参考：message rendering、tool result UI、progress display、resume/compact message boundary。
   - 已交付：新增轻量 `terminal/rendering` helpers；assistant 多行响应改为分组缩进；stream header 单独成行；tool/status/debug 事件统一摘要截断；长错误会截断并提示日志路径。
-- [ ] REPL 权限确认 UI 一致化。
+- [x] REPL 权限确认 UI 一致化。
   - 范围：把 MCP 和文件写入确认提示整理成统一样式，明确一次允许/持久允许/拒绝选项、风险摘要和对应持久化命令。
   - CC-Source 参考：permission request UI、filesystem permission rules、MCP permission prompt。
+  - 已交付：新增统一 `formatPermissionPrompt` 文本渲染；MCP 权限确认展示工具来源、原因、风险、参数字段、一次/持久允许和一次/持久拒绝；文件写入确认使用相同边界并明确当前仅支持本次确认，长期授权走 workspace/额外写入目录配置。
+- [ ] M5 终端体验回归复查。
+  - 范围：围绕状态流、富消息渲染、compact/resume、权限确认、图片预分析和工具事件跑一轮 REPL 回归，清理影响长期使用的小缺口。
+  - CC-Source 参考：message rendering、StatusLine、PermissionRequest、ResumeConversation、tool progress UI。
 
 ### P2：暂缓，除非用户明确要求
 
@@ -107,7 +111,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 - **M2：记忆和 dreaming**：本地记忆、dreaming、复查和人工采纳已可用；OpenViking 写入待确认。
 - **M3：skill 生命周期**：已完成第一阶段，包括安装、校验、导出、scope、Skill tool、usage、reload、plugin manifest 导入和用户确认建议。
 - **M4：工具和 MCP 执行**：已完成第一阶段，包括 Web、MCP、文件工具、ToolSearch、tool loop、超时/取消、结果预算、workspace。
-- **M5：终端体验**：进行中。已补输入历史、多行输入、状态行、debug 视图、resume 选择器和粘贴处理；富消息渲染仍未完成。
+- **M5：终端体验**：进行中。已补输入历史、多行输入、状态行、debug 视图、resume 选择器、粘贴处理、富消息渲染第一阶段、权限确认 UI 第一阶段；完整 Ink/TUI 仍未完成。
 
 ## 下一次开发启动流程
 
@@ -121,19 +125,19 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **REPL 权限确认 UI 一致化**。
+建议下一步做 **M5 终端体验回归复查**。
 
 理由：
 
-- 统一权限核心、项目级 MCP 审批和文件写入确认都已有第一阶段能力，但 REPL 提示仍分散，选项语义不够一致。
-- CC-Source 的权限 UI 重点不是只问 y/N，而是让用户看到风险、作用范围和是否持久化；neo 可以先用 readline 文本 UI 对齐这个交互边界。
-- 这比扩展新工具更符合“稳定、权限、可恢复、体验一致性”的主线。
+- 近期连续补了视觉预分析状态、REPL 状态流、手动 compact、富消息渲染和权限确认 UI；这些都在同一条终端体验链路上，需要先整体回归，而不是继续加新能力。
+- CC-Source 的终端体验不是单个提示，而是 message rendering、status、permission、resume/compact 和 tool progress 的组合；neo 现在需要验证这些文本 UI 是否在真实 REPL 中互不打架。
+- 这一步可以把 M5 第一阶段收口，为后续是否引入完整 Ink/TUI 提供更清楚的判断。
 
-建议拆成三个小提交：
+建议拆成三个小步骤：
 
-1. 对照 CC-Source permission request UI，梳理 neo MCP/File 确认提示字段和选项缺口。
-2. 增加统一 permission prompt render helper，复用到 MCP 和文件写入确认。
-3. 补 smoke 覆盖一次允许、持久允许、拒绝、文件写入确认和提示内容脱敏。
+1. 对照 CC-Source 的 message/status/permission/resume 相关 UI，列出 neo 现有 REPL 关键路径。
+2. 用最小脚本或人工 REPL 流程覆盖图片、工具调用、权限拒绝、compact、resume 和错误输出。
+3. 只修复回归中发现的显示错位、重复输出、缺失提示和难排障问题，不引入新的产品方向。
 
 ## 未决问题
 

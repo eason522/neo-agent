@@ -2,6 +2,25 @@ export const replSummaryMaxChars = 220;
 export const replErrorMaxChars = 1200;
 export const replInlineAssistantMaxChars = 140;
 
+export type PermissionPromptAction = {
+  key: string;
+  label: string;
+};
+
+export type PermissionPromptField = {
+  label: string;
+  value: string | number | undefined;
+};
+
+export type PermissionPromptInput = {
+  title: string;
+  subtitle?: string;
+  fields: PermissionPromptField[];
+  actions: PermissionPromptAction[];
+  question?: string;
+  footer?: string[];
+};
+
 export function formatAssistantResponseBlock(label: string, text: string): string {
   const body = text.trim();
   if (!body) return `${label} (空响应)\n`;
@@ -27,6 +46,22 @@ export function formatErrorBlock(label: string, message: string, logPath?: strin
   }
   if (logPath) lines.push(`  log: ${logPath}`);
   return `${lines.join('\n')}\n\n`;
+}
+
+export function formatPermissionPrompt(input: PermissionPromptInput): string {
+  const lines = [
+    '',
+    input.title,
+    input.subtitle ? `  ${input.subtitle}` : '',
+    ...input.fields
+      .filter(field => field.value !== undefined && String(field.value).trim() !== '')
+      .map(field => `  ${field.label}: ${formatEventSummary(String(field.value))}`),
+    input.question ? `  ${input.question}` : '  是否允许执行？',
+    ...input.actions.map(action => `  ${action.key.padEnd(2, ' ')} ${action.label}`),
+    ...(input.footer ?? []).map(line => `  ${line}`),
+    '> '
+  ];
+  return lines.filter(Boolean).join('\n');
 }
 
 export function indentMultiline(input: string, indent = '  '): string {

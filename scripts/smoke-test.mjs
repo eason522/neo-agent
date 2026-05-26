@@ -2609,6 +2609,50 @@ test('REPL render helpers 会分组多行回答并截断长事件', async () => 
   assertIncludes(errorBlock, 'log: /tmp/neo-agent.log');
 });
 
+test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄露', async () => {
+  const {
+    formatMcpPermissionPrompt,
+    formatFilePermissionPrompt,
+    parseMcpPermissionAnswer,
+    parseFilePermissionAnswer
+  } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'repl.js')).href);
+
+  const mcpPrompt = formatMcpPermissionPrompt({
+    toolName: 'create_issue',
+    fullName: 'mcp__github__create_issue',
+    serverName: 'github',
+    description: 'Create an issue',
+    reason: 'MCP 工具需要用户确认',
+    risk: '可能写入外部服务',
+    argumentKeys: ['title', 'token'],
+    argumentChars: 88
+  });
+  assertIncludes(mcpPrompt, '权限确认：MCP 工具');
+  assertIncludes(mcpPrompt, '允许本次');
+  assertIncludes(mcpPrompt, '始终允许这个工具');
+  assertIncludes(mcpPrompt, '始终拒绝这个工具');
+  assertIncludes(mcpPrompt, 'mcp permission allow mcp__github__create_issue');
+  assertIncludes(mcpPrompt, '字段：title, token');
+  if (mcpPrompt.includes('secret-token-value')) throw new Error(`MCP 权限提示不应包含参数值：${mcpPrompt}`);
+  if (parseMcpPermissionAnswer('a') !== 'allow_always') throw new Error('MCP a 应解析为持久允许');
+  if (parseMcpPermissionAnswer('d') !== 'deny_always') throw new Error('MCP d 应解析为持久拒绝');
+  if (parseMcpPermissionAnswer('y') !== 'allow_once') throw new Error('MCP y 应解析为本次允许');
+
+  const filePrompt = formatFilePermissionPrompt({
+    toolName: 'Write',
+    path: '/tmp/project/output.txt',
+    operation: 'create',
+    summary: '创建输出文件',
+    newChars: 42,
+    permissionRequired: true
+  });
+  assertIncludes(filePrompt, '权限确认：文件写入');
+  assertIncludes(filePrompt, '允许本次');
+  assertIncludes(filePrompt, '文件写入暂只支持本次确认');
+  if (parseFilePermissionAnswer('yes') !== 'allow') throw new Error('File yes 应解析为允许');
+  if (parseFilePermissionAnswer('n') !== 'deny') throw new Error('File n 应解析为拒绝');
+});
+
 test('transcripts 命令能列出会话', async () => {
   const result = await run(['transcripts', '--limit', '5']);
   assertIncludes(result.stdout, 'session_');

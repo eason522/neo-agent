@@ -874,6 +874,27 @@ neo 当前仍保持 readline REPL，没有引入完整 Ink TUI。本轮先抽取
 
 验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过。
 
+### 2026-05-26：REPL 权限确认 UI 一致化
+
+继续推进 P1“REPL 权限确认 UI 一致化”。先对照 CC-Source：
+
+- `components/permissions/PermissionRequest.tsx`：按工具类型分派权限 UI，并在需要权限时给用户明确通知。
+- `components/permissions/PermissionDialog.tsx` 与 `PermissionRequestTitle.tsx`：权限弹窗有清晰的 title/subtitle/body 边界。
+- `components/permissions/PermissionPrompt.tsx`：权限选项集中建模，支持一次允许、持久允许、拒绝和带反馈的拒绝。
+- `components/permissions/FilePermissionDialog/permissionOptions.tsx`：文件权限区分本次允许、会话级目录允许和拒绝，作用范围必须明说。
+- `components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx`、`FallbackPermissionRequest.tsx`：持久授权要表达为规则更新，不能把 y/N 混成不清楚的长期授权。
+- `tools/MCPTool/MCPTool.ts` 与 `tools/MCPTool/UI.tsx`：MCP 工具执行要经过权限边界，UI 只展示必要输入摘要和风险信息。
+
+neo 当前仍是 readline REPL，没有 CC-Source 的完整 Ink permission dialog、焦点管理、Tab 反馈输入和会话级文件目录授权。因此本轮不照搬组件层，而是把交互语义先落到文本 UI：
+
+- 新增 `formatPermissionPrompt`，统一 title、subtitle、字段、问题、选项、footer 和 `> ` 输入边界。
+- MCP 权限确认改为统一样式，展示工具全名、来源、说明、原因、风险和参数字段摘要；选项明确为 `y` 本次允许、`a` 持久允许、`n` 本次拒绝、`d` 持久拒绝。
+- MCP 提示同时展示 `neo mcp permission allow/deny <tool>` 命令，持久授权路径和配置写入语义更直接。
+- 文件写入确认复用同一 prompt helper，展示工具、路径、操作、摘要、旧/新字符数；当前只支持本次允许/拒绝，并明确长期授权应使用 `workspace.dir` 或 `files.additionalWriteDirs`。
+- 权限 prompt 和 parser 导出给 smoke 覆盖，避免后续 REPL 文本调整破坏选项语义。
+
+验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过；新增 smoke 覆盖 MCP/File 权限提示的范围、选项、持久化命令、参数字段摘要、参数值不泄露和解析结果。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？

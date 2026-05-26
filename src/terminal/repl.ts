@@ -7,11 +7,12 @@ import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { AgentStatusEvent, MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import type { FilePermissionRequest } from '../files/fileTools.js';
+import type { McpPermissionAskRequest } from '../mcp/mcpToolRunner.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
 import type { TranscriptSessionSummary } from '../transcript/transcriptService.js';
-import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary } from './rendering.js';
+import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary, formatPermissionPrompt } from './rendering.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -1561,30 +1562,34 @@ function formatSubAgentTask(task: {
   ].filter(Boolean).join('\n');
 }
 
-function formatMcpPermissionPrompt(request: {
-  fullName: string;
-  serverName: string;
-  toolName: string;
-  description?: string;
-  risk: string;
-  argumentKeys: string[];
-  argumentChars: number;
-}): string {
+export function formatMcpPermissionPrompt(request: McpPermissionAskRequest): string {
   const keys = request.argumentKeys.length > 0 ? request.argumentKeys.join(', ') : '无';
-  return [
-    '',
-    chalk.yellow('MCP 工具需要权限确认'),
-    `工具：${request.fullName}`,
-    `来源：${request.serverName}.${request.toolName}`,
-    request.description ? `说明：${request.description}` : '',
-    `风险：${request.risk}`,
-    `参数：${request.argumentChars} 字符；字段：${keys}`,
-    `持久允许命令：neo mcp permission allow ${request.fullName}`,
-    '选择：y=允许本次，a=始终允许，n=拒绝本次，d=始终拒绝。'
-  ].filter(Boolean).join('\n');
+  return formatPermissionPrompt({
+    title: chalk.yellow('权限确认：MCP 工具'),
+    subtitle: '外部 MCP server 将收到这次工具调用。',
+    fields: [
+      { label: '工具', value: request.fullName },
+      { label: '来源', value: `${request.serverName}.${request.toolName}` },
+      { label: '说明', value: request.description },
+      { label: '原因', value: request.reason },
+      { label: '风险', value: request.risk },
+      { label: '参数', value: `${request.argumentChars} 字符；字段：${keys}` }
+    ],
+    question: '是否允许 neo 调用这个 MCP 工具？',
+    actions: [
+      { key: 'y', label: '允许本次' },
+      { key: 'a', label: '始终允许这个工具（写入用户配置）' },
+      { key: 'n', label: '拒绝本次' },
+      { key: 'd', label: '始终拒绝这个工具（写入用户配置）' }
+    ],
+    footer: [
+      `持久允许命令：neo mcp permission allow ${request.fullName}`,
+      `持久拒绝命令：neo mcp permission deny ${request.fullName}`
+    ]
+  });
 }
 
-function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always' | 'deny' | 'deny_always' {
+export function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always' | 'deny' | 'deny_always' {
   const normalized = answer.trim().toLowerCase();
   if (/^(a|always|始终允许|永久允许|总是允许)$/i.test(normalized)) return 'allow_always';
   if (/^(d|deny always|始终拒绝|永久拒绝|总是拒绝)$/i.test(normalized)) return 'deny_always';
@@ -1592,21 +1597,30 @@ function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always'
   return 'deny';
 }
 
-function formatFilePermissionPrompt(request: FilePermissionRequest): string {
-  return [
-    '',
-    chalk.yellow('文件写入需要权限确认'),
-    `工具：${request.toolName}`,
-    `路径：${request.path}`,
-    `操作：${request.operation}`,
-    `摘要：${request.summary}`,
-    request.oldChars !== undefined ? `原内容/匹配：${request.oldChars} 字符` : '',
-    `新内容：${request.newChars} 字符`,
-    '选择：y=允许，其他=拒绝。'
-  ].filter(Boolean).join('\n');
+export function formatFilePermissionPrompt(request: FilePermissionRequest): string {
+  return formatPermissionPrompt({
+    title: chalk.yellow('权限确认：文件写入'),
+    subtitle: '文件内容将被创建、覆盖或编辑。',
+    fields: [
+      { label: '工具', value: request.toolName },
+      { label: '路径', value: request.path },
+      { label: '操作', value: request.operation },
+      { label: '摘要', value: request.summary },
+      { label: '原内容/匹配', value: request.oldChars === undefined ? undefined : `${request.oldChars} 字符` },
+      { label: '新内容', value: `${request.newChars} 字符` }
+    ],
+    question: '是否允许这次文件写入？',
+    actions: [
+      { key: 'y', label: '允许本次' },
+      { key: 'n', label: '拒绝' }
+    ],
+    footer: [
+      '文件写入暂只支持本次确认；长期授权请配置 workspace.dir 或 files.additionalWriteDirs。'
+    ]
+  });
 }
 
-function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
+export function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
   return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
 }
 
