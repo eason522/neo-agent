@@ -72,6 +72,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
     excludePaths: z.array(z.string()),
     selectDomains: z.array(z.string()),
     excludeDomains: z.array(z.string()),
+    respectRobotsTxt: z.boolean(),
     timeoutMs: z.number().int().positive()
   }),
   workspace: z.object({
@@ -235,6 +236,7 @@ export function defaultConfig(): AppConfig {
       excludePaths: parseCommaList(process.env.NEO_AGENT_WEB_EXCLUDE_PATHS),
       selectDomains: parseCommaList(process.env.NEO_AGENT_WEB_SELECT_DOMAINS),
       excludeDomains: parseCommaList(process.env.NEO_AGENT_WEB_EXCLUDE_DOMAINS),
+      respectRobotsTxt: process.env.NEO_AGENT_WEB_RESPECT_ROBOTS_TXT !== '0',
       timeoutMs: Number.parseInt(process.env.NEO_AGENT_WEB_TIMEOUT_MS || '12000', 10)
     },
     workspace: {

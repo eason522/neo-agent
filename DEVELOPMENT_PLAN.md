@@ -204,7 +204,8 @@ M4 后续硬化项：
 - [x] MCP 补项目级 `.mcp.json` 第一阶段：兼容顶层 `mcpServers`，`neo mcp add/list/remove --scope project` 可写入和读取项目共享 server。
 - [ ] MCP 继续补项目级 server 审批、权限建议、企业 allow/deny 策略和更完整权限 UI，参考 CC-Source MCP manager、permission rules、settings schema。
 - [x] Web 工具补缓存、来源去重、跨来源冲突标注和失败分类，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
-- [ ] Web 工具继续补 robots/站点限制策略、下载内容统一预算和更细粒度进度，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
+- [x] Web 工具补 robots.txt 限制第一阶段：`WebFetch` / extract / map / crawl 读取目标站点 robots.txt，命中 Disallow 时拒绝继续请求 Tavily，可用 `NEO_AGENT_WEB_RESPECT_ROBOTS_TXT=0` 显式关闭。
+- [ ] Web 工具继续补更完整站点限制策略、下载内容统一预算和更细粒度进度，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
 - [x] Tool hooks 预留：PostToolUse、PermissionRequest、Stop/Notification 等 hook 点暂不实现执行，但 QueryEngine 结构要避免后续难以接入。
 
 ### M5：终端体验向 CC-Source 设计靠拢
@@ -635,6 +636,12 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 用户确认的目标是：给 neo 分配一个工作区目录，并赋予它对这个目录内文件和文件夹的完整操作权限。参考 CC-Source workspace directory 的思路后，neo 增加 `workspace.dir` 配置和 `NEO_AGENT_WORKSPACE_DIR` 环境变量，默认值为当前项目下的 `workspace/`。启动时会自动创建并解析真实路径；`Read`/`Glob`/`Grep` 可访问项目、workspace 和显式授权目录，`Write`/`Edit` 在 workspace 内无需额外确认，写入项目其它位置或额外写入目录仍必须走 REPL 权限确认。
 
 这里没有把整个项目目录都升级为无确认可写。原因是项目根目录通常包含源码、配置和密钥引用，完全放开会让一次模型误判直接覆盖关键文件；workspace 则是明确分配给 neo 的可操作区域，边界更清楚，也更符合后续做会话级目录授权和权限 UI 的方向。验证覆盖 workspace 写入/编辑无需确认、项目写入仍被确认拦截、额外写入目录仍需确认，以及能力快照展示当前 workspace 配置。
+
+### 2026-05-26：Web robots.txt 限制第一阶段
+
+继续收敛 M4 Web 硬化项时，先补最小 robots 执行边界：`WebFetch`、`neo web extract`、map 和 crawl 在请求 Tavily 前读取目标站点 `robots.txt`，对 `User-agent: *` 或 `neo-agent` 命中的 `Disallow` 路径直接拒绝，不再把该 URL 交给 Tavily。默认开启，可用 `NEO_AGENT_WEB_RESPECT_ROBOTS_TXT=0` 关闭。
+
+这一步只解决执行期 robots 拒绝，不扩展成完整站点策略面板；后续仍保留下载预算、重定向预检和更细粒度进度等 Web 硬化项。
 
 ### 2026-05-25：统一工具结果预算和落盘引用
 

@@ -174,6 +174,7 @@ export type AppConfig = {
     excludePaths: string[];
     selectDomains: string[];
     excludeDomains: string[];
+    respectRobotsTxt: boolean;
     timeoutMs: number;
   };
   workspace: {

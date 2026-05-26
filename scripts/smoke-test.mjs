@@ -332,7 +332,10 @@ test('TavilyClient 支持缓存、来源去重、失败分类和冲突提示', a
   config.web.timeoutMs = 1000;
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = async (_url, init) => {
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/robots.txt')) {
+      return new Response('User-agent: *\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
     calls += 1;
     const body = JSON.parse(init.body);
     if (body.query?.includes('rate limit')) {
@@ -385,6 +388,31 @@ test('TavilyClient 支持缓存、来源去重、失败分类和冲突提示', a
         throw error;
       }
     }, 'rate_limit');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('TavilyClient 会遵守 robots.txt 拒绝规则', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const { TavilyClient } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'tavilyClient.js')).href);
+  const config = defaultConfig();
+  config.web.apiKey = 'test-key';
+  config.web.apiBase = 'https://api.tavily.test';
+  config.web.timeoutMs = 1000;
+  const originalFetch = globalThis.fetch;
+  let tavilyCalls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url) === 'https://blocked.example.com/robots.txt') {
+      return new Response('User-agent: *\nDisallow: /private\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    tavilyCalls += init?.body ? 1 : 0;
+    return new Response(JSON.stringify({ results: [], failed_results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const client = new TavilyClient(config);
+    await assertRejects(() => client.extract(['https://blocked.example.com/private/page']), 'robots.txt');
+    if (tavilyCalls !== 0) throw new Error(`robots 拒绝后不应请求 Tavily API：${tavilyCalls}`);
   } finally {
     globalThis.fetch = originalFetch;
   }

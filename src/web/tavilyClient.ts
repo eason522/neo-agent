@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import { buildSearchDomainPolicy, domainRulesToRegexPatterns, normalizeAndValidateWebUrl } from './urlPolicy.js';
+import { assertRobotsAllowed } from './robotsPolicy.js';
 import { createHash } from 'node:crypto';
 
 type TavilySearchOptions = {
@@ -151,6 +152,7 @@ export class TavilyClient {
       .map(url => url.trim())
       .filter(Boolean)
       .map(url => normalizeAndValidateWebUrl(url, this.config.web, 'Tavily Extract')));
+    await this.assertRobotsAllowedForUrls(cleanUrls, 'Tavily Extract', options.signal);
     const start = Date.now();
     this.logger?.info('web.extract.start', {
       provider: this.config.web.provider,
@@ -191,6 +193,7 @@ export class TavilyClient {
 
   async map(url: string, options: TavilyMapOptions = {}): Promise<WebMapResponse> {
     const body = this.buildCrawlerBody(url, options);
+    await this.assertRobotsAllowedForUrls([String(body.url)], 'Tavily Map', options.signal);
     const start = Date.now();
     this.logger?.info('web.map.start', {
       provider: this.config.web.provider,
@@ -222,6 +225,7 @@ export class TavilyClient {
 
   async crawl(url: string, options: TavilyCrawlOptions = {}): Promise<WebCrawlResponse> {
     const crawlerBody = this.buildCrawlerBody(url, options);
+    await this.assertRobotsAllowedForUrls([String(crawlerBody.url)], 'Tavily Crawl', options.signal);
     const body: Record<string, unknown> = {
       ...crawlerBody,
       extract_depth: options.extractDepth ?? this.config.web.extractDepth,
@@ -277,6 +281,19 @@ export class TavilyClient {
       timeout: clampInt(Math.ceil(this.config.web.timeoutMs / 1000), 10, 150),
       include_usage: true
     };
+  }
+
+  private async assertRobotsAllowedForUrls(urls: string[], operation: string, signal?: AbortSignal): Promise<void> {
+    for (const url of urls) {
+      await assertRobotsAllowed({
+        url,
+        operation,
+        enabled: this.config.web.respectRobotsTxt,
+        timeoutMs: this.config.web.timeoutMs,
+        logger: this.logger,
+        signal
+      });
+    }
   }
 
   private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>, signal?: AbortSignal): Promise<{ payload: T; cacheHit: boolean }> {
