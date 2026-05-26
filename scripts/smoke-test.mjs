@@ -163,6 +163,7 @@ test('模型客户端会对 5xx 重试并记录 usage', async () => {
   try {
     const logger = {
       debug() {},
+      diagnostic(name, event, metadata) { events.push({ level: name, name: event, metadata }); },
       info(name, metadata) { events.push({ level: 'info', name, metadata }); },
       warn(name, metadata) { events.push({ level: 'warn', name, metadata }); },
       error(name, error, metadata) { events.push({ level: 'error', name, error, metadata }); }
@@ -182,8 +183,14 @@ test('模型客户端会对 5xx 重试并记录 usage', async () => {
     if (calls !== 2) throw new Error(`应该重试一次：${calls}`);
     if (result.usage?.totalTokens !== 14) throw new Error(`应该解析 usage：${JSON.stringify(result.usage)}`);
     if (!events.some(event => event.name === 'model.request.retry')) throw new Error(`应该记录重试日志：${JSON.stringify(events)}`);
+    const retry = events.find(event => event.name === 'model.request.retry');
+    if (retry?.metadata?.errorCode !== 'HTTP_500' || retry.metadata.maxAttempts !== 2) throw new Error(`重试日志应该记录结构化错误码：${JSON.stringify(retry)}`);
     const success = events.find(event => event.name === 'model.request.success');
     if (success?.metadata?.totalTokens !== 14) throw new Error(`成功日志应该记录 token usage：${JSON.stringify(success)}`);
+    if (success?.metadata?.retryCount !== 1) throw new Error(`成功日志应该记录 retryCount：${JSON.stringify(success)}`);
+    if (!events.some(event => event.name === 'model.request.metrics' && event.metadata?.retryCount === 1)) {
+      throw new Error(`应该记录 No-PII 诊断指标：${JSON.stringify(events)}`);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -256,7 +263,8 @@ test('UsageTracker 会落盘 token 并按配置估算成本', async () => {
     completionTokens: 500,
     totalTokens: 1500,
     durationMs: 20,
-    attempt: 1
+    attempt: 1,
+    retryCount: 0
   });
   usage.record({
     modelKind: 'small',
@@ -509,7 +517,7 @@ test('TavilyClient 会按下载正文预算截断 extract 内容', async () => {
 });
 
 test('Logger 脱敏覆盖密钥、URL query、MCP 参数和错误栈', async () => {
-  const { Logger, redact, serializeError } = await import(pathToFileURL(path.join(root, 'dist', 'logging', 'logger.js')).href);
+  const { Logger, errorCodeFor, redact, serializeError } = await import(pathToFileURL(path.join(root, 'dist', 'logging', 'logger.js')).href);
   const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
   const logHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-log-redaction-'));
   const fakeSk = ['sk', 'abcdefghijklmnopqrstuvwxyz'].join('-');
@@ -570,29 +578,48 @@ test('Logger 脱敏覆盖密钥、URL query、MCP 参数和错误栈', async () 
   if (serializedPayload.includes('api_key=error-secret') || serializedPayload.includes('abcdefghijklmnopqrstuvwxyz')) {
     throw new Error(`serializeError 泄露敏感内容：${serializedPayload}`);
   }
+  const statusError = new Error('server failed');
+  statusError.status = 503;
+  if (errorCodeFor(statusError, 'model.request') !== 'HTTP_503') throw new Error(`errorCodeFor 应识别 HTTP status：${errorCodeFor(statusError, 'model.request')}`);
 
   const config = defaultConfig();
   config.homeDir = logHome;
   config.logging.file = 'logs/redaction.log';
-  config.logging.level = 'debug';
+  config.logging.level = 'info';
   config.logging.console = false;
   const logger = new Logger(config);
+  if (logger.isDebugEnabled()) throw new Error('默认 info 级别不应开启 debug');
+  const wasDebug = logger.enableDebug();
+  if (wasDebug || !logger.isDebugEnabled()) throw new Error('enableDebug 应在运行期打开 debug 级别');
   logger.info('redaction.test', {
     url: 'https://logs.example.com/a?token=log-secret',
     arguments: rawArguments,
     apiKey: 'field-secret-api-key'
   });
+  logger.debug('redaction.debug', { visible: true });
   logger.error('redaction.error', new Error('boom Bearer abc.def.ghi'), {
     params: {
       content: 'log-param-secret'
     }
   });
+  logger.diagnostic('info', 'diagnostic.no_pii', {
+    prompt: 'diagnostic prompt secret',
+    filePath: '/tmp/diagnostic-secret-path',
+    durationMs: 42,
+    retryCount: 1,
+    nested: { query: 'diagnostic query secret', ok: true }
+  });
   await logger.flush();
   const tail = await logger.tail(10);
-  for (const leaked of ['token=log-secret', 'issue-secret-title', 'field-secret-api-key', 'abc.def.ghi', 'log-param-secret']) {
+  for (const leaked of ['token=log-secret', 'issue-secret-title', 'field-secret-api-key', 'abc.def.ghi', 'log-param-secret', 'diagnostic prompt secret', 'diagnostic-secret-path', 'diagnostic query secret']) {
     if (tail.includes(leaked)) throw new Error(`日志文件泄露敏感内容：${leaked} in ${tail}`);
   }
   assertIncludes(tail, 'redaction.test');
+  assertIncludes(tail, 'redaction.debug');
+  assertIncludes(tail, '"privacy":"redacted"');
+  assertIncludes(tail, '"privacy":"diagnostic"');
+  assertIncludes(tail, '"errorCode":"REDACTION_ERROR"');
+  assertIncludes(tail, '[REDACTED_NO_PII]');
   assertIncludes(tail, '[REDACTED]');
   await rm(logHome, { recursive: true, force: true });
 });

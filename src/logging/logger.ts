@@ -2,7 +2,8 @@ import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from 'node
 import path from 'node:path';
 import type { AppConfig, LogLevel } from '../types.js';
 
-type LogFields = Record<string, unknown>;
+export type LogFields = Record<string, unknown>;
+export type LogPrivacy = 'redacted' | 'diagnostic';
 
 const levelRank: Record<LogLevel, number> = {
   debug: 10,
@@ -14,7 +15,7 @@ const levelRank: Record<LogLevel, number> = {
 
 export class Logger {
   readonly filePath: string;
-  private readonly level: LogLevel;
+  private level: LogLevel;
   private readonly consoleEnabled: boolean;
   private readonly maxBytes: number;
   private readonly retentionDays: number;
@@ -23,7 +24,7 @@ export class Logger {
   private pendingWrite: Promise<void> = Promise.resolve();
 
   constructor(config: AppConfig) {
-    this.level = config.logging.level;
+    this.level = runtimeDebugRequested() && config.logging.level !== 'silent' ? 'debug' : config.logging.level;
     this.consoleEnabled = config.logging.console;
     this.maxBytes = config.logging.maxBytes;
     this.retentionDays = config.logging.retentionDays;
@@ -47,9 +48,24 @@ export class Logger {
 
   error(event: string, error: unknown, fields: LogFields = {}): void {
     this.write('error', event, {
+      errorCode: fields.errorCode ?? errorCodeFor(error, event),
       ...fields,
       error: serializeError(error)
     });
+  }
+
+  diagnostic(level: Exclude<LogLevel, 'silent'>, event: string, fields: LogFields = {}): void {
+    this.write(level, event, sanitizeDiagnosticFields(fields) as LogFields, 'diagnostic');
+  }
+
+  enableDebug(): boolean {
+    const wasEnabled = this.isDebugEnabled();
+    if (this.level !== 'silent') this.level = 'debug';
+    return wasEnabled;
+  }
+
+  isDebugEnabled(): boolean {
+    return levelRank[this.level] <= levelRank.debug;
   }
 
   async tail(lines = 80): Promise<string> {
@@ -73,13 +89,14 @@ export class Logger {
     await this.pendingWrite.catch(() => undefined);
   }
 
-  private write(level: Exclude<LogLevel, 'silent'>, event: string, fields: LogFields): void {
+  private write(level: Exclude<LogLevel, 'silent'>, event: string, fields: LogFields, privacy: LogPrivacy = 'redacted'): void {
     if (levelRank[level] < levelRank[this.level]) return;
 
     const record = {
       ts: new Date().toISOString(),
       level,
       event,
+      privacy,
       ...(redact(fields) as LogFields)
     };
     const line = `${JSON.stringify(record)}\n`;
@@ -153,18 +170,31 @@ export class Logger {
   }
 }
 
-export function serializeError(error: unknown): { name: string; message: string; stack?: string } {
+export function serializeError(error: unknown): { name: string; message: string; stack?: string; code?: string; status?: number; category?: string } {
   if (error instanceof Error) {
+    const extra = error as { code?: unknown; status?: unknown; category?: unknown };
     return {
       name: error.name,
       message: redactString(error.message),
-      stack: error.stack ? redactString(error.stack).split('\n').slice(0, 8).join('\n') : undefined
+      stack: error.stack ? redactString(error.stack).split('\n').slice(0, 8).join('\n') : undefined,
+      code: typeof extra.code === 'string' ? redactString(extra.code) : undefined,
+      status: typeof extra.status === 'number' ? extra.status : undefined,
+      category: typeof extra.category === 'string' ? redactString(extra.category) : undefined
     };
   }
   return {
     name: 'UnknownError',
     message: redactString(String(error))
   };
+}
+
+export function errorCodeFor(error: unknown, fallbackEvent = 'error'): string {
+  const candidate = error as { code?: unknown; status?: unknown; category?: unknown; name?: unknown };
+  if (typeof candidate.code === 'string' && candidate.code.trim()) return normalizeErrorCode(candidate.code);
+  if (typeof candidate.category === 'string' && candidate.category.trim()) return normalizeErrorCode(candidate.category);
+  if (typeof candidate.status === 'number' && Number.isFinite(candidate.status)) return `HTTP_${candidate.status}`;
+  if (error instanceof Error && error.name && error.name !== 'Error') return normalizeErrorCode(error.name);
+  return normalizeErrorCode(fallbackEvent);
 }
 
 export function redact(value: unknown): unknown {
@@ -229,6 +259,38 @@ function summarizeRedactedValue(value: unknown): unknown {
     };
   }
   return '[REDACTED]';
+}
+
+function sanitizeDiagnosticFields(value: unknown): unknown {
+  if (typeof value === 'string') return { redacted: true, chars: value.length };
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) return value;
+  if (Array.isArray(value)) return { redacted: true, items: value.length };
+  if (!value || typeof value !== 'object') return String(value);
+
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (/path|file|dir|url|uri|prompt|content|message|query|token|secret|key|authorization|password/i.test(key)) {
+      output[key] = '[REDACTED_NO_PII]';
+      continue;
+    }
+    output[key] = sanitizeDiagnosticFields(nested);
+  }
+  return output;
+}
+
+function runtimeDebugRequested(): boolean {
+  return process.env.NEO_AGENT_DEBUG === '1' ||
+    process.argv.includes('--debug') ||
+    process.argv.some(arg => arg.startsWith('--debug='));
+}
+
+function normalizeErrorCode(input: string): string {
+  const normalized = input
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  return normalized || 'UNKNOWN';
 }
 
 function safeParseObject(value: string): Record<string, unknown> {

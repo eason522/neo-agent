@@ -728,6 +728,25 @@ neo 当前没有完整 Ink Doctor screen，也没有 CC-Source 的多 settings s
 
 验证：`npm run typecheck` 和 `npm run smoke` 通过；doctor smoke 现在覆盖新增的上下文预算、Workspace、Tool results、Skills、配置文件权限和 ripgrep 输出。
 
+### 2026-05-26：日志 debug、错误码和隐私分级第一阶段
+
+继续推进 P1“日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级”。先对照 CC-Source：
+
+- `utils/debug.ts`：debug 日志可以由启动参数或运行期命令开启，并写入可 tail 的 session log。
+- `utils/log.ts`：错误会进入内存/持久化错误日志，并保留足够的 stack 和错误元数据用于排障。
+- `utils/diagLogs.ts`：诊断日志必须明确 No-PII 边界，不能写入路径、prompt、query、URL、token 等敏感数据。
+- `skills/bundled/debug.ts`：debug 入口应能提示当前日志路径，并读取最近日志辅助排障。
+
+neo 当前已有 JSONL Logger、日志轮转、脱敏和 REPL `/debug` 视图，因此没有引入新的日志后端。第一阶段采用增量扩展：
+
+- `Logger` 增加运行期 debug 提升：`NEO_AGENT_DEBUG=1`、`--debug` 和 REPL `/debug on` 都会把当前进程日志级别提升到 debug。
+- 所有日志记录增加 `privacy` 标记；默认 `redacted`，新增 `logger.diagnostic(...)` 用于 No-PII 诊断字段，路径、prompt、content、query、URL、token/key 等字段会被强制替换。
+- `logger.error(...)` 自动生成结构化 `errorCode`，`serializeError` 保留脱敏后的 `code/status/category`。
+- 模型请求日志补 `retryCount`、retry 的 `errorCode/maxAttempts`，usage 记录补 `retryCount` 并增加 debug 级 `usage.record` 摘要。
+- 工具错误日志补结构化 `errorCode`，便于从日志中区分权限、超时、网络和工具自身失败。
+
+验证：`npm run typecheck` 和 `npm run smoke` 通过；新增/扩展 smoke 覆盖运行期 debug 开关、`privacy` 标记、No-PII diagnostic、结构化 `errorCode`、模型 retry 日志和 retryCount。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？

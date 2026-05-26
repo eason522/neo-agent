@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolPairRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
+import { errorCodeFor } from '../logging/logger.js';
 import type { ToolExecutionResult, ToolRunner } from '../tools/tool.js';
 import type { HookBus } from '../hooks/hookBus.js';
 import { createAbortError, throwIfAborted } from '../utils/abort.js';
@@ -280,6 +281,7 @@ export class QueryEngine {
       this.logger.warn('tool.error', {
         name: toolCall.function.name,
         ...summarizeToolError(error),
+        errorCode: errorCodeFor(error, `tool.${toolCall.function.name}`),
         round
       });
       return {
@@ -332,6 +334,7 @@ export class QueryEngine {
           toolCallId: toolCall.id,
           round,
           reason: timedOut ? 'timeout' : 'aborted',
+          errorCode: errorCodeFor(error, `tool.${toolCall.function.name}.orphan`),
           ...summarizeToolError(error)
         });
       }

@@ -79,6 +79,7 @@ export type ModelUsageRecord = {
   pricingConfigured: boolean;
   durationMs?: number;
   attempt?: number;
+  retryCount?: number;
 };
 
 export type ModelUsageRecordInput = Omit<ModelUsageRecord, 'id' | 'ts' | 'estimatedCost' | 'currency' | 'pricingConfigured'>;

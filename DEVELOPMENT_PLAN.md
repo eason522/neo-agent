@@ -63,7 +63,8 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ### P1：稳定性和体验
 
-- [ ] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级。
+- [x] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级。
+  - 已交付：`--debug`/REPL `/debug on` 可把运行期日志提升到 debug；日志记录增加 `privacy` 标记、No-PII diagnostic 写入、结构化 `errorCode`；模型 retry/success 和 usage 记录补 `retryCount`。
 - [ ] 文件工具补图片/PDF/二进制处理、读取预算和更清晰的拒绝原因。
 - [ ] MCP 补项目级 server 审批、权限建议和更完整权限 UI。
 - [ ] Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度。
@@ -108,19 +109,19 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级**。
+建议下一步做 **文件工具补图片/PDF/二进制处理、读取预算和更清晰的拒绝原因**。
 
 理由：
 
-- P0 的权限、tool result 预算和 doctor 诊断已经收口，下一步应把运行期错误变成可追踪、可定位、可脱敏上报的信息。
-- doctor 已能指出环境和配置问题，日志应继续覆盖执行期问题，例如模型重试、工具失败、权限拒绝、tool result 落盘和 transcript 恢复。
-- 这仍然服务“稳定、可恢复、可调试”的主线，比继续扩展新工具更优先。
+- 权限、tool result 预算、doctor 和日志诊断已经收口；下一步应处理文件工具实际使用中的高频失败面。
+- 当前 Read/Grep/Glob 已有基础预算，但二进制、PDF、图片和拒绝原因仍不够清楚，容易让模型重复错误操作。
+- 这仍然服务“稳定、边界清楚、可恢复”的主线，比继续扩展新工具更优先。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source logging/debug/error rendering，梳理 neo 当前日志字段、脱敏和错误码缺口。
-2. 给模型调用、工具执行、权限拒绝、tool result 落盘和 transcript 恢复补结构化错误码/调试字段。
-3. 补 smoke 覆盖脱敏、错误码和关键日志事件。
+1. 对照 CC-Source file tools/read/edit 相关实现，梳理 neo 当前二进制、图片、PDF、读取预算和错误提示缺口。
+2. 增加文件类型预检、读取预算说明和更稳定的拒绝/恢复提示。
+3. 补 smoke 覆盖二进制/PDF/图片拒绝或摘要、超预算读取和权限拒绝原因。
 
 ## 未决问题
 

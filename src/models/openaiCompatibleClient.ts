@@ -1,5 +1,6 @@
 import type { ChatCompletionResult, ChatMessage, ChatStreamHandlers, ChatToolCall, ChatToolDefinition, ModelConfig, ModelKind, ModelUsage, ModelUsageRecordInput } from '../types.js';
 import type { Logger } from '../logging/logger.js';
+import { errorCodeFor } from '../logging/logger.js';
 import { isAbortError } from '../utils/abort.js';
 
 type ChatOptions = {
@@ -68,7 +69,8 @@ export class OpenAICompatibleClient {
           attempt,
           promptTokens: usage?.promptTokens,
           completionTokens: usage?.completionTokens,
-          totalTokens: usage?.totalTokens
+          totalTokens: usage?.totalTokens,
+          retryCount: attempt - 1
         });
         this.usageSink?.record({
           modelKind: this.usageSink.modelKind,
@@ -77,7 +79,16 @@ export class OpenAICompatibleClient {
           completionTokens: usage?.completionTokens,
           totalTokens: usage?.totalTokens,
           durationMs: Date.now() - start,
-          attempt
+          attempt,
+          retryCount: attempt - 1
+        });
+        this.logger?.diagnostic?.('info', 'model.request.metrics', {
+          model: this.config.model,
+          modelKind: this.usageSink?.modelKind,
+          durationMs: Date.now() - start,
+          totalTokens: usage?.totalTokens,
+          retryCount: attempt - 1,
+          toolCallCount: toolCalls.length
         });
         return {
           content,
@@ -102,8 +113,10 @@ export class OpenAICompatibleClient {
             model: this.config.model,
             attempt,
             nextAttempt: attempt + 1,
+            maxAttempts,
             delayMs,
-            errorCategory: categorizeModelError(error)
+            errorCategory: categorizeModelError(error),
+            errorCode: errorCodeFor(error, 'model.request.retry')
           });
           await sleep(delayMs, options.signal);
           continue;
@@ -113,6 +126,7 @@ export class OpenAICompatibleClient {
           model: this.config.model,
           durationMs: Date.now() - start,
           attempt,
+          retryCount: Math.max(0, attempt - 1),
           errorCategory: categorizeModelError(error)
         });
         throw error;

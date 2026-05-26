@@ -1065,6 +1065,7 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       const mode = arg.trim().toLowerCase();
       if (mode === 'on') {
         state.debugEnabled = true;
+        agent.logger.enableDebug();
         console.log(chalk.green('debug 已开启'));
       } else if (mode === 'off') {
         state.debugEnabled = false;
@@ -1073,6 +1074,7 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
         console.log(formatDebugView(agent, state));
       } else {
         state.debugEnabled = !state.debugEnabled;
+        if (state.debugEnabled) agent.logger.enableDebug();
         console.log(state.debugEnabled ? chalk.green('debug 已开启') : chalk.gray('debug 已关闭'));
       }
       return true;

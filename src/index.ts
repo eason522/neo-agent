@@ -37,6 +37,7 @@ program
   .name('neo-agent')
   .description('个人终端 AI agent')
   .version('0.1.0')
+  .option('--debug', '把本次运行的日志级别提升到 debug')
   .option('--resume [session]', '启动对话时从最近或指定 transcript 恢复上下文')
   .helpOption('-h, --help', '显示帮助')
   .addHelpCommand('help [command]', '显示命令帮助');

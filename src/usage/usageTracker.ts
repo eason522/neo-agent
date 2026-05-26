@@ -60,6 +60,15 @@ export class UsageTracker {
       pricingConfigured: Boolean(price)
     };
     const line = `${JSON.stringify(record)}\n`;
+    this.logger?.debug('usage.record', {
+      modelKind: record.modelKind,
+      model: record.model,
+      promptTokens: record.promptTokens,
+      completionTokens: record.completionTokens,
+      totalTokens: record.totalTokens,
+      retryCount: record.retryCount ?? 0,
+      pricingConfigured: record.pricingConfigured
+    });
     this.pendingWrite = this.pendingWrite.then(async () => {
       await ensureDir(path.dirname(this.filePath));
       await appendFile(this.filePath, line, 'utf8');
