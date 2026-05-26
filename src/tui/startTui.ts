@@ -2,12 +2,10 @@ import React from 'react';
 import { Box, render, Text } from 'ink';
 import type { NeoAgent } from '../neoAgent.js';
 import { startRepl } from '../terminal/repl.js';
-import { buildTuiRuntimeState, formatTuiRuntimeSummary } from './tuiState.js';
+import { buildTuiRuntimeState, formatTuiRuntimeStatusLine, formatTuiRuntimeSummary } from './tuiState.js';
 
 type TuiShellProps = {
-  model: string;
-  workspace: string;
-  openViking: string;
+  statusLine: string;
 };
 
 function TuiShell(props: TuiShellProps): React.ReactElement {
@@ -18,7 +16,7 @@ function TuiShell(props: TuiShellProps): React.ReactElement {
     React.createElement(
       Text,
       { color: 'gray' },
-      `model=${props.model} workspace=${props.workspace} openviking=${props.openViking}`
+      props.statusLine
     )
   );
 }
@@ -42,9 +40,7 @@ export async function startTui(agent: NeoAgent, options: StartTuiOptions = {}): 
     openVikingHealth: health
   });
   const instance = render(React.createElement(TuiShell, {
-    model: runtime.model,
-    workspace: runtime.workspace,
-    openViking: runtime.openViking
+    statusLine: formatTuiRuntimeStatusLine(runtime, process.stdout.columns || Number(process.env.COLUMNS) || 80)
   }));
   agent.logger.debug('tui.runtime', { summary: formatTuiRuntimeSummary(runtime) });
   await new Promise(resolve => setTimeout(resolve, 40));

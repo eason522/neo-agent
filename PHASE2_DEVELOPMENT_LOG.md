@@ -457,3 +457,19 @@ neo-agent 的偏离和原因：
 
 - smoke 新增 `Append` 分块写入 workspace 文件覆盖。
 - smoke 新增 QueryEngine 截断恢复覆盖：坏 `Write` 参数不执行、恢复提示包含 `Append/mode=create`、连续截断写日志、最终禁止长代码兜底。
+
+## 2026-05-26：补 TUI 状态行窄终端文本回归
+
+按二阶段 TUI 待收口继续推进。本次只做状态行文本收口，不拆 legacy REPL 输入，也不实现完整 Ink 组件。
+
+更新内容：
+
+- 新增 `formatTuiRuntimeStatusLine(...)`，基于 `formatTuiRuntimeSummary(...)` 生成 TUI 运行时状态行。
+- 状态行按显示宽度截断，中文字符按双宽处理，窄终端下用 `…` 收尾。
+- `startTui` 的 header 改为使用状态行格式化函数，避免 workspace 或 OpenViking 状态过长时撑宽。
+- smoke 在 36 列窄宽度下覆盖中文 workspace 路径，确保格式化结果显示宽度不超过终端宽度。
+
+边界：
+
+- 这仍不是 PTY 截图测试。
+- 真实 Ink 多行输入、权限弹窗、工具进度和 ResumePicker 仍按二阶段计划后续拆分。

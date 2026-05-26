@@ -3007,6 +3007,7 @@ test('TUI 状态模型能生成运行时摘要和回合摘要', async () => {
   const {
     buildTuiRuntimeState,
     buildTuiTurnState,
+    formatTuiRuntimeStatusLine,
     formatTuiRuntimeSummary,
     formatTuiTurnSummary
   } = await import(pathToFileURL(path.join(root, 'dist', 'tui', 'tuiState.js')).href);
@@ -3020,6 +3021,16 @@ test('TUI 状态模型能生成运行时摘要和回合摘要', async () => {
   assertIncludes(formatTuiRuntimeSummary(runtime), 'model=deepseek-v4-pro');
   assertIncludes(formatTuiRuntimeSummary(runtime), 'workspace=workspace');
   assertIncludes(formatTuiRuntimeSummary(runtime), 'openviking=mcp');
+  const narrowRuntime = buildTuiRuntimeState({
+    config: {
+      ...config,
+      workspace: { dir: 'workspace/中文目录/很长很长很长很长很长' }
+    },
+    openVikingHealth: { ok: false, mode: 'offline', message: '离线' }
+  });
+  const narrowLine = formatTuiRuntimeStatusLine(narrowRuntime, 36);
+  if (displayWidth(narrowLine) > 36) throw new Error(`TUI 窄状态行不应超过终端宽度：${displayWidth(narrowLine)} ${narrowLine}`);
+  assertIncludes(narrowLine, '…');
 
   const response = {
     text: 'ok',
@@ -3315,4 +3326,14 @@ async function assertRejects(fn, expectedMessage) {
 
 async function delay(ms) {
   await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function displayWidth(value) {
+  let width = 0;
+  for (const char of value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    width += codePoint >= 0x1100 ? 2 : 1;
+  }
+  return width;
 }

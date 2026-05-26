@@ -75,6 +75,11 @@ export function formatTuiRuntimeSummary(state: TuiRuntimeState): string {
   return `model=${state.model} workspace=${state.workspace} openviking=${state.openViking}`;
 }
 
+export function formatTuiRuntimeStatusLine(state: TuiRuntimeState, columns = 80): string {
+  const safeColumns = Math.max(20, Math.floor(columns));
+  return truncateDisplayWidth(formatTuiRuntimeSummary(state), safeColumns);
+}
+
 export function formatTuiTurnSummary(state: TuiTurnState): string {
   const details = [
     state.webToolCalls > 0 ? `web=${state.webToolCalls}` : '',
@@ -99,4 +104,31 @@ export function formatTuiTurnSummary(state: TuiTurnState): string {
 
 function countToolStarts(events: ToolProgressEvent[]): number {
   return events.filter(event => event.phase === 'start').length;
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    width += codePoint >= 0x1100 ? 2 : 1;
+  }
+  return width;
+}
+
+function truncateDisplayWidth(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) return value;
+  if (maxWidth <= 0) return '';
+  if (maxWidth === 1) return '…';
+  let width = 0;
+  let output = '';
+  const suffix = '…';
+  const target = Math.max(0, maxWidth - displayWidth(suffix));
+  for (const char of value) {
+    const charWidth = displayWidth(char);
+    if (width + charWidth > target) break;
+    output += char;
+    width += charWidth;
+  }
+  return `${output.trimEnd()}${suffix}`;
 }
