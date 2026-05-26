@@ -138,7 +138,7 @@ export class TranscriptService {
     for (const entry of sourceEntries) {
       if (entry.type === 'user' || entry.type === 'assistant') {
         if (!entry.content.trim()) continue;
-        messages.push({ role: entry.type, content: entry.content });
+        messages.push({ role: entry.type, content: entry.type === 'assistant' ? appendToolResultReferences(entry.content, entry.metadata) : entry.content });
       }
     }
     const toolWarnings = validateToolPairMetadata(entries);
@@ -239,4 +239,34 @@ function validateToolPairMetadata(entries: TranscriptEntry[]): string[] {
     }
   }
   return warnings;
+}
+
+function appendToolResultReferences(content: string, metadata: Record<string, unknown> | undefined): string {
+  const pairs = metadata?.toolPairs;
+  if (!Array.isArray(pairs)) return content;
+  const references = pairs
+    .map(item => toolResultReferenceLine(item))
+    .filter((line): line is string => Boolean(line));
+  if (references.length === 0) return content;
+  return [
+    content,
+    '',
+    '[历史工具结果引用]',
+    ...references
+  ].join('\n');
+}
+
+function toolResultReferenceLine(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const record = input as {
+    toolName?: unknown;
+    toolCallId?: unknown;
+    persistedPath?: unknown;
+    originalResultChars?: unknown;
+  };
+  if (typeof record.persistedPath !== 'string' || !record.persistedPath.trim()) return undefined;
+  const toolName = typeof record.toolName === 'string' ? record.toolName : 'unknown';
+  const toolCallId = typeof record.toolCallId === 'string' ? record.toolCallId : 'unknown';
+  const originalChars = typeof record.originalResultChars === 'number' ? `, originalChars=${record.originalResultChars}` : '';
+  return `- ${toolName} (${toolCallId}) full result: ${record.persistedPath}${originalChars}`;
 }

@@ -6,6 +6,7 @@ import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../ty
 import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import type { HookBus } from '../hooks/hookBus.js';
+import { evaluateFileWritePermission } from '../permissions/permissions.js';
 
 export const READ_TOOL_NAME = 'Read';
 export const GLOB_TOOL_NAME = 'Glob';
@@ -390,16 +391,26 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
   }
 
   private async requireWritePermission(request: FilePermissionRequest): Promise<void> {
+    const permission = evaluateFileWritePermission({
+      toolName: request.toolName,
+      path: request.path,
+      operation: request.operation,
+      permissionRequired: request.permissionRequired,
+      interactive: Boolean(this.permissionAsker)
+    });
     this.hooks?.emit('PermissionRequest', request.toolName, {
       path: request.path,
       operation: request.operation,
       oldChars: request.oldChars,
       newChars: request.newChars,
-      permissionRequired: request.permissionRequired
+      permissionRequired: request.permissionRequired,
+      permissionCode: permission.code
     });
-    if (!request.permissionRequired) return;
-    if (!this.permissionAsker) throw new Error(`文件写入需要交互式权限确认：${request.path}`);
-    const decision = await this.permissionAsker(request);
+    if (permission.behavior === 'allow') return;
+    if (permission.behavior === 'deny') throw new Error(permission.reason);
+    const asker = this.permissionAsker;
+    if (!asker) throw new Error(permission.reason);
+    const decision = await asker(request);
     if (decision !== 'allow') throw new Error(`用户拒绝文件写入：${request.path}`);
   }
 

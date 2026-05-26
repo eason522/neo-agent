@@ -24,7 +24,7 @@
 - 任务可行性评估：`neo assess`、REPL `/assess` 和模型工具 `TaskAssessment` 会基于运行时能力快照判断任务是否可完整完成。
 - 会话上下文：REPL 会保留当前 session 的对话历史，并按上下文预算裁剪，不是固定几轮。
 
-持续开发进度见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)。
+当前开发主线见 [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)，历史决策和长篇复盘见 [DEVELOPMENT_LOG.md](./DEVELOPMENT_LOG.md)。
 
 ## 安装与运行
 

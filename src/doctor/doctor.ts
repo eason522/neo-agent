@@ -1,4 +1,4 @@
-import { access, readdir, stat, writeFile, unlink } from 'node:fs/promises';
+import { access, readdir, readFile, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,9 +55,17 @@ export async function runDoctor(cwd = process.cwd()): Promise<DoctorReport> {
 
   if (config) {
     checks.push(await checkWritableDir(config.homeDir, '数据目录'));
+    checks.push(await checkPackageVersion(cwd));
+    checks.push(await checkRipgrep());
     checks.push(checkModelConfig('主模型', config.models.main.apiKey, config.models.main.apiBase, config.models.main.model));
     checks.push(checkModelConfig('小模型', config.models.small.apiKey, config.models.small.apiBase, config.models.small.model));
     checks.push(checkModelConfig('视觉模型', config.models.vision.apiKey, config.models.vision.apiBase, config.models.vision.model));
+    checks.push(checkContextBudget(config));
+    checks.push(await checkWorkspace(config, cwd));
+    checks.push(await checkFileScopes(config, cwd));
+    checks.push(await checkToolResults(config, cwd));
+    checks.push(await checkSkillRoots(config, cwd));
+    checks.push(...await checkConfigFilePermissions(config, cwd));
     checks.push(await checkLogPath(config));
     checks.push(await checkTranscriptPath(config));
     checks.push(await checkSoul(cwd));
@@ -196,6 +204,240 @@ async function checkWritableDir(dir: string, name: string): Promise<DoctorCheck>
       fix: '修正目录权限，或通过 NEO_AGENT_HOME 指向可写目录。'
     };
   }
+}
+
+async function checkPackageVersion(cwd: string): Promise<DoctorCheck> {
+  const packagePath = path.join(cwd, 'package.json');
+  try {
+    const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as { name?: string; version?: string };
+    const version = packageJson.version ?? 'unknown';
+    const changelog = await pathExists(path.join(cwd, 'CHANGELOG.md'));
+    return {
+      status: changelog ? 'pass' : 'warn',
+      name: '版本信息',
+      message: `当前包版本：${packageJson.name ?? 'neo-agent'}@${version}`,
+      detail: `package=${packagePath}, changelog=${changelog ? 'present' : 'missing'}`,
+      fix: changelog ? undefined : '补充 CHANGELOG.md，便于发布和回滚时追踪版本差异。'
+    };
+  } catch (error) {
+    return {
+      status: 'warn',
+      name: '版本信息',
+      message: '无法读取 package.json。',
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function checkRipgrep(): Promise<DoctorCheck> {
+  try {
+    const { stdout } = await execFileAsync('rg', ['--version'], { timeout: 2000 });
+    return {
+      status: 'pass',
+      name: 'ripgrep',
+      message: `rg 可用：${stdout.split('\n')[0]?.trim() ?? 'unknown'}`
+    };
+  } catch {
+    return {
+      status: 'warn',
+      name: 'ripgrep',
+      message: '没有检测到 rg。',
+      fix: '安装 ripgrep；Grep/代码搜索会优先依赖 rg，缺失时会降低检索能力。'
+    };
+  }
+}
+
+function checkContextBudget(config: AppConfig): DoctorCheck {
+  const thresholdChars = Math.floor(config.conversation.maxHistoryChars * config.conversation.compactThresholdRatio);
+  const detail = [
+    `maxHistoryChars=${config.conversation.maxHistoryChars}`,
+    `maxMessageChars=${config.conversation.maxMessageChars}`,
+    `compact=${config.conversation.compactEnabled ? `enabled@${config.conversation.compactThresholdRatio}` : 'disabled'}`,
+    `compactKeepRecentChars=${config.conversation.compactKeepRecentChars}`,
+    `compactMaxSummaryChars=${config.conversation.compactMaxSummaryChars}`
+  ].join(', ');
+
+  if (!config.conversation.compactEnabled) {
+    return {
+      status: 'warn',
+      name: '上下文预算',
+      message: '自动压缩已关闭，长会话更容易超过上下文预算。',
+      detail,
+      fix: '保持 conversation.compactEnabled=true，或缩小 maxHistoryChars。'
+    };
+  }
+  if (config.conversation.maxMessageChars >= config.conversation.maxHistoryChars) {
+    return {
+      status: 'warn',
+      name: '上下文预算',
+      message: '单条消息预算接近或超过历史总预算。',
+      detail,
+      fix: '让 maxMessageChars 明显小于 maxHistoryChars，避免单条工具结果挤占完整历史。'
+    };
+  }
+  if (config.conversation.compactKeepRecentChars >= thresholdChars) {
+    return {
+      status: 'warn',
+      name: '上下文预算',
+      message: '压缩保留窗口不小于触发阈值，压缩后可能难以降载。',
+      detail,
+      fix: '降低 compactKeepRecentChars，或提高 maxHistoryChars。'
+    };
+  }
+  return {
+    status: 'pass',
+    name: '上下文预算',
+    message: '历史、单条消息和压缩预算配置合理。',
+    detail
+  };
+}
+
+async function checkWorkspace(config: AppConfig, cwd: string): Promise<DoctorCheck> {
+  const dir = resolveProjectPath(cwd, config.workspace.dir);
+  const result = await checkWritableDir(dir, 'Workspace');
+  return {
+    ...result,
+    detail: [result.detail, `configured=${config.workspace.dir}`].filter(Boolean).join(', ')
+  };
+}
+
+async function checkFileScopes(config: AppConfig, cwd: string): Promise<DoctorCheck> {
+  const readResults = await Promise.all(config.files.additionalReadDirs.map(dir => checkPathAccess(resolveProjectPath(cwd, dir), constants.R_OK)));
+  const writeResults = await Promise.all(config.files.additionalWriteDirs.map(dir => checkPathAccess(resolveProjectPath(cwd, dir), constants.W_OK)));
+  const readBad = readResults.filter(result => !result.ok);
+  const writeBad = writeResults.filter(result => !result.ok);
+  const detail = [
+    `readDirs=${config.files.additionalReadDirs.length}`,
+    `writeDirs=${config.files.additionalWriteDirs.length}`,
+    readBad.length ? `readUnavailable=${readBad.map(result => result.path).join('|')}` : undefined,
+    writeBad.length ? `writeUnavailable=${writeBad.map(result => result.path).join('|')}` : undefined
+  ].filter(Boolean).join(', ');
+
+  if (writeBad.length > 0) {
+    return {
+      status: 'fail',
+      name: '文件权限范围',
+      message: '部分额外写入目录不可写。',
+      detail,
+      fix: '修正目录权限，或从 files.additionalWriteDirs 移除不可写路径。'
+    };
+  }
+  if (readBad.length > 0) {
+    return {
+      status: 'warn',
+      name: '文件权限范围',
+      message: '部分额外读取目录不可读。',
+      detail,
+      fix: '修正目录权限，或从 files.additionalReadDirs 移除不可读路径。'
+    };
+  }
+  return {
+    status: 'pass',
+    name: '文件权限范围',
+    message: '额外读写目录配置可用。',
+    detail
+  };
+}
+
+async function checkToolResults(config: AppConfig, cwd: string): Promise<DoctorCheck> {
+  const dir = resolveProjectPath(cwd, config.toolResults.dir);
+  const detail = [
+    `enabled=${config.toolResults.enabled}`,
+    `dir=${dir}`,
+    `maxInlineChars=${config.toolResults.maxInlineChars}`,
+    `previewChars=${config.toolResults.previewChars}`
+  ].join(', ');
+  if (!config.toolResults.enabled) {
+    return {
+      status: 'warn',
+      name: 'Tool results',
+      message: '工具结果落盘预算已关闭，超大工具输出会直接进入上下文。',
+      detail,
+      fix: '保持 toolResults.enabled=true，并为 maxInlineChars 设置明确上限。'
+    };
+  }
+  if (config.toolResults.previewChars >= config.toolResults.maxInlineChars) {
+    return {
+      status: 'warn',
+      name: 'Tool results',
+      message: '预览字符数不小于内联预算，落盘后仍可能占用过多上下文。',
+      detail,
+      fix: '让 previewChars 明显小于 maxInlineChars。'
+    };
+  }
+  const result = await checkWritableDir(dir, 'Tool results 目录');
+  return {
+    ...result,
+    detail
+  };
+}
+
+async function checkSkillRoots(config: AppConfig, cwd: string): Promise<DoctorCheck> {
+  const userRoot = path.join(config.homeDir, 'skills');
+  const projectRoot = path.join(cwd, '.neo-agent', 'skills');
+  const [user, project] = await Promise.all([countSkills(userRoot), countSkills(projectRoot)]);
+  const errors = [user.error, project.error].filter(Boolean);
+  return {
+    status: errors.length > 0 ? 'warn' : 'pass',
+    name: 'Skills',
+    message: errors.length > 0 ? '部分 skill 根目录无法扫描。' : 'skill 根目录可以扫描。',
+    detail: [
+      `user=${userRoot}:${user.exists ? user.count : 'missing'}`,
+      `project=${projectRoot}:${project.exists ? project.count : 'missing'}`,
+      `autoCreate=${config.skills.autoCreate ? `enabled@${config.skills.autoCreateThreshold}` : 'disabled'}`,
+      errors.length ? `errors=${errors.join('|')}` : undefined
+    ].filter(Boolean).join(', '),
+    fix: errors.length > 0 ? '检查对应目录权限，或删除损坏的 skill 目录。' : undefined
+  };
+}
+
+async function checkConfigFilePermissions(config: AppConfig, cwd: string): Promise<DoctorCheck[]> {
+  const paths = [
+    path.join(config.homeDir, 'config.json'),
+    path.join(cwd, 'neo-agent.config.json'),
+    path.join(cwd, '.mcp.json')
+  ];
+  const present: string[] = [];
+  const broadSecrets: string[] = [];
+  const unreadable: string[] = [];
+
+  for (const filePath of paths) {
+    if (!(await pathExists(filePath))) continue;
+    present.push(filePath);
+    try {
+      const [fileStat, content] = await Promise.all([stat(filePath), readFile(filePath, 'utf8')]);
+      const containsSecret = /apiKey|accessToken|_KEY|token/i.test(content);
+      if (containsSecret && process.platform !== 'win32' && (fileStat.mode & 0o077) !== 0) {
+        broadSecrets.push(`${filePath}:${(fileStat.mode & 0o777).toString(8)}`);
+      }
+    } catch (error) {
+      unreadable.push(`${filePath}:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (unreadable.length > 0) {
+    return [{
+      status: 'warn',
+      name: '配置文件权限',
+      message: '部分配置文件无法读取权限或内容。',
+      detail: unreadable.join(', ')
+    }];
+  }
+  if (broadSecrets.length > 0) {
+    return [{
+      status: 'warn',
+      name: '配置文件权限',
+      message: '包含密钥字段的配置文件可被同组或其他用户读取。',
+      detail: broadSecrets.join(', '),
+      fix: '在类 Unix 系统上执行 `chmod 600 <config-file>`。'
+    }];
+  }
+  return [{
+    status: 'pass',
+    name: '配置文件权限',
+    message: '已检查配置文件权限。',
+    detail: present.length > 0 ? present.join(', ') : '没有发现本地配置文件'
+  }];
 }
 
 function checkModelConfig(name: string, apiKey: string | undefined, apiBase: string, model: string): DoctorCheck {
@@ -412,4 +654,36 @@ function statusLabel(status: DoctorStatus): string {
 function maskSecret(secret: string): string {
   if (secret.length <= 8) return '[已隐藏]';
   return `${secret.slice(0, 3)}...${secret.slice(-4)}`;
+}
+
+function resolveProjectPath(cwd: string, inputPath: string): string {
+  return path.isAbsolute(inputPath) ? inputPath : path.resolve(cwd, inputPath);
+}
+
+async function checkPathAccess(filePath: string, mode: number): Promise<{ ok: boolean; path: string }> {
+  try {
+    await access(filePath, mode);
+    return { ok: true, path: filePath };
+  } catch {
+    return { ok: false, path: filePath };
+  }
+}
+
+async function countSkills(root: string): Promise<{ exists: boolean; count: number; error?: string }> {
+  if (!(await pathExists(root))) return { exists: false, count: 0 };
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    let count = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (await pathExists(path.join(root, entry.name, 'SKILL.md'))) count += 1;
+    }
+    return { exists: true, count };
+  } catch (error) {
+    return {
+      exists: true,
+      count: 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }

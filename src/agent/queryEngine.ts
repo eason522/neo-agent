@@ -17,7 +17,7 @@ import {
   summarizeToolError,
   summarizeToolResult
 } from '../tools/toolLog.js';
-import { applyToolResultBudget, type ToolResultBudgetOptions, type ToolResultBudgetOutcome } from '../tools/toolResultBudget.js';
+import { applyToolHistoryBudget, applyToolResultBudget, type ToolResultBudgetOptions, type ToolResultBudgetOutcome } from '../tools/toolResultBudget.js';
 
 export type QueryEngineResult = {
   text: string;
@@ -114,6 +114,7 @@ export class QueryEngine {
         toolPairs
       });
       loopMessages.push(...roundResult.messages);
+      await this.applyHistoryToolResultBudget(loopMessages, toolPairs, round);
       if (roundResult.terminal) {
         return this.finalizeAfterTerminalTool(modelKind, loopMessages, {
           webToolCalls,
@@ -405,6 +406,30 @@ export class QueryEngine {
 
   private streamHandlers(): { onContentDelta?: (delta: string) => void } | undefined {
     return this.options.onContentDelta ? { onContentDelta: this.options.onContentDelta } : undefined;
+  }
+
+  private async applyHistoryToolResultBudget(messages: ChatMessage[], toolPairs: ToolPairRecord[], round: number): Promise<void> {
+    const replacements = await applyToolHistoryBudget({
+      messages,
+      options: this.options.toolResultBudget,
+      toolNameForCallId: toolCallId => toolPairs.find(pair => pair.toolCallId === toolCallId)?.toolName
+    });
+    for (const replacement of replacements) {
+      const pair = toolPairs.find(item => item.toolCallId === replacement.toolCallId);
+      if (pair) {
+        pair.resultChars = replacement.nextChars;
+        pair.persistedPath = replacement.persisted.displayPath;
+        pair.originalResultChars = replacement.persisted.originalChars;
+      }
+      this.logger.info('tool.history_result_persisted', {
+        name: replacement.toolName,
+        toolCallId: replacement.toolCallId,
+        originalChars: replacement.previousChars,
+        referenceChars: replacement.nextChars,
+        path: replacement.persisted.displayPath,
+        round
+      });
+    }
   }
 }
 

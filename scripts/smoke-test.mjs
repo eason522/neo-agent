@@ -305,12 +305,14 @@ test('模型客户端不会重试 4xx 参数错误', async () => {
 });
 
 test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
-  const { buildSearchDomainPolicy, normalizeAndValidateWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'urlPolicy.js')).href);
+  const { buildSearchDomainPolicy, evaluateHostnamePermission, normalizeAndValidateWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'urlPolicy.js')).href);
   const policy = {
     allowedDomains: ['example.com'],
     blockedDomains: ['blocked.example.com'],
     blockPrivateAddresses: true
   };
+  const webDecision = evaluateHostnamePermission('docs.example.com', policy, 'test');
+  if (webDecision.behavior !== 'allow' || webDecision.domain !== 'web') throw new Error(`Web 权限判定应允许 docs.example.com：${JSON.stringify(webDecision)}`);
   const safeUrl = normalizeAndValidateWebUrl('http://docs.example.com/path', policy, 'test');
   assertIncludes(safeUrl, 'https://docs.example.com/path');
   assertThrows(() => normalizeAndValidateWebUrl('http://127.0.0.1:8080', policy, 'test'), '内网');
@@ -321,6 +323,59 @@ test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
   assertIncludes(domainPolicy.allowedDomains.join(','), 'docs.example.com');
   assertIncludes(domainPolicy.blockedDomains.join(','), 'blocked.example.com');
   assertIncludes(domainPolicy.blockedDomains.join(','), 'news.example.com');
+});
+
+test('统一权限核心覆盖文件、MCP 和 Web 判定', async () => {
+  const {
+    evaluateFileWritePermission,
+    evaluateMcpPermission,
+    evaluateWebHostnamePermission,
+    matchPermissionRule
+  } = await import(pathToFileURL(path.join(root, 'dist', 'permissions', 'permissions.js')).href);
+
+  const workspace = evaluateFileWritePermission({
+    toolName: 'Write',
+    path: 'workspace/a.txt',
+    operation: 'create',
+    permissionRequired: false,
+    interactive: false
+  });
+  if (workspace.behavior !== 'allow' || workspace.code !== 'workspace_allowed') throw new Error(`workspace 写入应允许：${JSON.stringify(workspace)}`);
+
+  const nonInteractive = evaluateFileWritePermission({
+    toolName: 'Write',
+    path: 'src/a.ts',
+    operation: 'overwrite',
+    permissionRequired: true,
+    interactive: false
+  });
+  if (nonInteractive.behavior !== 'deny' || nonInteractive.code !== 'needs_interactive_permission') {
+    throw new Error(`非交互写入应拒绝：${JSON.stringify(nonInteractive)}`);
+  }
+
+  const mcpDenied = evaluateMcpPermission({
+    fullName: 'mcp__github__delete_repo',
+    qualifiedName: 'github.delete_repo',
+    readOnlyHint: true,
+    destructiveHint: true,
+    mode: 'allowAll',
+    allowedTools: [],
+    deniedTools: ['mcp__github__delete_*']
+  });
+  if (mcpDenied.behavior !== 'deny' || mcpDenied.code !== 'explicit_denied') throw new Error(`MCP deny rule 应优先：${JSON.stringify(mcpDenied)}`);
+
+  const webBlocked = evaluateWebHostnamePermission({
+    hostname: '127.0.0.1',
+    operation: 'test',
+    blockedByPrivateAddress: true,
+    blockedByDomainRule: false,
+    constrainedByAllowedDomains: false,
+    allowedByDomainRule: false
+  });
+  if (webBlocked.behavior !== 'deny' || webBlocked.code !== 'private_address_blocked') throw new Error(`Web 私有地址应拒绝：${JSON.stringify(webBlocked)}`);
+
+  const matched = matchPermissionRule(['mcp__github__create_issue', 'github.create_issue'], ['github.create_*']);
+  if (matched !== 'github.create_*') throw new Error(`通配权限规则匹配失败：${matched}`);
 });
 
 test('TavilyClient 支持缓存、来源去重、失败分类和冲突提示', async () => {
@@ -814,7 +869,17 @@ test('TranscriptService 支持标题、compact boundary、resume snapshot 和 to
     compactId: 'compact_test'
   });
   await transcripts.append('user', 'compact 后继续开发。');
-  await transcripts.append('assistant', '继续推进。');
+  await transcripts.append('assistant', '继续推进。', {
+    toolPairs: [{
+      round: 1,
+      toolCallId: 'call_persisted',
+      toolName: 'LargeTool',
+      hasResult: true,
+      resultChars: 320,
+      persistedPath: '/tmp/full-tool-result.txt',
+      originalResultChars: 5000
+    }]
+  });
   await transcripts.flush();
 
   const sessions = await transcripts.listSessions(5);
@@ -826,6 +891,8 @@ test('TranscriptService 支持标题、compact boundary、resume snapshot 和 to
   if (snapshot.messages.length !== 2 || !snapshot.messages[0].content.includes('compact 后继续开发')) {
     throw new Error(`resume 应只恢复 compact boundary 后的消息：${JSON.stringify(snapshot.messages)}`);
   }
+  assertIncludes(snapshot.messages[1].content, '历史工具结果引用');
+  assertIncludes(snapshot.messages[1].content, '/tmp/full-tool-result.txt');
   if (!snapshot.warnings.some(warning => warning.includes('未配对 tool result'))) {
     throw new Error(`应提示未配对 tool result：${JSON.stringify(snapshot.warnings)}`);
   }
@@ -1102,6 +1169,71 @@ test('QueryEngine 会把超大工具结果落盘并回灌预览', async () => {
     if (result.toolPairs[0]?.originalResultChars !== fullOutput.length) throw new Error(`toolPairs 应记录原始长度：${JSON.stringify(result.toolPairs)}`);
     if (!infos.some(item => item.event === 'tool.result_persisted')) {
       throw new Error(`应该记录 tool.result_persisted 日志：${JSON.stringify(infos)}`);
+    }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test('QueryEngine 会按历史消息级预算落盘累计工具结果', async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-tool-history-'));
+  try {
+    const { QueryEngine } = await import(pathToFileURL(path.join(root, 'dist', 'agent', 'queryEngine.js')).href);
+    const infos = [];
+    let modelCalls = 0;
+    const model = {
+      chatWithTools: async options => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            content: '',
+            toolCalls: ['A', 'B', 'C'].map(name => ({
+              id: `call_${name}`,
+              type: 'function',
+              function: { name: `Medium${name}`, arguments: '{}' }
+            }))
+          };
+        }
+        const toolMessages = options.messages.filter(message => message.role === 'tool');
+        if (toolMessages.length !== 3) throw new Error(`第二轮应保留三个 tool result 配对：${JSON.stringify(toolMessages)}`);
+        if (!toolMessages.some(message => message.content.includes('<neo_tool_result_persisted>'))) {
+          throw new Error(`累计工具结果超预算时应替换为持久化引用：${JSON.stringify(toolMessages)}`);
+        }
+        if (toolMessages.some(message => message.content.includes('TAIL_MEDIUM_RESULT'))) {
+          throw new Error(`累计预算替换后不应把完整尾部继续塞进上下文：${JSON.stringify(toolMessages)}`);
+        }
+        return { content: '历史预算已应用', toolCalls: [] };
+      },
+      chat: async () => 'unused'
+    };
+    const runner = {
+      definitions: () => ['A', 'B', 'C'].map(name => ({
+        type: 'function',
+        function: { name: `Medium${name}`, description: 'Medium', parameters: { type: 'object', properties: {} } }
+      })),
+      canExecute: name => name.startsWith('Medium'),
+      executionMode: () => 'parallel',
+      execute: async call => ({ content: `${call.function.name}\n${'body\n'.repeat(80)}TAIL_MEDIUM_RESULT\n` })
+    };
+    const logger = { info(event, fields) { infos.push({ event, fields }); }, debug() {}, error() {}, warn() {} };
+    const engine = new QueryEngine({ get: () => model }, [runner], logger, {
+      maxToolRounds: 2,
+      toolResultBudget: {
+        enabled: true,
+        dir: outputDir,
+        maxInlineChars: 900,
+        previewChars: 200
+      }
+    });
+    const result = await engine.run('main', [{ role: 'user', content: '累计工具结果预算测试' }]);
+    assertIncludes(result.text, '历史预算');
+    if (!infos.some(item => item.event === 'tool.history_result_persisted')) {
+      throw new Error(`应该记录历史工具结果落盘日志：${JSON.stringify(infos)}`);
+    }
+    const persistedPairs = result.toolPairs.filter(pair => pair.persistedPath);
+    if (persistedPairs.length === 0) throw new Error(`toolPairs 应记录历史预算持久化路径：${JSON.stringify(result.toolPairs)}`);
+    for (const pair of persistedPairs) {
+      assertIncludes(await readFile(pair.persistedPath, 'utf8'), 'TAIL_MEDIUM_RESULT');
     }
   } finally {
     await rm(outputDir, { recursive: true, force: true });
@@ -1488,6 +1620,12 @@ test('doctor 缺 key 时失败并给出建议', async () => {
   assertIncludes(result.stdout, 'neo doctor 诊断结果');
   assertIncludes(result.stdout, '缺少 API key');
   assertIncludes(result.stdout, '设置 DEEPSEEK_API_KEY');
+  assertIncludes(result.stdout, '上下文预算');
+  assertIncludes(result.stdout, 'Workspace');
+  assertIncludes(result.stdout, 'Tool results');
+  assertIncludes(result.stdout, 'Skills');
+  assertIncludes(result.stdout, '配置文件权限');
+  assertIncludes(result.stdout, 'ripgrep');
 });
 
 test('self-check 会检查版本、CHANGELOG 和安装环境', async () => {

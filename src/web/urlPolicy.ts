@@ -1,5 +1,6 @@
 import net from 'node:net';
 import type { AppConfig } from '../types.js';
+import { assertPermissionAllowed, evaluateWebHostnamePermission, type PermissionDecision } from '../permissions/permissions.js';
 
 export type WebAccessPolicy = Pick<AppConfig['web'], 'allowedDomains' | 'blockedDomains' | 'blockPrivateAddresses'>;
 
@@ -50,17 +51,29 @@ export function buildSearchDomainPolicy(
 }
 
 export function validateHostname(hostname: string, policy: WebAccessPolicy, operation = '联网工具'): void {
+  assertPermissionAllowed(evaluateHostnamePermission(hostname, policy, operation));
+}
+
+export function evaluateHostnamePermission(hostname: string, policy: WebAccessPolicy, operation = '联网工具'): PermissionDecision {
   const normalized = normalizeHostname(hostname);
-  if (!normalized) throw new Error(`${operation} URL 缺少有效域名。`);
-  if (policy.blockPrivateAddresses && isPrivateOrLocalHostname(normalized)) {
-    throw new Error(`${operation} 已阻止访问本地、内网或链路本地地址：${hostname}`);
+  if (!normalized) {
+    return {
+      domain: 'web',
+      behavior: 'deny',
+      code: 'invalid_hostname',
+      source: 'runtime',
+      subject: hostname,
+      reason: `${operation} URL 缺少有效域名。`
+    };
   }
-  if (matchesDomainRules(normalized, policy.blockedDomains)) {
-    throw new Error(`${operation} 已被 blockedDomains 拒绝：${hostname}`);
-  }
-  if (policy.allowedDomains.length > 0 && !matchesDomainRules(normalized, policy.allowedDomains)) {
-    throw new Error(`${operation} 不在 allowedDomains 范围内：${hostname}`);
-  }
+  return evaluateWebHostnamePermission({
+    hostname,
+    operation,
+    blockedByPrivateAddress: policy.blockPrivateAddresses && isPrivateOrLocalHostname(normalized),
+    blockedByDomainRule: matchesDomainRules(normalized, policy.blockedDomains),
+    constrainedByAllowedDomains: policy.allowedDomains.length > 0,
+    allowedByDomainRule: matchesDomainRules(normalized, policy.allowedDomains)
+  });
 }
 
 export function matchesDomainRules(hostname: string, rules: string[]): boolean {

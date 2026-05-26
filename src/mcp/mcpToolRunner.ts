@@ -2,6 +2,7 @@ import type { AppConfig, ChatToolCall, ChatToolDefinition, McpToolCallRecord } f
 import type { ToolExecutionOptions, ToolRunner } from '../tools/tool.js';
 import { throwIfAborted } from '../utils/abort.js';
 import type { McpManager, McpToolDetail } from './mcpManager.js';
+import { evaluateMcpPermission, type PermissionDecision } from '../permissions/permissions.js';
 
 export type McpPermissionDecision = 'allow_once' | 'allow_always' | 'deny' | 'deny_always';
 
@@ -203,45 +204,45 @@ export function evaluateMcpToolPermission(
   tool: Pick<McpToolDetail, 'fullName' | 'serverName' | 'toolName' | 'readOnlyHint' | 'destructiveHint'>,
   permissions: AppConfig['mcp']['permissions']
 ): McpPermissionEvaluation {
+  return toMcpPermissionEvaluation(evaluateMcpToolPermissionDecision(tool, permissions));
+}
+
+export function evaluateMcpToolPermissionDecision(
+  tool: Pick<McpToolDetail, 'fullName' | 'serverName' | 'toolName' | 'readOnlyHint' | 'destructiveHint'>,
+  permissions: AppConfig['mcp']['permissions']
+): PermissionDecision {
   const qualifiedName = `${tool.serverName}.${tool.toolName}`;
-  if (matchesToolRule(tool.fullName, qualifiedName, permissions.deniedTools)) {
-    return {
-      allowed: false,
-      reason: `MCP 工具已被配置拒绝：${tool.fullName}`,
-      code: 'explicit_denied'
-    };
-  }
-  if (matchesToolRule(tool.fullName, qualifiedName, permissions.allowedTools)) {
-    return {
-      allowed: true,
-      reason: '显式允许',
-      code: 'explicit_allowed'
-    };
-  }
-  if (permissions.mode === 'allowAll') {
+  return evaluateMcpPermission({
+    fullName: tool.fullName,
+    qualifiedName,
+    readOnlyHint: tool.readOnlyHint,
+    destructiveHint: tool.destructiveHint,
+    mode: permissions.mode,
+    allowedTools: permissions.allowedTools,
+    deniedTools: permissions.deniedTools
+  });
+}
+
+function toMcpPermissionEvaluation(decision: PermissionDecision): McpPermissionEvaluation {
+  if (decision.behavior === 'allow') {
     return {
       allowed: true,
-      reason: '权限模式允许所有 MCP 工具',
-      code: 'allow_all'
-    };
-  }
-  if (tool.readOnlyHint === true && tool.destructiveHint !== true) {
-    return {
-      allowed: true,
-      reason: '只读 MCP 工具',
-      code: 'read_only'
+      reason: decision.reason,
+      code: toAllowedMcpCode(decision.code)
     };
   }
   return {
     allowed: false,
-    reason: [
-      `MCP 工具未获授权：${tool.fullName}`,
-      '默认只自动执行 readOnly 且非 destructive 的 MCP 工具。',
-      `如确认需要允许，请在 ~/.neo-agent/config.json 的 mcp.permissions.allowedTools 加入 "${tool.fullName}"，`,
-      '或临时设置 NEO_AGENT_MCP_PERMISSION_MODE=allowAll。'
-    ].join(' '),
-    code: 'needs_user_permission'
+    reason: decision.reason,
+    code: decision.code === 'explicit_denied' ? 'explicit_denied' : 'needs_user_permission'
   };
+}
+
+function toAllowedMcpCode(code: string): Extract<McpPermissionEvaluation, { allowed: true }>['code'] {
+  if (code === 'allow_all') return 'allow_all';
+  if (code === 'read_only') return 'read_only';
+  if (code === 'allowed_once') return 'allowed_once';
+  return 'explicit_allowed';
 }
 
 function buildDescription(tool: McpToolDetail): string {
@@ -282,19 +283,6 @@ function scoreTool(tool: McpToolDetail, terms: string[], query: string): number 
     if (tool.serverName.toLowerCase().includes(term)) score += 2;
   }
   return score;
-}
-
-function matchesToolRule(fullName: string, qualifiedName: string, rules: string[]): boolean {
-  return rules.some(rule => {
-    const trimmed = rule.trim();
-    if (!trimmed) return false;
-    if (trimmed === fullName || trimmed === qualifiedName) return true;
-    if (trimmed.endsWith('*')) {
-      const prefix = trimmed.slice(0, -1);
-      return fullName.startsWith(prefix) || qualifiedName.startsWith(prefix);
-    }
-    return false;
-  });
 }
 
 function addPermissionRule(rules: string[], rule: string): void {

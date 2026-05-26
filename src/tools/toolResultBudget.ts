@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { ChatMessage } from '../types.js';
 import { ensureDir, sanitizeName, stableId } from '../utils/fs.js';
 
 export type ToolResultBudgetOptions = {
@@ -19,6 +20,14 @@ export type ToolResultBudgetOutcome = {
   };
 };
 
+export type ToolHistoryBudgetReplacement = {
+  toolCallId: string;
+  toolName: string;
+  previousChars: number;
+  nextChars: number;
+  persisted: NonNullable<ToolResultBudgetOutcome['persisted']>;
+};
+
 export async function applyToolResultBudget(input: {
   toolName: string;
   toolCallId: string;
@@ -30,6 +39,69 @@ export async function applyToolResultBudget(input: {
     return { content: normalizeEmptyToolResult(input.toolName, input.content) };
   }
 
+  return persistToolResultReference({
+    toolName: input.toolName,
+    toolCallId: input.toolCallId,
+    content: input.content,
+    options
+  });
+}
+
+export async function applyToolHistoryBudget(input: {
+  messages: ChatMessage[];
+  options?: ToolResultBudgetOptions;
+  toolNameForCallId?: (toolCallId: string) => string | undefined;
+}): Promise<ToolHistoryBudgetReplacement[]> {
+  const options = input.options;
+  if (!options?.enabled) return [];
+  const toolMessages = input.messages.filter(message =>
+    message.role === 'tool' &&
+    message.tool_call_id &&
+    message.content.length > 0 &&
+    !isPersistedToolResultReference(message.content)
+  );
+  let totalToolResultChars = toolMessages.reduce((sum, message) => sum + message.content.length, 0);
+  if (totalToolResultChars <= options.maxInlineChars) return [];
+
+  const replacements: ToolHistoryBudgetReplacement[] = [];
+  for (const message of toolMessages) {
+    if (totalToolResultChars <= options.maxInlineChars) break;
+    const previousChars = message.content.length;
+    const toolCallId = message.tool_call_id!;
+    const toolName = input.toolNameForCallId?.(toolCallId) ?? 'ToolResult';
+    const budgeted = await persistToolResultReference({
+      toolName,
+      toolCallId,
+      content: message.content,
+      options,
+      previewChars: 0,
+      reason: '历史工具结果累计超过预算。'
+    });
+    if (!budgeted.persisted) continue;
+    message.content = budgeted.content;
+    totalToolResultChars = totalToolResultChars - previousChars + budgeted.content.length;
+    replacements.push({
+      toolCallId,
+      toolName,
+      previousChars,
+      nextChars: budgeted.content.length,
+      persisted: budgeted.persisted
+    });
+  }
+
+  return replacements;
+}
+
+export async function persistToolResultReference(input: {
+  toolName: string;
+  toolCallId: string;
+  content: string;
+  options: ToolResultBudgetOptions;
+  previewChars?: number;
+  reason?: string;
+}): Promise<ToolResultBudgetOutcome> {
+  const content = normalizeEmptyToolResult(input.toolName, input.content);
+  const options = input.options;
   const root = path.isAbsolute(options.dir) ? options.dir : path.resolve(process.cwd(), options.dir);
   const dayDir = path.join(root, new Date().toISOString().slice(0, 10));
   await ensureDir(dayDir);
@@ -40,18 +112,22 @@ export async function applyToolResultBudget(input: {
     stableId('result').slice('result_'.length)
   ].filter(Boolean).join('-') + '.txt';
   const filePath = path.join(dayDir, fileName);
-  await writeFile(filePath, input.content, 'utf8');
+  await writeFile(filePath, content, 'utf8');
 
-  const preview = previewAtBoundary(input.content, options.previewChars);
+  const previewLimit = input.previewChars ?? options.previewChars;
+  const preview = previewLimit > 0 ? previewAtBoundary(content, previewLimit) : '';
   const displayPath = displayPathForTool(filePath);
   const message = [
     '<neo_tool_result_persisted>',
-    `Tool result too large (${input.content.length} chars). Full output saved to: ${displayPath}`,
-    'Use the Read tool on this path if you need details beyond the preview.',
-    '',
-    `Preview (first ${preview.length} chars):`,
+    `Tool result moved out of context (${content.length} chars). Full output saved to: ${displayPath}`,
+    input.reason,
+    preview
+      ? 'Use the Read tool on this path if you need details beyond the preview.'
+      : 'Use the Read tool on this path if you need the full result.',
+    preview ? '' : '',
+    preview ? `Preview (first ${preview.length} chars):` : '',
     preview,
-    input.content.length > preview.length ? '...' : '',
+    preview && content.length > preview.length ? '...' : '',
     '</neo_tool_result_persisted>'
   ].filter(line => line !== '').join('\n');
 
@@ -60,7 +136,7 @@ export async function applyToolResultBudget(input: {
     persisted: {
       filePath,
       displayPath,
-      originalChars: input.content.length,
+      originalChars: content.length,
       previewChars: preview.length
     }
   };
@@ -68,6 +144,10 @@ export async function applyToolResultBudget(input: {
 
 function normalizeEmptyToolResult(toolName: string, content: string): string {
   return content.length > 0 ? content : `(${toolName} completed with no output)`;
+}
+
+function isPersistedToolResultReference(content: string): boolean {
+  return content.includes('<neo_tool_result_persisted>');
 }
 
 function previewAtBoundary(content: string, maxChars: number): string {
