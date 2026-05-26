@@ -72,7 +72,8 @@ export function buildTuiTurnState(input: {
 }
 
 export function formatTuiRuntimeSummary(state: TuiRuntimeState): string {
-  return `model=${state.model} workspace=${state.workspace} openviking=${state.openViking}`;
+  const memory = state.openViking === 'local' ? 'local' : `openviking:${state.openViking}`;
+  return `model=${state.model} workspace=${state.workspace} memory=${memory}`;
 }
 
 export function formatTuiRuntimeStatusLine(state: TuiRuntimeState, columns = 80): string {

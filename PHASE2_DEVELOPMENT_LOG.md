@@ -681,3 +681,24 @@ neo-agent 根因：
 
 - smoke 覆盖默认 `maxToolRounds: 64`。
 - smoke 覆盖 `NEO_AGENT_MAX_TOOL_ROUNDS` 运行时覆盖。
+
+## 2026-05-26：区分 OpenViking 记忆 MCP 和外部 MCP 工具
+
+用户测试时看到启动状态 `openviking=mcp`，随后执行 `/mcp` 却显示“没有已连接的 MCP 工具”，容易理解成前后矛盾。
+
+根因：
+
+- OpenViking 的 `/mcp` 是 `OpenVikingMemory` 作为记忆后端直接调用的本地服务接口。
+- `/mcp` REPL 命令列出的是 `McpManager` 管理的外部 MCP server/tools。
+- OpenViking 记忆连接没有注册进通用 MCP 工具列表，因此不会出现在 `/mcp` 输出中。
+
+修正：
+
+- TUI/启动状态从 `openviking=mcp` 改为 `memory=openviking:mcp`，明确它属于记忆后端。
+- `/mcp` 命令文案改为“外部 MCP 工具”。
+- 当外部 MCP 工具为空且记忆后端不是 local 时，提示 OpenViking `/mcp` 是记忆后端连接，应使用 `neo openviking doctor` 查看。
+
+收敛边界：
+
+- 本次只修正文案和状态含义，不把 OpenViking 记忆工具注册进 `McpManager`。
+- 这样避免把记忆内部读写工具暴露成通用模型工具，保持当前 OpenViking 主存储边界。

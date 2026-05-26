@@ -72,7 +72,7 @@ export TAVILY_API_KEY=...
 /memory-export [数量]
 /skills               查看已加载的 skill
 /skill create <名称> :: <描述>
-/mcp                  查看已连接的 MCP 工具
+/mcp                  查看已连接的外部 MCP 工具
 /logs [行数]          查看最近的 JSONL 日志
 /transcript [行数]    查看当前会话 transcript
 /transcripts [数量]   查看最近会话 transcript 列表

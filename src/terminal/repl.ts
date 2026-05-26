@@ -1297,8 +1297,12 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
     case '/mcp': {
       await agent.transcripts.append('command', line, { command });
       const tools = await agent.mcp.listTools();
-      if (tools.length === 0) console.log(chalk.gray('没有已连接的 MCP 工具'));
-      else tools.forEach(tool => console.log(tool));
+      if (tools.length === 0) {
+        console.log(chalk.gray('没有已连接的外部 MCP 工具。'));
+        if (agent.config.memory.backend !== 'local') {
+          console.log(chalk.gray('OpenViking /mcp 是记忆后端连接，不会注册为通用 MCP 工具；使用 `neo openviking doctor` 查看。'));
+        }
+      } else tools.forEach(tool => console.log(tool));
       return true;
     }
     case '/logs': {
@@ -1515,7 +1519,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/memory-export [数量]',
     '/skills               查看已加载的 skill',
     '/skill list/show/path/edit/delete/create',
-    '/mcp                  查看已连接的 MCP 工具',
+    '/mcp                  查看已连接的外部 MCP 工具',
     '/logs [行数]          查看最近的 JSONL 日志',
     '/transcript [行数]    查看当前会话 transcript',
     '/transcripts [数量]   查看最近会话 transcript 列表',

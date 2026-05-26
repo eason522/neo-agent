@@ -2987,6 +2987,7 @@ test('REPL 常用命令不触发模型也能运行', async () => {
       '/skill show repl-skill',
       '/skill path repl-skill',
       '/skill delete repl-skill',
+      '/mcp',
       '/logs 5',
       '/transcript 20',
       '/transcripts 5',
@@ -3014,6 +3015,8 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, '"category": "workflow"');
   assertIncludes(result.stdout, 'REPL skill description');
   assertIncludes(result.stdout, '已删除 skill');
+  assertIncludes(result.stdout, '没有已连接的外部 MCP 工具');
+  assertIncludes(result.stdout, 'OpenViking /mcp 是记忆后端连接');
   assertIncludes(result.stdout, 'transcripts');
   assertIncludes(result.stdout, '/resume [session]');
   assertIncludes(result.stdout, '/capabilities');
@@ -3029,7 +3032,7 @@ test('TUI 默认入口在非交互 stdin 下回退 legacy REPL', async () => {
   });
   assertIncludes(result.stdout, '/help                 查看命令');
   assertIncludes(result.stdout, '输入 /help 查看命令。');
-  if (result.stdout.includes('openviking=') || result.stdout.includes('model=deepseek-v4-pro workspace=')) {
+  if (result.stdout.includes('memory=openviking') || result.stdout.includes('model=deepseek-v4-pro workspace=')) {
     throw new Error(`非交互 stdin 不应渲染 TUI header：${result.stdout}`);
   }
 });
@@ -3106,7 +3109,7 @@ test('TUI 状态模型能生成运行时摘要和回合摘要', async () => {
   });
   assertIncludes(formatTuiRuntimeSummary(runtime), 'model=deepseek-v4-pro');
   assertIncludes(formatTuiRuntimeSummary(runtime), 'workspace=workspace');
-  assertIncludes(formatTuiRuntimeSummary(runtime), 'openviking=mcp');
+  assertIncludes(formatTuiRuntimeSummary(runtime), 'memory=openviking:mcp');
   const narrowRuntime = buildTuiRuntimeState({
     config: {
       ...config,
