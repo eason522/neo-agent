@@ -73,7 +73,11 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 已交付：URL 策略补 2000 字符长度限制、用户名/密码拒绝、单标签非公开主机拒绝；WebFetch/Tavily extract/map/crawl 前新增 HEAD 预检，阻止跨域或降级重定向，允许同域/www 重定向，拒绝超大 `content-length`，对二进制内容、401/403 和异常状态写入 warning；Web prompt 和 map/extract/crawl 输出同步预检提示。
 - [x] REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行。
   - 已交付：`NeoAgent.ask` 新增状态事件回调，覆盖 context/routing/model/compact/done 阶段；REPL 运行时输出上下文、路由和模型阶段；每轮 status/debug  now 包含路由原因、记忆命中数、匹配 skill 数、vision/web context、工具事件和状态事件。
-- [ ] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
+- [x] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
+  - 已交付：`ConversationHistory.compact()` 支持强制手动压缩和自定义要求；`NeoAgent.compactConversation()` 上报 compact 状态并写入 transcript boundary；REPL 新增 `/compact [说明]`、`/status` history 摘要和 `/resume` compact boundary 提示。
+- [ ] REPL 富消息渲染第一阶段。
+  - 范围：在不引入完整 Ink TUI 的前提下，改善 assistant/tool/status/compact 输出分组、折叠长内容、错误提示和 transcript 路径展示。
+  - CC-Source 参考：message rendering、tool result UI、progress display、resume/compact message boundary。
 
 ### P2：暂缓，除非用户明确要求
 
@@ -113,19 +117,19 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见**。
+建议下一步做 **REPL 富消息渲染第一阶段**。
 
 理由：
 
-- REPL 现在能显示上下文、路由、模型和工具阶段；下一步应把上下文压缩从“后台自动发生”变成用户可主动触发、可查看状态。
-- QueryEngine tool result 预算和 transcript resume 已经补齐，手动 compact 是上下文可恢复链路里剩下的直接用户入口。
-- 这比继续扩展新工具更符合“上下文与工具结果可恢复”的主线。
+- REPL 已能显示上下文、路由、模型、工具和 compact 阶段；下一步应把这些状态输出整理成更稳定、可扫描的消息形态。
+- QueryEngine tool result 预算、transcript resume 和手动 compact 已经补齐，当前痛点从“能力缺口”转为“交互呈现不够清晰”。
+- 这仍属于终端体验主线，不需要横向扩展新工具或提前引入完整 Ink TUI。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source compact/microcompact/session storage，梳理 neo 当前自动 compact 和 resume 状态缺口。
-2. 增加 `/compact` 命令、compact 状态输出和 resume 后 compact boundary 可见提示。
-3. 补 smoke 覆盖手动 compact、compact transcript 记录和 `/status` 展示。
+1. 对照 CC-Source message/tool/progress rendering，梳理 neo 当前输出分组和长内容折叠缺口。
+2. 增加轻量 render helpers，让 tool/status/compact/debug 输出格式一致。
+3. 补 smoke 覆盖长工具状态、compact status、错误和 transcript 路径展示。
 
 ## 未决问题
 

@@ -17,7 +17,7 @@ import { FileToolRunner, getFileToolPrompt, type FilePermissionAsker } from './f
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
 import { planWebUseWithModel } from './web/webPlanner.js';
 import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
-import { ConversationHistory } from './conversation/history.js';
+import { ConversationHistory, type ConversationCompactResult, type ConversationHistoryStats } from './conversation/history.js';
 import { QueryEngine } from './agent/queryEngine.js';
 import { getToolSearchPrompt, ToolSearchRunner } from './tools/toolSearchRunner.js';
 import { getSkillToolPrompt, SkillToolRunner } from './skills/skillToolRunner.js';
@@ -44,6 +44,11 @@ export type ResumeSessionResult = {
   status: 'resumed' | 'not_found';
   requested?: string;
   snapshot?: TranscriptConversationSnapshot;
+};
+
+export type CompactConversationOptions = {
+  signal?: AbortSignal;
+  onStatus?: (event: AgentStatusEvent) => void;
 };
 
 export class NeoAgent {
@@ -177,6 +182,56 @@ export class NeoAgent {
       requested: selector,
       snapshot
     };
+  }
+
+  conversationStats(): ConversationHistoryStats {
+    return this.conversationHistory.stats();
+  }
+
+  async compactConversation(
+    instructions?: string,
+    options: CompactConversationOptions = {}
+  ): Promise<ConversationCompactResult> {
+    if (options.signal?.aborted) throw createAbortError();
+    emitAgentStatus(options.onStatus, {
+      stage: 'compact',
+      message: instructions ? '开始手动压缩会话上下文（含自定义要求）' : '开始手动压缩会话上下文'
+    });
+    const compactResult = await this.conversationHistory.compact(this.models.get('small'), {
+      force: true,
+      instructions
+    });
+    if (options.signal?.aborted) throw createAbortError();
+
+    if (!compactResult.compacted) {
+      emitAgentStatus(options.onStatus, {
+        stage: 'compact',
+        message: `未执行手动 compact：${compactResult.reason ?? 'unknown'}`,
+        metadata: compactResult
+      });
+      this.logger.debug('conversation.compact.manual.skip', compactResult);
+      return compactResult;
+    }
+
+    await this.transcripts.append('compact', '手动压缩会话上下文', {
+      source: compactResult.source,
+      beforeChars: compactResult.beforeChars,
+      afterChars: compactResult.afterChars,
+      summarizedMessages: compactResult.summarizedMessages,
+      keptMessages: compactResult.keptMessages,
+      summaryChars: compactResult.summaryChars,
+      summary: compactResult.summary,
+      compactId: stableId('compact'),
+      manual: true,
+      instructionsChars: instructions?.length ?? 0
+    });
+    emitAgentStatus(options.onStatus, {
+      stage: 'compact',
+      message: `手动 compact 完成：${compactResult.beforeChars} -> ${compactResult.afterChars} 字符`,
+      metadata: compactResult
+    });
+    this.logger.info('conversation.compact.manual.success', compactResult);
+    return compactResult;
   }
 
   setMcpPermissionAsker(permissionAsker: McpPermissionAsker | undefined): void {

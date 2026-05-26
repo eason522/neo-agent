@@ -1028,6 +1028,87 @@ test('ConversationHistory 超过阈值时生成自动 compact 摘要并保留近
   if (messages[0].content.includes('<analysis>')) throw new Error(`compact 摘要不应保留 analysis：${messages[0].content}`);
 });
 
+test('ConversationHistory 支持手动 compact 和自定义压缩要求', async () => {
+  const { ConversationHistory } = await import(pathToFileURL(path.join(root, 'dist', 'conversation', 'history.js')).href);
+  const history = new ConversationHistory(5000, 1000, {
+    enabled: false,
+    thresholdRatio: 0.9,
+    keepRecentChars: 2000,
+    maxSummaryChars: 500
+  });
+  await history.append(
+    '第一轮用户问题：整理失控开发计划，并回到主线。'.repeat(3),
+    '第一轮助手回答：已整理计划，后续开发先参考 CC-Source。'.repeat(3)
+  );
+  await history.append(
+    '第二轮用户问题：继续推进开发。'.repeat(3),
+    '第二轮助手回答：继续实现手动 compact。'.repeat(3)
+  );
+
+  let compactPrompt = '';
+  const compact = await history.compact({
+    chat: async ({ messages }) => {
+      compactPrompt = messages.at(-1)?.content ?? '';
+      return '<summary>手动摘要：用户要求开发计划回到主线，后续开发必须先参考 CC-Source。</summary>';
+    }
+  }, { instructions: '优先保留用户长期约束和未完成事项' });
+
+  if (!compact.compacted) throw new Error(`应该强制执行手动 compact：${JSON.stringify(compact)}`);
+  if (compact.source !== 'model') throw new Error(`手动 compact 应使用模型摘要：${JSON.stringify(compact)}`);
+  assertIncludes(compactPrompt, '用户自定义压缩要求');
+  assertIncludes(compactPrompt, '优先保留用户长期约束');
+
+  const stats = history.stats();
+  if (!stats.hasCompactSummary || stats.compactSummaryChars === 0) throw new Error(`stats 应暴露 compact 摘要状态：${JSON.stringify(stats)}`);
+  const messages = history.recentMessages();
+  assertIncludes(messages[0].content, '手动摘要');
+  assertIncludes(messages.at(-1)?.content ?? '', '手动 compact');
+});
+
+test('NeoAgent 手动 compact 会写入 transcript boundary 并上报状态', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const { NeoAgent } = await import(pathToFileURL(path.join(root, 'dist', 'neoAgent.js')).href);
+  const agentHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-manual-compact-'));
+  const config = defaultConfig();
+  config.homeDir = agentHome;
+  config.logging.console = false;
+  config.conversation.compactEnabled = false;
+  const agent = new NeoAgent(config);
+  await agent.transcripts.start();
+  agent.models.get = () => ({
+    chat: async ({ messages }) => {
+      assertIncludes(messages.at(-1)?.content ?? '', '保留手动 compact 的原因');
+      return '<summary>手动摘要：已保留 compact 原因和 CC-Source 约束。</summary>';
+    }
+  });
+  await agent.conversationHistory.append(
+    '旧用户消息：主线是按 DEVELOPMENT_PLAN 推进。'.repeat(5),
+    '旧助手消息：已确认先参考 CC-Source。'.repeat(5)
+  );
+  await agent.conversationHistory.append(
+    '新用户消息：继续推进。'.repeat(5),
+    '新助手消息：准备实现手动 compact。'.repeat(5)
+  );
+
+  const statuses = [];
+  const compact = await agent.compactConversation('保留手动 compact 的原因', {
+    onStatus: event => statuses.push(event)
+  });
+  if (!compact.compacted) throw new Error(`NeoAgent 应完成手动 compact：${JSON.stringify(compact)}`);
+  if (!statuses.some(event => event.stage === 'compact' && event.message.includes('开始手动压缩'))) {
+    throw new Error(`应上报 compact 开始状态：${JSON.stringify(statuses)}`);
+  }
+  if (!statuses.some(event => event.stage === 'compact' && event.message.includes('手动 compact 完成'))) {
+    throw new Error(`应上报 compact 完成状态：${JSON.stringify(statuses)}`);
+  }
+
+  const transcript = await readFile(agent.transcripts.filePath, 'utf8');
+  assertIncludes(transcript, '"type":"compact"');
+  assertIncludes(transcript, '"manual":true');
+  assertIncludes(transcript, '手动摘要');
+  await rm(agentHome, { recursive: true, force: true });
+});
+
 test('TranscriptService 支持标题、compact boundary、resume snapshot 和 tool pairing 校验', async () => {
   const { TranscriptService } = await import(pathToFileURL(path.join(root, 'dist', 'transcript', 'transcriptService.js')).href);
   const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
@@ -2425,6 +2506,7 @@ test('REPL 常用命令不触发模型也能运行', async () => {
     input: [
       '/help',
       '/status',
+      '/compact',
       '/capabilities',
       '/assess 阅读 README 并总结',
       '/debug on',
@@ -2449,6 +2531,9 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, '/help                 查看命令');
   assertIncludes(result.stdout, '换行                 当前推荐');
   assertIncludes(result.stdout, 'neo REPL 状态');
+  assertIncludes(result.stdout, 'history: messages=');
+  assertIncludes(result.stdout, '/compact [说明]');
+  assertIncludes(result.stdout, '未执行 compact：可压缩消息不足');
   assertIncludes(result.stdout, 'neo capabilities @');
   assertIncludes(result.stdout, 'runtime tools:');
   assertIncludes(result.stdout, 'neo task assessment @');

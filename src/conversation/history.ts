@@ -23,6 +23,14 @@ export type ConversationCompactResult = {
   reason?: string;
 };
 
+export type ConversationHistoryStats = {
+  messageCount: number;
+  charCount: number;
+  maxHistoryChars: number;
+  compactSummaryChars: number;
+  hasCompactSummary: boolean;
+};
+
 export class ConversationHistory {
   private readonly messages: ChatMessage[] = [];
   private compactSummary: string | undefined;
@@ -43,6 +51,17 @@ export class ConversationHistory {
       { role: 'assistant', content: trimMessage(assistantText, this.maxMessageChars) }
     );
     return this.compactIfNeeded(compactModel);
+  }
+
+  async compact(
+    compactModel?: ConversationCompactModel,
+    options: { instructions?: string; force?: boolean } = {}
+  ): Promise<ConversationCompactResult> {
+    return this.compactNow(compactModel, {
+      force: options.force ?? true,
+      instructions: options.instructions,
+      respectEnabled: false
+    });
   }
 
   recentMessages(): ChatMessage[] {
@@ -84,17 +103,26 @@ export class ConversationHistory {
     return undefined;
   }
 
-  stats(): { messageCount: number; charCount: number; maxHistoryChars: number } {
+  stats(): ConversationHistoryStats {
     return {
       messageCount: this.messages.length,
       charCount: this.totalChars(),
-      maxHistoryChars: this.maxHistoryChars
+      maxHistoryChars: this.maxHistoryChars,
+      compactSummaryChars: this.compactSummary?.length ?? 0,
+      hasCompactSummary: Boolean(this.compactSummary)
     };
   }
 
   private async compactIfNeeded(compactModel?: ConversationCompactModel): Promise<ConversationCompactResult> {
+    return this.compactNow(compactModel, { force: false, respectEnabled: true });
+  }
+
+  private async compactNow(
+    compactModel: ConversationCompactModel | undefined,
+    options: { force: boolean; respectEnabled: boolean; instructions?: string }
+  ): Promise<ConversationCompactResult> {
     const beforeChars = this.totalChars();
-    if (!this.compactOptions.enabled) {
+    if (options.respectEnabled && !this.compactOptions.enabled) {
       this.trimToBudget();
       return {
         compacted: false,
@@ -102,14 +130,26 @@ export class ConversationHistory {
         afterChars: this.totalChars(),
         summarizedMessages: 0,
         keptMessages: this.messages.length,
-      summaryChars: this.compactSummary?.length ?? 0,
-      summary: this.compactSummary,
-      reason: 'auto_compact_disabled'
+        summaryChars: this.compactSummary?.length ?? 0,
+        summary: this.compactSummary,
+        reason: 'auto_compact_disabled'
       };
     }
 
     const threshold = Math.floor(this.maxHistoryChars * this.compactOptions.thresholdRatio);
-    if (beforeChars <= threshold || this.messages.length <= 2) {
+    if (this.messages.length <= 2) {
+      return {
+        compacted: false,
+        beforeChars,
+        afterChars: beforeChars,
+        summarizedMessages: 0,
+        keptMessages: this.messages.length,
+        summaryChars: this.compactSummary?.length ?? 0,
+        summary: this.compactSummary,
+        reason: 'not_enough_messages'
+      };
+    }
+    if (!options.force && beforeChars <= threshold) {
       return {
         compacted: false,
         beforeChars,
@@ -122,7 +162,11 @@ export class ConversationHistory {
       };
     }
 
-    const { older, recent } = splitForCompact(this.messages, Math.min(this.compactOptions.keepRecentChars, Math.floor(this.maxHistoryChars * 0.7)));
+    const { older, recent } = splitForCompact(
+      this.messages,
+      Math.min(this.compactOptions.keepRecentChars, Math.floor(this.maxHistoryChars * 0.7)),
+      options.force
+    );
     if (older.length === 0) {
       this.trimToBudget();
       return {
@@ -137,7 +181,7 @@ export class ConversationHistory {
       };
     }
 
-    const { summary, source } = await this.summarizeOlderMessages(older, compactModel);
+    const { summary, source } = await this.summarizeOlderMessages(older, compactModel, options.instructions);
     this.compactSummary = trimMessage(summary, this.compactOptions.maxSummaryChars);
     this.messages.splice(0, this.messages.length, ...recent);
     this.trimToBudget();
@@ -155,11 +199,12 @@ export class ConversationHistory {
 
   private async summarizeOlderMessages(
     older: ChatMessage[],
-    compactModel?: ConversationCompactModel
+    compactModel?: ConversationCompactModel,
+    instructions?: string
   ): Promise<{ summary: string; source: 'model' | 'fallback' }> {
     if (!compactModel) {
       return {
-        summary: buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars),
+        summary: buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars, instructions),
         source: 'fallback'
       };
     }
@@ -180,18 +225,18 @@ export class ConversationHistory {
           },
           {
             role: 'user',
-            content: buildCompactPrompt(this.compactSummary, older)
+            content: buildCompactPrompt(this.compactSummary, older, instructions)
           }
         ]
       });
       const normalized = normalizeModelSummary(response);
       return {
-        summary: normalized || buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars),
+        summary: normalized || buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars, instructions),
         source: normalized ? 'model' : 'fallback'
       };
     } catch {
       return {
-        summary: buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars),
+        summary: buildFallbackSummary(this.compactSummary, older, this.compactOptions.maxSummaryChars, instructions),
         source: 'fallback'
       };
     }
@@ -233,7 +278,7 @@ function totalChars(messages: ChatMessage[]): number {
   return messages.reduce((sum, message) => sum + message.content.length, 0);
 }
 
-function splitForCompact(messages: ChatMessage[], keepRecentChars: number): { older: ChatMessage[]; recent: ChatMessage[] } {
+function splitForCompact(messages: ChatMessage[], keepRecentChars: number, force = false): { older: ChatMessage[]; recent: ChatMessage[] } {
   let usedChars = 0;
   let start = messages.length;
   while (start > 0) {
@@ -244,19 +289,23 @@ function splitForCompact(messages: ChatMessage[], keepRecentChars: number): { ol
     usedChars += pairChars;
     start = pairStart;
   }
+  if (force && start === 0 && messages.length > 2) {
+    start = messages.length - 2;
+  }
   return {
     older: messages.slice(0, start),
     recent: messages.slice(start)
   };
 }
 
-function buildCompactPrompt(existingSummary: string | undefined, older: ChatMessage[]): string {
+function buildCompactPrompt(existingSummary: string | undefined, older: ChatMessage[], instructions?: string): string {
   const lines = older.map((message, index) => {
     const label = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : message.role;
     return `## ${index + 1}. ${label}\n${message.content}`;
   }).join('\n\n');
   return [
     existingSummary ? `# 旧摘要\n${existingSummary}` : '',
+    instructions ? `# 用户自定义压缩要求\n${instructions}` : '',
     '# 需要压缩的较早对话',
     lines,
     '# 输出要求',
@@ -271,13 +320,14 @@ function normalizeModelSummary(input: string): string {
     .trim();
 }
 
-function buildFallbackSummary(existingSummary: string | undefined, older: ChatMessage[], maxChars: number): string {
+function buildFallbackSummary(existingSummary: string | undefined, older: ChatMessage[], maxChars: number, instructions?: string): string {
   const items = older.map((message, index) => {
     const content = trimMessage(message.content, 1200);
     return `${index + 1}. ${message.role}: ${content}`;
   });
   return trimMessage([
     existingSummary ? `旧摘要：\n${existingSummary}` : '',
+    instructions ? `用户自定义压缩要求：\n${instructions}` : '',
     '自动压缩摘要：模型摘要不可用，以下是较早对话的抽取式记录。',
     ...items
   ].filter(Boolean).join('\n\n'), maxChars);

@@ -790,6 +790,7 @@ function formatElapsedTime(durationMs: number): string {
 }
 
 function printReplStatus(agent: NeoAgent, state: ReplState): void {
+  const conversation = agent.conversationStats();
   console.log([
     chalk.bold('neo REPL 状态'),
     `terminal: ${state.terminal.name}`,
@@ -800,9 +801,25 @@ function printReplStatus(agent: NeoAgent, state: ReplState): void {
     `main: ${agent.config.models.main.model}`,
     `small: ${agent.config.models.small.model}`,
     `toolRounds: ${agent.config.web.maxToolRounds}`,
+    `history: messages=${conversation.messageCount} chars=${conversation.charCount}/${conversation.maxHistoryChars} compactSummary=${conversation.compactSummaryChars}`,
     `debug: ${state.debugEnabled ? 'on' : 'off'}`,
     state.lastTurn ? formatStatusLine(state.lastTurn) : chalk.gray('status 尚无本轮对话')
   ].join('\n'));
+}
+
+function formatCompactReason(reason: string | undefined): string {
+  switch (reason) {
+    case 'not_enough_messages':
+      return '可压缩消息不足';
+    case 'no_summarizable_prefix':
+      return '没有可压缩的较早消息';
+    case 'below_threshold':
+      return '未超过自动压缩阈值';
+    case 'auto_compact_disabled':
+      return '自动压缩已关闭';
+    default:
+      return reason ?? 'unknown';
+  }
 }
 
 function formatDebugView(agent: NeoAgent, state: ReplState): string {
@@ -1080,6 +1097,39 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       await agent.transcripts.append('command', line, { command });
       printReplStatus(agent, state);
       return true;
+    case '/compact': {
+      await agent.transcripts.append('command', line, { command, instructionsChars: arg.length });
+      const startedAt = Date.now();
+      const statusEvents: AgentStatusEvent[] = [];
+      const compact = await agent.compactConversation(arg || undefined, {
+        onStatus: event => {
+          statusEvents.push(event);
+          console.log(formatAgentStatusEvent(event));
+        }
+      });
+      if (!compact.compacted) {
+        console.log(chalk.yellow(`未执行 compact：${formatCompactReason(compact.reason)}`));
+        return true;
+      }
+      console.log(chalk.green(`已压缩上下文：${compact.beforeChars} -> ${compact.afterChars} 字符，摘要 ${compact.summaryChars} 字符，保留 ${compact.keptMessages} 条消息。`));
+      state.lastTurn = {
+        inputChars: arg.length,
+        modelKind: 'small',
+        routerReason: 'manual compact',
+        memoryHits: 0,
+        matchedSkills: 0,
+        hasVisionContext: false,
+        hasWebContext: false,
+        durationMs: Date.now() - startedAt,
+        toolEvents: [],
+        statusEvents,
+        webToolCalls: 0,
+        mcpToolCalls: 0,
+        fileToolCalls: 0,
+        skillToolCalls: 0
+      };
+      return true;
+    }
     case '/capabilities':
     case '/caps': {
       await agent.transcripts.append('command', line, { command });
@@ -1284,6 +1334,9 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       console.log(chalk.green(`已恢复会话：${snapshot.sessionId}`));
       if (snapshot.title) console.log(`标题：${snapshot.title}`);
       console.log(`恢复消息：${snapshot.messages.length}，compact 摘要：${snapshot.compactSummary?.length ?? 0} 字符`);
+      if (snapshot.compactSummary) {
+        console.log(chalk.gray('compact boundary: 已恢复摘要，并仅加载最近一次 compact 后的尾部消息。'));
+      }
       if (snapshot.warnings.length > 0) {
         for (const warning of snapshot.warnings) console.log(chalk.yellow(`警告：${warning}`));
       }
@@ -1432,6 +1485,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/help                 查看命令',
     '/exit                 退出',
     '/status               查看当前 REPL 状态',
+    '/compact [说明]       手动压缩当前会话上下文',
     '/capabilities         查看当前运行时能力快照',
     '/assess <任务>        评估任务是否可完成',
     '/debug [on|off|last]  开关轻量 debug 视图',
