@@ -19,9 +19,9 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 代码状态：
 
 - 分支：`main`
-- 远端：整理前检查为 `main...origin/main`，业务代码无未提交变更
-- 最近提交：`f27332d feat: budget web download content`
-- 校验：2026-05-26 已运行 `npm run typecheck` 通过
+- 远端：开发前检查为 `main...origin/main`
+- 最近提交：`e33a36b fix: make vision analysis cancellable`
+- 校验：2026-05-26 已运行 `npm run typecheck` 和 `npm run smoke` 通过
 
 产品状态：
 
@@ -67,7 +67,8 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 已交付：`--debug`/REPL `/debug on` 可把运行期日志提升到 debug；日志记录增加 `privacy` 标记、No-PII diagnostic 写入、结构化 `errorCode`；模型 retry/success 和 usage 记录补 `retryCount`。
 - [x] 文件工具补图片/PDF/二进制处理、读取预算和更清晰的拒绝原因。
   - 已交付：Read 增加图片/PDF 元数据摘要、普通二进制拒绝、文本读取预算说明、分页提示和更清晰的路径越界/缺失错误；文件工具 prompt 已同步说明限制。
-- [ ] MCP 补项目级 server 审批、权限建议和更完整权限 UI。
+- [x] MCP 补项目级 server 审批、权限建议和更完整权限 UI。
+  - 已交付：项目 `.mcp.json` 中的 server 默认只列出不加载；审批状态保存在用户配置的 `mcp.projectApprovals`，按项目绝对路径绑定，避免仓库配置自我授权；新增 `neo mcp approve/unapprove`；`neo mcp list/add` 会展示 pending/approved 和启用建议；MCP 权限拒绝原因和 REPL 确认提示补持久允许命令。
 - [ ] Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度。
 - [ ] REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行。
 - [ ] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
@@ -110,24 +111,24 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **MCP 补项目级 server 审批、权限建议和更完整权限 UI**。
+建议下一步做 **Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度**。
 
 理由：
 
-- 权限、tool result 预算、doctor、日志和文件工具边界已经收口；下一步应回到 MCP 的项目级信任边界。
-- `.mcp.json` 已兼容，但项目级 server 审批和权限建议还没有形成完整闭环，外部进程启动风险仍需要更清晰的用户确认。
+- 权限、tool result 预算、doctor、日志、文件工具和 MCP 项目级信任边界已经收口；下一步应继续补 Web 的外部访问边界。
+- 当前 Web 已有域名 allow/deny、私网阻断和 robots 配置，但重定向、下载预检、站点策略合并和进度提示还不够完整。
 - 这比继续扩展新工具更符合“权限与文件能力收口”的主线。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source MCP config/trust/permission UI，梳理 neo 当前 `.mcp.json`、readOnly、allow/deny 规则缺口。
-2. 增加项目级 MCP server 审批状态、权限建议输出和更清晰的拒绝原因。
-3. 补 smoke 覆盖项目 MCP 未审批、审批后可用、deny 优先和权限建议。
+1. 对照 CC-Source WebFetch/WebSearch、URL preflight、download/crawl policy，梳理 neo 当前 Tavily 策略缺口。
+2. 增加重定向/下载预检、站点策略合并说明和更清晰拒绝原因。
+3. 补 smoke 覆盖私网/域名/robots/重定向/下载预算组合场景。
 
 ## 未决问题
 
 - OpenViking 的持久化写入应该使用哪个稳定 API？
-- 项目级 MCP server 应采用怎样的信任/审批模型？
+- 项目级 MCP server 后续是否需要会话级临时审批，还是继续只支持用户配置持久审批？
 - 文件系统权限是只做配置级规则，还是增加会话级临时授权？
 - Web robots、域名 allow/deny、重定向和 Tavily 抓取策略应该如何合并成一个站点策略模型？
 - 富 TUI 应继续增强 readline，还是引入更接近 CC-Source 的 Ink 层？

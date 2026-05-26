@@ -59,6 +59,7 @@ test('初始化配置', async () => {
   assertIncludes(config, '"selectDomains"');
   assertIncludes(config, '"excludeDomains"');
   assertIncludes(config, '"permissions"');
+  assertIncludes(config, '"projectApprovals"');
   assertIncludes(config, '"toolSearchThreshold"');
   assertIncludes(config, '"mode": "readOnly"');
   assertIncludes(config, '"requestTimeoutMs"');
@@ -1812,13 +1813,26 @@ test('MCP 配置命令能添加、列出和删除 server', async () => {
   const addProject = await run(['mcp', 'add', '--scope', 'project', 'local-demo', '--', 'node', 'local-server.js'], { cwd: projectDir });
   assertIncludes(addProject.stdout, '.mcp.json');
   assertIncludes(addProject.stdout, 'scope=project');
+  assertIncludes(addProject.stdout, 'approval=pending');
+  assertIncludes(addProject.stdout, '尚未审批');
   const projectMcp = await readFile(path.join(projectDir, '.mcp.json'), 'utf8');
   assertIncludes(projectMcp, '"mcpServers"');
   assertIncludes(projectMcp, '"local-demo"');
   const projectList = await run(['mcp', 'list', '--scope', 'project'], { cwd: projectDir });
-  assertIncludes(projectList.stdout, 'local-demo: stdio node local-server.js scope=project');
+  assertIncludes(projectList.stdout, 'local-demo: stdio node local-server.js scope=project approval=pending');
+  assertIncludes(projectList.stdout, '未审批');
+  const pendingConfig = await run(['config', 'show', '--source', 'merged'], { cwd: projectDir });
+  if (pendingConfig.stdout.includes('"local-demo"')) throw new Error('未审批项目 MCP server 不应进入 merged config');
+  const approveProject = await run(['mcp', 'approve', 'local-demo', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(approveProject.stdout, '已审批项目 MCP server：local-demo');
+  const approvedList = await run(['mcp', 'list', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(approvedList.stdout, 'local-demo: stdio node local-server.js scope=project approval=approved');
   const mergedConfig = await run(['config', 'show', '--source', 'merged'], { cwd: projectDir });
   assertIncludes(mergedConfig.stdout, '"local-demo"');
+  const unapproveProject = await run(['mcp', 'unapprove', 'local-demo', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(unapproveProject.stdout, '已撤销项目 MCP server 审批：local-demo');
+  const unapprovedConfig = await run(['config', 'show', '--source', 'merged'], { cwd: projectDir });
+  if (unapprovedConfig.stdout.includes('"local-demo"')) throw new Error('撤销审批后项目 MCP server 不应进入 merged config');
 
   const addHttp = await run(['mcp', 'add', '--type', 'http', '--header', 'X-Test=1', '--oauth-token-env', 'MCP_TOKEN', 'remote', 'https://mcp.example.com/mcp']);
   assertIncludes(addHttp.stdout, 'remote: http https://mcp.example.com/mcp headers=1 oauth=MCP_TOKEN');

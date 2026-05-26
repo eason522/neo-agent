@@ -1495,6 +1495,7 @@ function formatMcpPermissionPrompt(request: {
     request.description ? `说明：${request.description}` : '',
     `风险：${request.risk}`,
     `参数：${request.argumentChars} 字符；字段：${keys}`,
+    `持久允许命令：neo mcp permission allow ${request.fullName}`,
     '选择：y=允许本次，a=始终允许，n=拒绝本次，d=始终拒绝。'
   ].filter(Boolean).join('\n');
 }

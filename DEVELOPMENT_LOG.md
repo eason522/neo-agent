@@ -781,6 +781,24 @@ neo 当前没有 CC-Source 的多模态 tool result block、PDF renderer 或 not
 
 验证：`npm run typecheck` 和 `npm run smoke` 通过。
 
+### 2026-05-26：MCP 项目级 server 审批和权限建议
+
+继续推进 P1“MCP 补项目级 server 审批、权限建议和更完整权限 UI”。先对照 CC-Source：
+
+- `services/mcp/config.ts`：项目 `.mcp.json` 属于独立 scope，配置读取要保留来源和权限信息，不能把项目配置当作无条件可信用户配置。
+- `commands/mcp/addCommand.ts`：MCP server 写入 scope 时要明确 transport、目标和配置来源。
+- `commands/plugin/PluginTrustWarning.tsx`：外部 server、插件和本地软件需要用户显式信任，不能假设仓库内容安全。
+
+neo 当前已经兼容 `.mcp.json`，但之前会把项目 `mcpServers` 直接合入运行时配置，意味着仓库里的项目 MCP server 会被 agent 初始化和 `mcp test` 看到。修复后：
+
+- 项目 `.mcp.json` 中的 MCP server 默认只列出为 `approval=pending`，不会进入 merged config，也不会被 agent 加载或测试。
+- 审批状态保存在用户配置 `mcp.projectApprovals`，按项目绝对路径绑定；审批不写入 `.mcp.json`，避免仓库配置自我授权。
+- 新增 `neo mcp approve <name> --scope project` 和 `neo mcp unapprove <name> --scope project`。
+- `neo mcp add/list` 会展示 `approval=pending|approved`，并提示启用命令。
+- MCP 权限拒绝原因和 REPL 权限确认提示补充 `neo mcp permission allow <tool>`，让持久授权路径更直接。
+
+验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过；smoke 覆盖项目 MCP 未审批不进入 merged config、审批后进入、撤销审批后移除，以及权限建议输出。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？

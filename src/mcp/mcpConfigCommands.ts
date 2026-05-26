@@ -7,6 +7,7 @@ import { McpManager } from './mcpManager.js';
 type RawUserConfig = Record<string, unknown> & {
   mcp?: Record<string, unknown> & {
     servers?: Record<string, McpServerConfig>;
+    projectApprovals?: Record<string, string[]>;
     permissions?: {
       allowedTools?: string[];
       deniedTools?: string[];
@@ -24,19 +25,21 @@ export type McpConfigEntry = {
   name: string;
   server: McpServerConfig;
   scope: McpConfigScope;
+  approved: boolean;
 };
 
 export async function listConfiguredMcpServers(options: { scope?: McpConfigScope; cwd?: string } = {}): Promise<{ filePath: string; entries: McpConfigEntry[] }> {
   const userFilePath = getUserConfigPath();
   const projectFilePath = getProjectMcpConfigPath(options.cwd);
+  const userConfig = await readRawUserConfig(userFilePath);
+  const approvedProjectServers = new Set(userConfig.mcp?.projectApprovals?.[getProjectApprovalKey(options.cwd)] ?? []);
   const entries: McpConfigEntry[] = [];
   if (!options.scope || options.scope === 'user') {
-    const userConfig = await readRawUserConfig(userFilePath);
-    entries.push(...Object.entries(userConfig.mcp?.servers ?? {}).map(([name, server]) => ({ name, server, scope: 'user' as const })));
+    entries.push(...Object.entries(userConfig.mcp?.servers ?? {}).map(([name, server]) => ({ name, server, scope: 'user' as const, approved: true })));
   }
   if (!options.scope || options.scope === 'project') {
     const projectConfig = await readRawProjectMcpConfig(projectFilePath);
-    entries.push(...Object.entries(projectConfig.mcpServers ?? {}).map(([name, server]) => ({ name, server, scope: 'project' as const })));
+    entries.push(...Object.entries(projectConfig.mcpServers ?? {}).map(([name, server]) => ({ name, server, scope: 'project' as const, approved: approvedProjectServers.has(name) })));
   }
   return {
     filePath: options.scope === 'project' ? projectFilePath : options.scope === 'user' ? userFilePath : `${userFilePath} + ${projectFilePath}`,
@@ -56,7 +59,7 @@ export async function addConfiguredMcpServer(input: {
   oauthTokenEnv?: string;
   env?: Record<string, string>;
   disabled?: boolean;
-}): Promise<{ filePath: string; server: McpServerConfig }> {
+}): Promise<{ filePath: string; server: McpServerConfig; approved: boolean }> {
   validateServerName(input.name);
   const type = input.type ?? 'stdio';
   if (type === 'stdio' && !input.command?.trim()) throw new Error('MCP stdio server command 不能为空。');
@@ -84,7 +87,7 @@ export async function addConfiguredMcpServer(input: {
     mcp.servers[input.name] = server;
     await writeRawUserConfig(filePath, config);
   }
-  return { filePath, server };
+  return { filePath, server, approved: scope === 'user' };
 }
 
 export async function removeConfiguredMcpServer(name: string, options: { scope?: McpConfigScope; cwd?: string } = {}): Promise<{ filePath: string; removed: boolean }> {
@@ -97,6 +100,7 @@ export async function removeConfiguredMcpServer(name: string, options: { scope?:
     removed = Boolean(config.mcpServers?.[name]);
     if (config.mcpServers) delete config.mcpServers[name];
     await writeRawProjectMcpConfig(filePath, config);
+    if (removed) await updateProjectApprovalList(name, { approved: false, cwd: options.cwd });
   } else {
     const config = await readRawUserConfig(filePath);
     const mcp = ensureMcpConfig(config);
@@ -105,6 +109,18 @@ export async function removeConfiguredMcpServer(name: string, options: { scope?:
     await writeRawUserConfig(filePath, config);
   }
   return { filePath, removed };
+}
+
+export async function updateProjectMcpServerApproval(input: {
+  name: string;
+  approved: boolean;
+  cwd?: string;
+}): Promise<{ filePath: string; projectKey: string; approvedServers: string[] }> {
+  validateServerName(input.name);
+  const projectFilePath = getProjectMcpConfigPath(input.cwd);
+  const projectConfig = await readRawProjectMcpConfig(projectFilePath);
+  if (!projectConfig.mcpServers?.[input.name]) throw new Error(`没有找到项目 MCP server：${input.name}`);
+  return updateProjectApprovalList(input.name, { approved: input.approved, cwd: input.cwd });
 }
 
 export async function updateMcpToolPermission(input: {
@@ -217,8 +233,9 @@ export function formatMcpServerEntry(entry: McpConfigEntry): string {
   const env = envCount > 0 ? ` env=${envCount}` : '';
   const headers = entry.server.headers ? ` headers=${Object.keys(entry.server.headers).length}` : '';
   const oauth = entry.server.oauth?.accessTokenEnv ? ` oauth=${entry.server.oauth.accessTokenEnv}` : '';
+  const approval = entry.scope === 'project' ? ` approval=${entry.approved ? 'approved' : 'pending'}` : '';
   const target = type === 'stdio' ? `${entry.server.command ?? ''}${args}` : `${entry.server.url ?? ''}`;
-  return `${entry.name}${disabled}: ${type} ${target}${env}${headers}${oauth} scope=${entry.scope}`;
+  return `${entry.name}${disabled}: ${type} ${target}${env}${headers}${oauth} scope=${entry.scope}${approval}`;
 }
 
 function getUserConfigPath(): string {
@@ -228,6 +245,10 @@ function getUserConfigPath(): string {
 
 function getProjectMcpConfigPath(cwd = process.cwd()): string {
   return path.join(cwd, '.mcp.json');
+}
+
+function getProjectApprovalKey(cwd = process.cwd()): string {
+  return path.resolve(cwd);
 }
 
 async function readRawUserConfig(filePath: string): Promise<RawUserConfig> {
@@ -248,10 +269,34 @@ async function writeRawProjectMcpConfig(filePath: string, config: RawProjectMcpC
   await writeJsonFile(filePath, config);
 }
 
-function ensureMcpConfig(config: RawUserConfig): { servers: Record<string, McpServerConfig>; permissions?: { allowedTools?: string[]; deniedTools?: string[] } } {
+function ensureMcpConfig(config: RawUserConfig): {
+  servers: Record<string, McpServerConfig>;
+  projectApprovals?: Record<string, string[]>;
+  permissions?: { allowedTools?: string[]; deniedTools?: string[] };
+} {
   config.mcp ??= {};
   config.mcp.servers ??= {};
-  return config.mcp as Record<string, unknown> & { servers: Record<string, McpServerConfig>; permissions?: { allowedTools?: string[]; deniedTools?: string[] } };
+  return config.mcp as Record<string, unknown> & {
+    servers: Record<string, McpServerConfig>;
+    projectApprovals?: Record<string, string[]>;
+    permissions?: { allowedTools?: string[]; deniedTools?: string[] };
+  };
+}
+
+async function updateProjectApprovalList(name: string, options: { approved: boolean; cwd?: string }): Promise<{ filePath: string; projectKey: string; approvedServers: string[] }> {
+  const filePath = getUserConfigPath();
+  const projectKey = getProjectApprovalKey(options.cwd);
+  const config = await readRawUserConfig(filePath);
+  const mcp = ensureMcpConfig(config);
+  mcp.projectApprovals ??= {};
+  const current = mcp.projectApprovals[projectKey] ?? [];
+  const next = options.approved
+    ? Array.from(new Set([...current, name])).sort()
+    : current.filter(serverName => serverName !== name);
+  if (next.length > 0) mcp.projectApprovals[projectKey] = next;
+  else delete mcp.projectApprovals[projectKey];
+  await writeRawUserConfig(filePath, config);
+  return { filePath, projectKey, approvedServers: next };
 }
 
 function validateServerName(name: string): void {

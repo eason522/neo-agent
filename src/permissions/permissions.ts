@@ -173,7 +173,7 @@ export function evaluateMcpPermission(input: McpToolPermissionInput): Permission
       `MCP 工具未获授权：${input.fullName}`,
       '默认只自动执行 readOnly 且非 destructive 的 MCP 工具。',
       `如确认需要允许，请在 ~/.neo-agent/config.json 的 mcp.permissions.allowedTools 加入 "${input.fullName}"，`,
-      '或临时设置 NEO_AGENT_MCP_PERMISSION_MODE=allowAll。'
+      `或运行 \`neo mcp permission allow ${input.fullName}\`；也可临时设置 NEO_AGENT_MCP_PERMISSION_MODE=allowAll。`
     ].join(' ')
   });
 }

@@ -20,6 +20,7 @@ import {
   parseHeaderPairs,
   removeConfiguredMcpServer,
   testConfiguredMcpServers,
+  updateProjectMcpServerApproval,
   updateMcpToolPermission
 } from './mcp/mcpConfigCommands.js';
 import { createAbortError, isAbortError } from './utils/abort.js';
@@ -755,6 +756,10 @@ mcpCommand
       return;
     }
     for (const entry of entries) console.log(formatMcpServerEntry(entry));
+    const pending = entries.filter(entry => entry.scope === 'project' && !entry.approved);
+    for (const entry of pending) {
+      console.log(chalk.yellow(`项目 MCP server 未审批，不会加载：${entry.name}。运行 \`neo mcp approve ${entry.name} --scope project\` 启用。`));
+    }
   });
 
 mcpCommand
@@ -787,7 +792,10 @@ mcpCommand
     });
     console.log(chalk.green(`已添加 MCP server：${name}`));
     console.log(chalk.gray(result.filePath));
-    console.log(formatMcpServerEntry({ name, server: result.server, scope }));
+    console.log(formatMcpServerEntry({ name, server: result.server, scope, approved: result.approved }));
+    if (scope === 'project') {
+      console.log(chalk.yellow(`项目 MCP server 已写入但尚未审批，不会被 agent 加载。运行 \`neo mcp approve ${name} --scope project\` 后启用。`));
+    }
   });
 
 mcpCommand
@@ -804,6 +812,32 @@ mcpCommand
     }
     console.log(chalk.green(`已删除 MCP server：${name}`));
     console.log(chalk.gray(result.filePath));
+  });
+
+mcpCommand
+  .command('approve')
+  .description('审批当前项目 .mcp.json 中的 MCP server')
+  .argument('<name>', 'server 名称')
+  .option('--scope <project>', '审批位置，目前仅支持 project', 'project')
+  .action(async (name: string, options: { scope: string }) => {
+    if (options.scope !== 'project') throw new Error('MCP server 审批目前仅支持 --scope project。');
+    const result = await updateProjectMcpServerApproval({ name, approved: true });
+    console.log(chalk.green(`已审批项目 MCP server：${name}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(chalk.gray(`project=${result.projectKey} approved=${result.approvedServers.length}`));
+  });
+
+mcpCommand
+  .command('unapprove')
+  .description('撤销当前项目 MCP server 审批')
+  .argument('<name>', 'server 名称')
+  .option('--scope <project>', '审批位置，目前仅支持 project', 'project')
+  .action(async (name: string, options: { scope: string }) => {
+    if (options.scope !== 'project') throw new Error('MCP server 审批目前仅支持 --scope project。');
+    const result = await updateProjectMcpServerApproval({ name, approved: false });
+    console.log(chalk.green(`已撤销项目 MCP server 审批：${name}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(chalk.gray(`project=${result.projectKey} approved=${result.approvedServers.length}`));
   });
 
 mcpCommand

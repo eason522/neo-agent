@@ -107,6 +107,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
       }).optional(),
       disabled: z.boolean().optional()
     })),
+    projectApprovals: z.record(z.array(z.string())),
     toolSearchThreshold: z.number().int().positive(),
     permissions: z.object({
       mode: z.enum(['readOnly', 'allowAll']),
@@ -260,6 +261,7 @@ export function defaultConfig(): AppConfig {
     },
     mcp: {
       servers: {},
+      projectApprovals: {},
       toolSearchThreshold: Number.parseInt(process.env.NEO_AGENT_MCP_TOOL_SEARCH_THRESHOLD || '20', 10),
       permissions: {
         mode: getMcpPermissionMode(),
@@ -362,23 +364,30 @@ export async function loadConfigSources(cwd = process.cwd()): Promise<{
   const userConfigPath = path.join(defaults.homeDir, 'config.json');
   const projectConfigPath = path.join(cwd, 'neo-agent.config.json');
   const projectMcpConfigPath = path.join(cwd, '.mcp.json');
+  const userConfig = await readJsonFile<Partial<AppConfig>>(userConfigPath, {});
   const projectConfig = await readJsonFile<Partial<AppConfig>>(projectConfigPath, {});
-  const projectMcpConfig = await readProjectMcpConfig(projectMcpConfigPath);
+  const projectMcpConfig = await readProjectMcpConfig(projectMcpConfigPath, userConfig, cwd);
   return {
     defaults,
-    userConfig: await readJsonFile<Partial<AppConfig>>(userConfigPath, {}),
+    userConfig,
     projectConfig: deepMerge(projectConfig, projectMcpConfig),
     userConfigPath,
     projectConfigPath
   };
 }
 
-async function readProjectMcpConfig(filePath: string): Promise<Partial<AppConfig>> {
+async function readProjectMcpConfig(filePath: string, userConfig: Partial<AppConfig>, cwd: string): Promise<Partial<AppConfig>> {
   const raw = await readJsonFile<{ mcpServers?: unknown }>(filePath, {});
   if (!raw.mcpServers || typeof raw.mcpServers !== 'object' || Array.isArray(raw.mcpServers)) return {};
+  const projectKey = path.resolve(cwd);
+  const approved = new Set(userConfig.mcp?.projectApprovals?.[projectKey] ?? []);
+  const approvedServers = Object.fromEntries(
+    Object.entries(raw.mcpServers as AppConfig['mcp']['servers']).filter(([name]) => approved.has(name))
+  );
+  if (Object.keys(approvedServers).length === 0) return {};
   return {
     mcp: {
-      servers: raw.mcpServers as AppConfig['mcp']['servers']
+      servers: approvedServers
     }
   } as Partial<AppConfig>;
 }

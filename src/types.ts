@@ -198,6 +198,7 @@ export type AppConfig = {
   };
   mcp: {
     servers: Record<string, McpServerConfig>;
+    projectApprovals: Record<string, string[]>;
     toolSearchThreshold: number;
     permissions: {
       mode: McpPermissionMode;
