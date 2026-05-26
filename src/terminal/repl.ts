@@ -11,6 +11,7 @@ import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from 
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
 import type { TranscriptSessionSummary } from '../transcript/transcriptService.js';
+import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary } from './rendering.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -566,7 +567,7 @@ async function runAgentTurn(
       },
       onContentDelta: delta => {
         if (!streamed) {
-          output.write(chalk.cyan('neo:stream '));
+          output.write(`${chalk.cyan('neo:stream')}\n`);
           streamed = true;
         }
         output.write(delta);
@@ -590,7 +591,7 @@ async function runAgentTurn(
       skillToolCalls: response.skillToolCalls?.length ?? 0
     };
     if (streamed) output.write('\n');
-    else output.write(`${chalk.cyan(`neo:${response.modelKind}`)} ${response.text.trim()}\n`);
+    else output.write(formatAssistantResponseBlock(chalk.cyan(`neo:${response.modelKind}`), response.text));
     output.write(`${formatStatusLine(state.lastTurn)}\n\n`);
     if (state.debugEnabled) output.write(`${formatDebugView(agent, state)}\n`);
     if (isInteractive && askQuestion && response.skillSuggestion && !turnController.signal.aborted) {
@@ -603,7 +604,7 @@ async function runAgentTurn(
     if (isAbortError(error) || turnController.signal.aborted) {
       output.write(`${chalk.yellow('已取消当前请求。')}\n\n`);
     } else {
-      output.write(`${chalk.red('error')} ${error instanceof Error ? error.message : String(error)}\n\n`);
+      output.write(formatErrorBlock(chalk.red('error'), error instanceof Error ? error.message : String(error), agent.logger.filePath));
     }
   } finally {
     setActiveController(undefined);
@@ -826,10 +827,10 @@ function formatDebugView(agent: NeoAgent, state: ReplState): string {
   const turn = state.lastTurn;
   if (!turn) return chalk.gray('debug 暂无最近一轮对话。');
   const events = turn.toolEvents.length > 0
-    ? turn.toolEvents.map(event => `- ${event.phase} round=${event.round + 1} ${event.name}: ${event.summary}`).join('\n')
+    ? turn.toolEvents.map(event => formatDebugEventLine(`${event.phase} round=${event.round + 1} ${event.name}:`, event.summary)).join('\n')
     : chalk.gray('- 无工具事件');
   const statuses = turn.statusEvents.length > 0
-    ? turn.statusEvents.map(event => `- ${event.stage}: ${event.message}`).join('\n')
+    ? turn.statusEvents.map(event => formatDebugEventLine(`${event.stage}:`, event.message)).join('\n')
     : chalk.gray('- 无状态事件');
   return [
     chalk.gray('debug'),
@@ -1618,7 +1619,7 @@ function formatToolProgressEvent(event: ToolProgressEvent): string {
         ? chalk.yellow('tool!')
         : chalk.red('tool!');
   const round = event.phase === 'max_rounds' ? '上限' : `round ${event.round + 1}`;
-  return `${prefix} ${chalk.gray(round)} ${event.summary}`;
+  return `${prefix} ${chalk.gray(`${round} ${event.name}`)} ${formatEventSummary(event.summary)}`;
 }
 
 function formatAgentStatusEvent(event: AgentStatusEvent): string {
@@ -1631,7 +1632,7 @@ function formatAgentStatusEvent(event: AgentStatusEvent): string {
         : event.stage === 'done'
           ? chalk.green('done>')
           : chalk.gray('ctx>');
-  return `${prefix} ${chalk.gray(event.stage)} ${event.message}`;
+  return `${prefix} ${chalk.gray(event.stage)} ${formatEventSummary(event.message)}`;
 }
 
 function parseRememberArgs(arg: string): { content: string; category: MemoryCategory; tags: string[]; pinned: boolean } {

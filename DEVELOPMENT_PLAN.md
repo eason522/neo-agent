@@ -75,9 +75,13 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 已交付：`NeoAgent.ask` 新增状态事件回调，覆盖 context/routing/model/compact/done 阶段；REPL 运行时输出上下文、路由和模型阶段；每轮 status/debug  now 包含路由原因、记忆命中数、匹配 skill 数、vision/web context、工具事件和状态事件。
 - [x] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
   - 已交付：`ConversationHistory.compact()` 支持强制手动压缩和自定义要求；`NeoAgent.compactConversation()` 上报 compact 状态并写入 transcript boundary；REPL 新增 `/compact [说明]`、`/status` history 摘要和 `/resume` compact boundary 提示。
-- [ ] REPL 富消息渲染第一阶段。
+- [x] REPL 富消息渲染第一阶段。
   - 范围：在不引入完整 Ink TUI 的前提下，改善 assistant/tool/status/compact 输出分组、折叠长内容、错误提示和 transcript 路径展示。
   - CC-Source 参考：message rendering、tool result UI、progress display、resume/compact message boundary。
+  - 已交付：新增轻量 `terminal/rendering` helpers；assistant 多行响应改为分组缩进；stream header 单独成行；tool/status/debug 事件统一摘要截断；长错误会截断并提示日志路径。
+- [ ] REPL 权限确认 UI 一致化。
+  - 范围：把 MCP 和文件写入确认提示整理成统一样式，明确一次允许/持久允许/拒绝选项、风险摘要和对应持久化命令。
+  - CC-Source 参考：permission request UI、filesystem permission rules、MCP permission prompt。
 
 ### P2：暂缓，除非用户明确要求
 
@@ -117,19 +121,19 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **REPL 富消息渲染第一阶段**。
+建议下一步做 **REPL 权限确认 UI 一致化**。
 
 理由：
 
-- REPL 已能显示上下文、路由、模型、工具和 compact 阶段；下一步应把这些状态输出整理成更稳定、可扫描的消息形态。
-- QueryEngine tool result 预算、transcript resume 和手动 compact 已经补齐，当前痛点从“能力缺口”转为“交互呈现不够清晰”。
-- 这仍属于终端体验主线，不需要横向扩展新工具或提前引入完整 Ink TUI。
+- 统一权限核心、项目级 MCP 审批和文件写入确认都已有第一阶段能力，但 REPL 提示仍分散，选项语义不够一致。
+- CC-Source 的权限 UI 重点不是只问 y/N，而是让用户看到风险、作用范围和是否持久化；neo 可以先用 readline 文本 UI 对齐这个交互边界。
+- 这比扩展新工具更符合“稳定、权限、可恢复、体验一致性”的主线。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source message/tool/progress rendering，梳理 neo 当前输出分组和长内容折叠缺口。
-2. 增加轻量 render helpers，让 tool/status/compact/debug 输出格式一致。
-3. 补 smoke 覆盖长工具状态、compact status、错误和 transcript 路径展示。
+1. 对照 CC-Source permission request UI，梳理 neo MCP/File 确认提示字段和选项缺口。
+2. 增加统一 permission prompt render helper，复用到 MCP 和文件写入确认。
+3. 补 smoke 覆盖一次允许、持久允许、拒绝、文件写入确认和提示内容脱敏。
 
 ## 未决问题
 

@@ -853,6 +853,27 @@ neo 已有自动 compact、transcript compact boundary 和 resume snapshot。本
 
 验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过。
 
+### 2026-05-26：REPL 富消息渲染第一阶段
+
+继续推进 P1“REPL 富消息渲染第一阶段”。先对照 CC-Source：
+
+- `components/Message.tsx`：按 message 类型分派渲染，assistant/user/system/compact/tool 有各自边界，不把所有内容拼成同一行。
+- `components/messages/AssistantToolUseMessage.tsx` 与 `GroupedToolUseContent.tsx`：工具使用、排队、运行中、完成和错误状态分开展示，支持 grouped tool use。
+- `Tool.ts`：每个工具可以提供 `renderToolUseMessage`、`renderToolUseProgressMessage`、`renderToolResultMessage` 和错误/拒绝渲染。
+- `tools/WebSearchTool/UI.tsx`、`tools/FileReadTool/UI.tsx`：工具进度/结果以短摘要展示，长内容不直接铺满屏幕。
+- `components/messages/CompactBoundaryMessage.tsx` 和 `SystemAPIErrorMessage.tsx`：compact boundary、API 错误和重试信息有独立消息边界，长错误会截断并提示展开/查看上下文。
+
+neo 当前仍保持 readline REPL，没有引入完整 Ink TUI。本轮先抽取可落地的文本渲染约束：
+
+- 新增 `src/terminal/rendering.ts`，集中处理 assistant 响应分组、多行缩进、事件摘要截断、debug event 行和长错误块。
+- 非流式 assistant 多行回答从 `neo:model 内容` 改为 `neo:model` + 缩进正文；单行短回答保持紧凑格式。
+- 流式输出 header 从 `neo:stream ` 行内前缀改为单独一行，避免首个 token 和状态前缀挤在一起。
+- tool/status/debug 事件统一使用摘要截断，工具事件会显示 round 和 tool name，避免长查询或长状态撑满终端。
+- 长错误输出截断到固定预算，并附带日志路径提示；完整错误仍保留在日志/transcript 链路中。
+- smoke 覆盖 render helper 的多行分组、长事件截断、debug 行和长错误日志提示。
+
+验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？

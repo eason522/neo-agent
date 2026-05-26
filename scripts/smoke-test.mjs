@@ -2585,6 +2585,30 @@ test('REPL 会根据终端环境提示多行输入方式', async () => {
   assertIncludes(powerShell.note, 'Alt+Enter 在 PowerShell');
 });
 
+test('REPL render helpers 会分组多行回答并截断长事件', async () => {
+  const {
+    formatAssistantResponseBlock,
+    formatDebugEventLine,
+    formatErrorBlock,
+    formatEventSummary
+  } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'rendering.js')).href);
+
+  const assistant = formatAssistantResponseBlock('neo:main', '第一行\n第二行');
+  assertIncludes(assistant, 'neo:main\n  第一行\n  第二行\n');
+
+  const summary = formatEventSummary('x'.repeat(320), 80);
+  assertIncludes(summary, '[truncated]');
+  if (summary.length > 90) throw new Error(`事件摘要应被截断：${summary.length}`);
+
+  const debugLine = formatDebugEventLine('tool start:', '读取文件 '.repeat(80));
+  assertIncludes(debugLine, '  - tool start:');
+  assertIncludes(debugLine, '[truncated]');
+
+  const errorBlock = formatErrorBlock('error', '错误详情\n'.repeat(260), '/tmp/neo-agent.log');
+  assertIncludes(errorBlock, '错误信息已截断');
+  assertIncludes(errorBlock, 'log: /tmp/neo-agent.log');
+});
+
 test('transcripts 命令能列出会话', async () => {
   const result = await run(['transcripts', '--limit', '5']);
   assertIncludes(result.stdout, 'session_');
