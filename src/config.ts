@@ -360,6 +360,7 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
 export async function loadConfig(cwd = process.cwd()): Promise<AppConfig> {
   const { defaults, userConfig, projectConfig } = await loadConfigSources(cwd);
   const merged = deepMerge(deepMerge(defaults, userConfig), projectConfig);
+  applyRuntimeEnvOverrides(merged);
   return validateConfig(merged);
 }
 
@@ -411,7 +412,9 @@ export function validateConfig(value: unknown): AppConfig {
 }
 
 export function mergeConfigSources(defaults: AppConfig, userConfig: Partial<AppConfig>, projectConfig: Partial<AppConfig>): AppConfig {
-  return validateConfig(deepMerge(deepMerge(defaults, userConfig), projectConfig));
+  const merged = deepMerge(deepMerge(defaults, userConfig), projectConfig);
+  applyRuntimeEnvOverrides(merged);
+  return validateConfig(merged);
 }
 
 export async function initConfigFile(cwd = process.cwd()): Promise<string> {
@@ -422,4 +425,8 @@ export async function initConfigFile(cwd = process.cwd()): Promise<string> {
   await writeJsonFile(filePath, config);
   void cwd;
   return filePath;
+}
+
+function applyRuntimeEnvOverrides(config: AppConfig): void {
+  if (process.env.NEO_AGENT_WORKSPACE_DIR) config.workspace.dir = process.env.NEO_AGENT_WORKSPACE_DIR;
 }

@@ -293,3 +293,40 @@ node dist/index.js openviking doctor
 ## 结论
 
 二阶段第一版核心能力已经落地并通过现有全量 smoke。当前最需要的不是继续扩功能，而是补二阶段专项测试、README 同步和 OpenViking 真实服务联调。
+
+## 2026-05-26：补二阶段专项 smoke，并修复 workspace env 优先级
+
+按照二阶段计划继续推进“补二阶段专项 smoke”。本次只覆盖已经落地的二阶段能力，不扩展新功能。
+
+新增 smoke：
+
+- `workspace 命令支持 show/set/reset 和环境变量优先级`
+- `二阶段文件工具支持完整 workspace 文件管理`
+- `Bash/Python 工具限制在 workspace 并按风险确认`
+- `OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pending 同步`
+
+覆盖范围：
+
+- `neo workspace show/set/reset`
+- `NEO_AGENT_WORKSPACE_DIR` 优先级
+- `List/Mkdir/Copy/Move/Delete`
+- `Write` 自动创建 workspace 父目录
+- `Delete` 默认进入 `.neo-trash`
+- `Delete permanent=true` 必须确认
+- Bash 只读命令自动执行
+- Bash 高风险命令无确认时拒绝
+- Python 无确认时拒绝
+- Bash `cwd` 越界拒绝
+- Bash/Python 确认后可执行
+- OpenViking mock `/mcp` 的 `health/store/search/list/forget`
+- OpenViking 离线 pending queue 和恢复后 `sync-pending`
+
+专项 smoke 暴露一个真实问题：`NEO_AGENT_WORKSPACE_DIR` 在 `workspace show` 中显示来源为 env，但实际路径仍会被项目配置覆盖。根因是 `defaultConfig()` 先读取环境变量，随后 `loadConfig()` 又用 user/project config 覆盖了 defaults。已修复为：在 `loadConfig()` 和 `mergeConfigSources()` 合并配置后，再应用 `NEO_AGENT_WORKSPACE_DIR` 运行时覆盖，确保 env 优先级最高。
+
+验证：
+
+```bash
+npm run smoke
+```
+
+结果：全部 smoke tests 通过。

@@ -176,6 +176,37 @@ test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   assertIncludes(invalid.stderr, 'Invalid neo-agent config');
 });
 
+test('workspace 命令支持 show/set/reset 和环境变量优先级', async () => {
+  const projectDir = path.join(tempHome, 'workspace-project');
+  await mkdir(projectDir, { recursive: true });
+
+  const initial = await run(['workspace', 'show'], { cwd: projectDir });
+  assertIncludes(initial.stdout, `path: ${path.join(projectDir, 'workspace')}`);
+  assertIncludes(initial.stdout, 'readable: true');
+  assertIncludes(initial.stdout, 'writable: true');
+  assertIncludes(initial.stdout, 'trash:');
+
+  const setProject = await run(['workspace', 'set', 'custom-workspace', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(setProject.stdout, '已更新 workspace');
+  assertIncludes(setProject.stdout, 'scope=project');
+  assertIncludes(setProject.stdout, path.join(projectDir, 'custom-workspace'));
+
+  const projectConfig = await readFile(path.join(projectDir, 'neo-agent.config.json'), 'utf8');
+  assertIncludes(projectConfig, '"dir": "custom-workspace"');
+
+  const envWorkspace = path.join(projectDir, 'env-workspace');
+  const envShow = await run(['workspace', 'show'], {
+    cwd: projectDir,
+    env: { NEO_AGENT_WORKSPACE_DIR: envWorkspace }
+  });
+  assertIncludes(envShow.stdout, `path: ${envWorkspace}`);
+  assertIncludes(envShow.stdout, 'source: env');
+
+  const reset = await run(['workspace', 'reset', '--scope', 'project'], { cwd: projectDir });
+  assertIncludes(reset.stdout, '已重置 workspace');
+  assertIncludes(reset.stdout, path.join(projectDir, 'workspace'));
+});
+
 test('联网工具定义符合 tool loop 入口', async () => {
   const { createWebToolDefinitions } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webTools.js')).href);
   const tools = createWebToolDefinitions();
@@ -784,6 +815,109 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
   }
 
   await rm(memoryHome, { recursive: true, force: true });
+});
+
+test('OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pending 同步', async () => {
+  const http = await import('node:http');
+  const { MemoryService } = await import(pathToFileURL(path.join(root, 'dist', 'memory', 'memoryService.js')).href);
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const memoryHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-openviking-'));
+  const stored = new Map();
+  const calls = [];
+  const server = http.createServer(async (request, response) => {
+    if (request.method !== 'POST' || request.url !== '/mcp') {
+      response.writeHead(404).end();
+      return;
+    }
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => {
+      body += chunk;
+    });
+    request.on('end', () => {
+      const rpc = JSON.parse(body);
+      const name = rpc.params?.name;
+      const args = rpc.params?.arguments ?? {};
+      calls.push({ name, args });
+      let result = {};
+      if (name === 'health') {
+        result = { ok: true };
+      } else if (name === 'store') {
+        stored.set(args.uri, args.content);
+        result = { stored: true };
+      } else if (name === 'search') {
+        result = {
+          results: [...stored.entries()].map(([uri, content], index) => ({
+            id: `ov-${index}`,
+            uri,
+            content,
+            score: 10 - index
+          }))
+        };
+      } else if (name === 'list') {
+        result = {
+          items: [...stored.entries()].map(([uri, content], index) => ({
+            id: `ov-${index}`,
+            uri,
+            content
+          }))
+        };
+      } else if (name === 'forget') {
+        stored.delete(args.uri);
+        result = { forgotten: true };
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const openVikingUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const config = defaultConfig();
+    config.homeDir = memoryHome;
+    config.memory.backend = 'openviking';
+    config.memory.openVikingUrl = openVikingUrl;
+    const memory = new MemoryService(config);
+    const record = await memory.remember('处理用户反馈时，先收束目标，再修正，再验证。', {
+      category: 'workflow',
+      tags: ['phase2', 'feedback']
+    });
+    assertIncludes(record.uri, 'viking://user/default/memories/workflows/');
+    if (!calls.some(call => call.name === 'store')) throw new Error(`remember 应写入 OpenViking：${JSON.stringify(calls)}`);
+    const markdown = stored.get(record.uri);
+    assertIncludes(markdown, 'category: "workflow"');
+    assertIncludes(markdown, '处理用户反馈');
+
+    const hits = await memory.search('用户反馈');
+    if (hits[0]?.source !== 'openviking') throw new Error(`搜索应优先返回 OpenViking 命中：${JSON.stringify(hits)}`);
+    assertIncludes(hits.map(hit => hit.content).join('\n'), '先收束目标');
+
+    const listed = await memory.list(10, 'workflow');
+    assertIncludes(listed.map(item => item.content).join('\n'), '先收束目标');
+
+    await memory.forget(record.uri);
+    if (stored.has(record.uri)) throw new Error('forget 应调用 OpenViking 删除对应 URI。');
+
+    const offlineConfig = defaultConfig();
+    offlineConfig.homeDir = memoryHome;
+    offlineConfig.memory.backend = 'openviking';
+    offlineConfig.memory.openVikingUrl = 'http://127.0.0.1:1';
+    const offlineMemory = new MemoryService(offlineConfig);
+    await offlineMemory.remember('OpenViking 离线时进入 pending queue。', { category: 'project_fact' });
+    if (await offlineMemory.openVikingPendingCount() !== 1) throw new Error('OpenViking 离线写入应进入 pending queue。');
+
+    const syncMemory = new MemoryService(config);
+    const synced = await syncMemory.syncOpenVikingPending();
+    if (synced.synced !== 1 || synced.remaining !== 0) throw new Error(`pending 同步结果异常：${JSON.stringify(synced)}`);
+    if (![...stored.values()].some(content => content.includes('OpenViking 离线时进入 pending queue'))) {
+      throw new Error('pending 同步后应写入 mock OpenViking。');
+    }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(memoryHome, { recursive: true, force: true });
+  }
 });
 
 test('DreamService 支持锁、报告回放、人工采纳和记忆复查', async () => {
@@ -1704,6 +1838,178 @@ test('项目文件 Write/Edit 必须确认权限并限制在项目内', async ()
   } finally {
     await rm(projectDir, { recursive: true, force: true });
     await rm(extraWriteDir, { recursive: true, force: true });
+  }
+});
+
+test('二阶段文件工具支持完整 workspace 文件管理', async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-file-manage-'));
+  try {
+    const {
+      COPY_TOOL_NAME,
+      DELETE_TOOL_NAME,
+      FileToolRunner,
+      LIST_TOOL_NAME,
+      MKDIR_TOOL_NAME,
+      MOVE_TOOL_NAME,
+      WRITE_TOOL_NAME
+    } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
+    const permissionRequests = [];
+    const runner = new FileToolRunner(projectDir, request => {
+      permissionRequests.push(request);
+      return Promise.resolve('allow');
+    }, undefined, { workspaceDir: 'workspace' });
+    await runner.refresh();
+    const names = runner.definitions().map(tool => tool.function.name).join(',');
+    for (const name of [LIST_TOOL_NAME, MKDIR_TOOL_NAME, COPY_TOOL_NAME, MOVE_TOOL_NAME, DELETE_TOOL_NAME]) {
+      assertIncludes(names, name);
+    }
+
+    const nestedWrite = await runner.execute({
+      id: 'write_nested_workspace',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'workspace/site/index.html', content: '<h1>phase2</h1>\n' }) }
+    });
+    assertIncludes(nestedWrite.content, 'created workspace/site/index.html');
+
+    const mkdirResult = await runner.execute({
+      id: 'mkdir_workspace',
+      type: 'function',
+      function: { name: MKDIR_TOOL_NAME, arguments: JSON.stringify({ path: 'workspace/assets' }) }
+    });
+    assertIncludes(mkdirResult.content, 'created directory workspace/assets');
+
+    const list = await runner.execute({
+      id: 'list_workspace',
+      type: 'function',
+      function: { name: LIST_TOOL_NAME, arguments: JSON.stringify({ path: 'workspace', recursive: true }) }
+    });
+    assertIncludes(list.content, 'workspace/site/index.html');
+    assertIncludes(list.content, 'workspace/assets');
+
+    const copy = await runner.execute({
+      id: 'copy_workspace',
+      type: 'function',
+      function: { name: COPY_TOOL_NAME, arguments: JSON.stringify({ source_path: 'workspace/site/index.html', target_path: 'workspace/assets/copy.html' }) }
+    });
+    assertIncludes(copy.content, 'copied workspace/site/index.html -> workspace/assets/copy.html');
+    assertIncludes(await readFile(path.join(projectDir, 'workspace', 'assets', 'copy.html'), 'utf8'), 'phase2');
+
+    const move = await runner.execute({
+      id: 'move_workspace',
+      type: 'function',
+      function: { name: MOVE_TOOL_NAME, arguments: JSON.stringify({ source_path: 'workspace/assets/copy.html', target_path: 'workspace/assets/moved.html' }) }
+    });
+    assertIncludes(move.content, 'moved workspace/assets/copy.html -> workspace/assets/moved.html');
+    assertIncludes(await readFile(path.join(projectDir, 'workspace', 'assets', 'moved.html'), 'utf8'), 'phase2');
+
+    const trashDelete = await runner.execute({
+      id: 'delete_workspace_trash',
+      type: 'function',
+      function: { name: DELETE_TOOL_NAME, arguments: JSON.stringify({ path: 'workspace/assets/moved.html' }) }
+    });
+    assertIncludes(trashDelete.content, 'moved to trash');
+    assertIncludes(trashDelete.content, 'workspace/.neo-trash');
+    await assertRejects(() => readFile(path.join(projectDir, 'workspace', 'assets', 'moved.html'), 'utf8'), 'ENOENT');
+
+    const permanentWrite = await runner.execute({
+      id: 'write_permanent_target',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'workspace/permanent.txt', content: 'remove me\n' }) }
+    });
+    assertIncludes(permanentWrite.content, 'created workspace/permanent.txt');
+    const permanentDelete = await runner.execute({
+      id: 'delete_workspace_permanent',
+      type: 'function',
+      function: { name: DELETE_TOOL_NAME, arguments: JSON.stringify({ path: 'workspace/permanent.txt', permanent: true }) }
+    });
+    assertIncludes(permanentDelete.content, 'permanently deleted workspace/permanent.txt');
+    if (!permissionRequests.some(request => request.toolName === DELETE_TOOL_NAME && request.permanent === true)) {
+      throw new Error(`永久删除必须触发确认：${JSON.stringify(permissionRequests)}`);
+    }
+
+    const noPermissionRunner = new FileToolRunner(projectDir, undefined, undefined, { workspaceDir: 'workspace' });
+    await noPermissionRunner.refresh();
+    await runner.execute({
+      id: 'write_permanent_denied_target',
+      type: 'function',
+      function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: 'workspace/no-confirm.txt', content: 'x\n' }) }
+    });
+    await assertRejects(() => noPermissionRunner.execute({
+      id: 'delete_workspace_permanent_denied',
+      type: 'function',
+      function: { name: DELETE_TOOL_NAME, arguments: JSON.stringify({ path: 'workspace/no-confirm.txt', permanent: true }) }
+    }), '文件写入需要交互式权限确认');
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('Bash/Python 工具限制在 workspace 并按风险确认', async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-exec-tools-'));
+  try {
+    const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+    const { BASH_TOOL_NAME, ExecutionToolRunner, PYTHON_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'executionTools.js')).href);
+    const config = defaultConfig();
+    config.workspace.dir = 'workspace';
+    const runner = new ExecutionToolRunner(config, projectDir);
+    await runner.refresh();
+    const names = runner.definitions().map(tool => tool.function.name).join(',');
+    assertIncludes(names, BASH_TOOL_NAME);
+    assertIncludes(names, PYTHON_TOOL_NAME);
+
+    const pwd = await runner.execute({
+      id: 'bash_pwd',
+      type: 'function',
+      function: { name: BASH_TOOL_NAME, arguments: JSON.stringify({ command: 'pwd' }) }
+    });
+    if (pwd.record.exitCode !== 0) throw new Error(`pwd 应成功执行：${JSON.stringify(pwd.record)}`);
+    assertIncludes(pwd.content, 'exitCode: 0');
+
+    await assertRejects(() => runner.execute({
+      id: 'bash_touch_denied',
+      type: 'function',
+      function: { name: BASH_TOOL_NAME, arguments: JSON.stringify({ command: 'touch denied.txt' }) }
+    }), 'Bash 需要交互式权限确认');
+
+    await assertRejects(() => runner.execute({
+      id: 'python_denied',
+      type: 'function',
+      function: { name: PYTHON_TOOL_NAME, arguments: JSON.stringify({ code: 'print("denied")' }) }
+    }), 'Python 需要交互式权限确认');
+
+    await assertRejects(() => runner.execute({
+      id: 'bash_cwd_outside',
+      type: 'function',
+      function: { name: BASH_TOOL_NAME, arguments: JSON.stringify({ command: 'pwd', cwd: '..' }) }
+    }), 'Bash cwd 必须位于 workspace 内');
+
+    const confirmed = [];
+    runner.setPermissionAsker(async request => {
+      confirmed.push(request);
+      return 'allow';
+    });
+    const touch = await runner.execute({
+      id: 'bash_touch_allowed',
+      type: 'function',
+      function: { name: BASH_TOOL_NAME, arguments: JSON.stringify({ command: 'touch allowed.txt', description: '验证高风险 Bash 确认' }) }
+    });
+    if (touch.record.exitCode !== 0) throw new Error(`touch 应成功执行：${JSON.stringify(touch.record)}`);
+    await readFile(path.join(projectDir, 'workspace', 'allowed.txt'), 'utf8');
+
+    const python = await runner.execute({
+      id: 'python_allowed',
+      type: 'function',
+      function: { name: PYTHON_TOOL_NAME, arguments: JSON.stringify({ code: 'print("python ok")', description: '验证 Python 确认' }) }
+    });
+    assertIncludes(python.content, 'python ok');
+    if (!confirmed.some(request => request.toolName === BASH_TOOL_NAME && request.risk === 'high')) {
+      throw new Error(`高风险 Bash 应触发确认：${JSON.stringify(confirmed)}`);
+    }
+    if (!confirmed.some(request => request.toolName === PYTHON_TOOL_NAME && request.risk === 'high')) {
+      throw new Error(`Python 应触发确认：${JSON.stringify(confirmed)}`);
+    }
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
   }
 });
 
