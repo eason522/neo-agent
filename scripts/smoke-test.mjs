@@ -2915,6 +2915,59 @@ test('REPL render helpers 会分组多行回答并截断长事件', async () => 
   assertIncludes(errorBlock, 'log: /tmp/neo-agent.log');
 });
 
+test('TUI 状态模型能生成运行时摘要和回合摘要', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const {
+    buildTuiRuntimeState,
+    buildTuiTurnState,
+    formatTuiRuntimeSummary,
+    formatTuiTurnSummary
+  } = await import(pathToFileURL(path.join(root, 'dist', 'tui', 'tuiState.js')).href);
+  const config = defaultConfig();
+  config.workspace.dir = 'workspace';
+  config.memory.backend = 'openviking';
+  const runtime = buildTuiRuntimeState({
+    config,
+    openVikingHealth: { ok: true, mode: 'mcp', message: 'ok' }
+  });
+  assertIncludes(formatTuiRuntimeSummary(runtime), 'model=deepseek-v4-pro');
+  assertIncludes(formatTuiRuntimeSummary(runtime), 'workspace=workspace');
+  assertIncludes(formatTuiRuntimeSummary(runtime), 'openviking=mcp');
+
+  const response = {
+    text: 'ok',
+    modelKind: 'main',
+    routerReason: 'phase2 test',
+    memories: [{ id: 'mem', uri: 'viking://mem', category: 'workflow', content: 'x', tags: [], origin: 'manual', pinned: false, status: 'active', createdAt: 'now', updatedAt: 'now', score: 1, source: 'local' }],
+    skills: [{ name: 'skill', path: '/tmp/skill', filePath: '/tmp/skill/SKILL.md', scope: 'user', description: 'test', disableModelInvocation: false, userInvocable: true, triggers: [], body: 'body' }],
+    toolEvents: [
+      { phase: 'start', round: 0, name: 'Read', summary: 'read', metadata: {} },
+      { phase: 'success', round: 0, name: 'Read', summary: 'done', metadata: {} }
+    ],
+    fileToolCalls: [{ name: 'Read', path: 'README.md', operation: 'read', resultChars: 10, durationMs: 1 }],
+    executionToolCalls: [{ name: 'Bash', command: 'pwd', cwd: '.', exitCode: 0, stdoutChars: 10, stderrChars: 0, durationMs: 1 }],
+    webToolCalls: [],
+    mcpToolCalls: [],
+    skillToolCalls: [],
+    webContext: { reason: 'test', searchedAt: 'now' }
+  };
+  const turn = buildTuiTurnState({
+    response,
+    durationMs: 123,
+    statusEvents: [{ stage: 'done', message: '完成', metadata: {} }]
+  });
+  const summary = formatTuiTurnSummary(turn);
+  assertIncludes(summary, 'model=main');
+  assertIncludes(summary, 'memory=1');
+  assertIncludes(summary, 'skills=1');
+  assertIncludes(summary, 'tools=1');
+  assertIncludes(summary, 'file=1');
+  assertIncludes(summary, 'exec=1');
+  assertIncludes(summary, 'webContext');
+  assertIncludes(summary, 'route=phase2 test');
+  assertIncludes(summary, 'status=完成');
+});
+
 test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄露', async () => {
   const {
     formatMcpPermissionPrompt,

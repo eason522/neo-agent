@@ -382,3 +382,29 @@ node dist/index.js openviking doctor
 - 已有 mock `/mcp` smoke 覆盖主存储写入、搜索、列表、归档和 pending 同步。
 - 不在当前支线尝试自动安装 OpenViking，避免扩大范围。
 - 下一步转入二阶段下一个可推进项：拆分 Ink TUI 所需状态模型。
+
+## 2026-05-26：拆分 TUI 状态模型第一版
+
+由于本机缺少 OpenViking 真实服务，转入二阶段下一个可推进项：拆分 Ink TUI 所需状态模型。本次只做状态模型，不重写 REPL，也不扩展完整 Ink 交互。
+
+新增文件：
+
+- `src/tui/tuiState.ts`
+
+新增能力：
+
+- `buildTuiRuntimeState(...)`：从 `AppConfig` 和 OpenViking health 生成 TUI 运行时状态。
+- `buildTuiTurnState(...)`：从 `AgentResponse`、耗时和状态事件生成 TUI 回合摘要。
+- `formatTuiRuntimeSummary(...)`：格式化运行时摘要。
+- `formatTuiTurnSummary(...)`：格式化回合摘要。
+
+更新：
+
+- `src/tui/startTui.ts` 改为使用 `buildTuiRuntimeState(...)`，不再直接拼装模型、workspace 和 OpenViking 状态。
+- smoke 新增 `TUI 状态模型能生成运行时摘要和回合摘要`，覆盖 runtime summary、tool start 计数、file/exec/webContext、route 和 latest status。
+
+边界：
+
+- 这不是完整 Ink TUI。
+- 输入、权限确认、消息流和工具进度仍由 legacy REPL 承担。
+- 下一步应继续拆分输入和权限确认流程，而不是直接把 legacy REPL 代码搬进 Ink 组件。

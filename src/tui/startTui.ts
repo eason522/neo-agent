@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, render, Text } from 'ink';
 import type { NeoAgent } from '../neoAgent.js';
 import { startRepl } from '../terminal/repl.js';
+import { buildTuiRuntimeState, formatTuiRuntimeSummary } from './tuiState.js';
 
 type TuiShellProps = {
   model: string;
@@ -27,12 +28,21 @@ export async function startTui(agent: NeoAgent): Promise<void> {
     await startRepl(agent);
     return;
   }
-  const health = await agent.memory.openVikingHealth().catch(() => ({ ok: false, mode: 'offline' as const }));
-  const instance = render(React.createElement(TuiShell, {
-    model: agent.config.models.main.model,
-    workspace: agent.config.workspace.dir,
-    openViking: health.ok ? health.mode : 'offline'
+  const health = await agent.memory.openVikingHealth().catch(() => ({
+    ok: false,
+    mode: 'offline' as const,
+    message: 'OpenViking 状态检查失败'
   }));
+  const runtime = buildTuiRuntimeState({
+    config: agent.config,
+    openVikingHealth: health
+  });
+  const instance = render(React.createElement(TuiShell, {
+    model: runtime.model,
+    workspace: runtime.workspace,
+    openViking: runtime.openViking
+  }));
+  agent.logger.debug('tui.runtime', { summary: formatTuiRuntimeSummary(runtime) });
   await new Promise(resolve => setTimeout(resolve, 40));
   instance.unmount();
   await startRepl(agent);

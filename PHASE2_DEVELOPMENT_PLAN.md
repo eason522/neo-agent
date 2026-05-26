@@ -150,7 +150,8 @@
 
 待收口：
 
-- 拆分现有 REPL 状态和渲染数据结构，使 Ink 层能复用核心交互逻辑。
+- [x] 拆分 TUI 运行时状态和回合摘要模型第一版，使 Ink 层不直接依赖 legacy REPL 私有状态。
+- 拆分现有 REPL 输入和权限确认流程，使 Ink 层能复用核心交互逻辑。
 - 增加 PTY 截图或文本回归，覆盖宽窄终端和中文宽度。
 - 分步实现消息流、PromptInput、StatusLine、PermissionDialog、ToolProgress、ResumePicker 和 DebugPanel。
 
@@ -183,4 +184,5 @@ npm run smoke
 优先级从高到低：
 
 1. 用真实 OpenViking 服务联调 `/mcp`。
-2. 开始拆分 Ink TUI 所需的状态模型，避免直接把 legacy REPL 逻辑搬进组件。
+2. 继续拆分 legacy REPL 输入和权限确认流程，为 Ink PromptInput/PermissionDialog 做准备。
+3. 增加 TUI PTY 文本回归，覆盖非交互回退、宽窄终端和中文宽度。
