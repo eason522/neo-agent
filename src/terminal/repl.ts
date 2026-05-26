@@ -547,6 +547,9 @@ async function runAgentTurn(
   try {
     const { text, attachments } = extractImageAttachments(line);
     output.write(chalk.gray('thinking...\n'));
+    if (attachments.length > 0) {
+      output.write(chalk.gray(`vision: 正在预分析 ${attachments.length} 张图片，较大的本地图片可能需要几十秒；Ctrl-C 可立即取消。\n`));
+    }
     let streamed = false;
     const response = await agent.ask(text, attachments, {
       signal: turnController.signal,

@@ -102,6 +102,55 @@ test('图片附件解析会校验本地文件并推断 mime', async () => {
   }
 });
 
+test('VisionAnalyzer 会传递取消信号并记录图片预分析', async () => {
+  const { VisionAnalyzer } = await import(pathToFileURL(path.join(root, 'dist', 'vision', 'visionAnalyzer.js')).href);
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-vision-'));
+  await writeFile(path.join(projectDir, 'screen.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));
+
+  const previousCwd = process.cwd();
+  process.chdir(projectDir);
+  try {
+    const events = [];
+    let request;
+    const logger = {
+      info(event, fields) { events.push({ level: 'info', event, fields }); },
+      error(event, error, fields) { events.push({ level: 'error', event, error, fields }); }
+    };
+    const successAnalyzer = new VisionAnalyzer({
+      vision: {
+        chat: async options => {
+          request = options;
+          return 'visual context';
+        }
+      }
+    }, logger);
+    const result = await successAnalyzer.analyze([{ type: 'image', path: 'screen.png', mimeType: 'image/png' }], 'describe');
+    assertIncludes(result, 'visual context');
+    const imageBlock = request.messages[0].content.find(part => part.type === 'image_url');
+    if (imageBlock.image_url.detail !== 'low') throw new Error(`视觉请求应使用 low detail：${JSON.stringify(imageBlock)}`);
+    assertIncludes(imageBlock.image_url.url, 'data:image/png;base64,');
+    if (!events.some(event => event.event === 'vision.attachment.prepared')) throw new Error(`应记录图片准备日志：${JSON.stringify(events)}`);
+
+    const abortController = new AbortController();
+    const abortAnalyzer = new VisionAnalyzer({
+      vision: {
+        chat: async options => new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason ?? new Error('Aborted')), { once: true });
+        })
+      }
+    }, logger);
+    const pending = abortAnalyzer.analyze([{ type: 'image', path: 'screen.png', mimeType: 'image/png' }], 'describe', abortController.signal);
+    const abortError = new Error('Aborted');
+    abortError.name = 'AbortError';
+    abortController.abort(abortError);
+    await assertRejects(() => pending, '用户已取消');
+    if (!events.some(event => event.event === 'vision.analyze.cancelled')) throw new Error(`视觉取消应写日志：${JSON.stringify(events)}`);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   await run(['config:init']);
   const setKey = await run(['config', 'set', 'models.main.apiKey', 'test-secret-123456']);

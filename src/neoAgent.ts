@@ -109,7 +109,7 @@ export class NeoAgent {
       hooks: this.hooks
     });
     this.router = new ModelRouter(config);
-    this.vision = new VisionAnalyzer(this.models);
+    this.vision = new VisionAnalyzer(this.models, this.logger);
     this.conversationHistory = new ConversationHistory(config.conversation.maxHistoryChars, config.conversation.maxMessageChars, {
       enabled: config.conversation.compactEnabled,
       thresholdRatio: config.conversation.compactThresholdRatio,
@@ -245,7 +245,7 @@ export class NeoAgent {
       this.memory.search(input),
       this.skills.loadSkills(),
       this.mcp.listTools().catch(() => []),
-      this.vision.analyze(attachments, input),
+      this.vision.analyze(attachments, input, options.signal),
       loadSoul(),
       useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);

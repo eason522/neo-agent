@@ -765,6 +765,22 @@ neo 当前没有 CC-Source 的多模态 tool result block、PDF renderer 或 not
 
 验证：`npm run typecheck` 和 `npm run smoke` 通过；新增 smoke 覆盖图片元数据、PDF 元数据、二进制拒绝、大文件预算、分页提示、缺失路径和越界读写拒绝。
 
+### 2026-05-26：视觉预分析卡住排查和取消修复
+
+用户测试“描述项目目录下的 `test.png`”时，REPL 长时间停留在 thinking。排查最近日志和 transcript 后确认：图片附件已正确识别，问题发生在视觉预分析阶段。`test.png` 为 1024x1536、约 2.6MB 的 PNG，本地转 data URL 后进入 MiMo 视觉模型；第一次请求 60 秒超时，随后重试，约 101 秒后视觉模型返回，但用户已经取消请求，因此主模型没有机会生成最终回答。
+
+根因不是文件 Read 工具，而是 `VisionAnalyzer.analyze(...)` 没有接收/传递 `AbortSignal`，导致 Ctrl-C 后仍要等待视觉请求结束；同时视觉预分析发生在主模型/tool loop 之前，REPL 只有 `thinking...`，没有说明当前在图片预分析。
+
+修复：
+
+- `VisionAnalyzer.analyze` 增加 `signal` 参数，并传给视觉模型请求；本地图片读取和请求前后都会检查取消。
+- 视觉阶段新增 `vision.analyze.start`、`vision.attachment.prepared`、`vision.analyze.success/cancelled/error` 日志，记录附件数量、字节数、data URL 字符数、耗时等排障信息。
+- 图片请求的 `image_url` 增加 `detail: 'low'`，降低视觉模型处理压力。
+- REPL 检测到图片附件时输出“vision: 正在预分析...”提示，避免用户只看到 thinking。
+- smoke 增加视觉预分析取消信号和日志覆盖。
+
+验证：`npm run typecheck` 和 `npm run smoke` 通过。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？
