@@ -73,7 +73,7 @@
 待收口：
 
 - [x] 为新增 `List/Mkdir/Copy/Move/Delete` 增加更细的独立 smoke 覆盖。
-- README 中的文件工具章节需要同步补充完整文件管理能力。
+- [x] README 中的文件工具章节需要同步补充完整文件管理能力。
 
 ## 里程碑二：Shell / Python 执行能力
 
@@ -176,12 +176,11 @@ npm run smoke
 - OpenViking `/mcp` 协议仍需真实服务联调；当前实现偏兼容和防失败。
 - Ink TUI 目前只是入口层，不应宣称已达到 CC-Source 体验等价。
 - 新增文件工具、执行工具和 OpenViking mock 已有二阶段专项 smoke 保护。
-- README 尚未完全同步二阶段新增命令和能力。
+- README 已同步二阶段新增命令和能力。
 
 ## 下一步建议
 
 优先级从高到低：
 
-1. 更新 README 的 workspace、Bash/Python、OpenViking 和 TUI 章节。
-2. 用真实 OpenViking 服务联调 `/mcp`。
-3. 开始拆分 Ink TUI 所需的状态模型，避免直接把 legacy REPL 逻辑搬进组件。
+1. 用真实 OpenViking 服务联调 `/mcp`。
+2. 开始拆分 Ink TUI 所需的状态模型，避免直接把 legacy REPL 逻辑搬进组件。

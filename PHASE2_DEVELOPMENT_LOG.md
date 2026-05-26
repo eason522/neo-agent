@@ -330,3 +330,30 @@ npm run smoke
 ```
 
 结果：全部 smoke tests 通过。
+
+## 2026-05-26：同步 README 二阶段能力说明
+
+按二阶段计划继续推进 README 同步。本次只更新文档，不扩展新功能。
+
+更新内容：
+
+- 顶部能力概览同步：
+  - OpenViking 主存储和本地 JSON 备份。
+  - 完整文件工具：`Read/Glob/Grep/List/Write/Edit/Mkdir/Copy/Move/Delete`。
+  - workspace 命令：`neo workspace show/set/reset`。
+  - Bash/Python workspace 执行工具和权限边界。
+  - TUI 入口层和 legacy REPL 回退。
+- 常用命令新增 `/workspace`。
+- 新增 OpenViking 诊断、导入和 pending 同步命令说明。
+- 文件工具章节补充：
+  - workspace 内完整文件管理免确认。
+  - `Delete` 默认进入 `.neo-trash`。
+  - `permanent=true` 必须确认。
+  - Bash/Python 的 cwd 和确认规则。
+- OpenViking 章节改为主存储语义：
+  - `/mcp` 优先。
+  - pending queue。
+  - 固定记忆 URI 映射。
+  - `NEO_AGENT_MEMORY_BACKEND=openviking` 示例。
+
+验证：文档变更，无需重新跑 smoke。
