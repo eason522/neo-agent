@@ -12,6 +12,7 @@ import type { Logger } from '../logging/logger.js';
 import { buildSearchDomainPolicy, domainRulesToRegexPatterns, normalizeAndValidateWebUrl } from './urlPolicy.js';
 import { assertRobotsAllowed } from './robotsPolicy.js';
 import { createHash } from 'node:crypto';
+import { preflightWebUrl } from './webPreflight.js';
 
 type TavilySearchOptions = {
   maxResults?: number;
@@ -152,7 +153,8 @@ export class TavilyClient {
       .map(url => url.trim())
       .filter(Boolean)
       .map(url => normalizeAndValidateWebUrl(url, this.config.web, 'Tavily Extract')));
-    await this.assertRobotsAllowedForUrls(cleanUrls, 'Tavily Extract', options.signal);
+    const preflight = await this.preflightUrls(cleanUrls, 'Tavily Extract', options.signal);
+    await this.assertRobotsAllowedForUrls(preflight.urls, 'Tavily Extract', options.signal);
     const start = Date.now();
     this.logger?.info('web.extract.start', {
       provider: this.config.web.provider,
@@ -160,7 +162,7 @@ export class TavilyClient {
       extractDepth: options.depth ?? this.config.web.extractDepth
     });
     const response = await this.request<TavilyExtractPayload>('extract', {
-      urls: cleanUrls,
+      urls: preflight.urls,
       extract_depth: options.depth ?? this.config.web.extractDepth
     }, options.signal);
     const payload = response.payload;
@@ -174,7 +176,7 @@ export class TavilyClient {
     const failedResults = (payload.failed_results ?? [])
       .map(item => ({ url: item.url ?? '', error: item.error, category: classifyFailureText(item.error ?? '') }))
       .filter(item => item.url);
-    const warnings = [...detectExtractWarnings(results, failedResults), ...budgeted.warnings];
+    const warnings = [...preflight.warnings, ...detectExtractWarnings(results, failedResults), ...budgeted.warnings];
     this.logger?.info('web.extract.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
@@ -194,6 +196,8 @@ export class TavilyClient {
 
   async map(url: string, options: TavilyMapOptions = {}): Promise<WebMapResponse> {
     const body = this.buildCrawlerBody(url, options);
+    const preflight = await this.preflightUrls([String(body.url)], 'Tavily Map', options.signal);
+    body.url = preflight.urls[0] ?? body.url;
     await this.assertRobotsAllowedForUrls([String(body.url)], 'Tavily Map', options.signal);
     const start = Date.now();
     this.logger?.info('web.map.start', {
@@ -219,6 +223,7 @@ export class TavilyClient {
     return {
       baseUrl: payload.base_url,
       results,
+      warnings: preflight.warnings,
       cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
@@ -226,6 +231,8 @@ export class TavilyClient {
 
   async crawl(url: string, options: TavilyCrawlOptions = {}): Promise<WebCrawlResponse> {
     const crawlerBody = this.buildCrawlerBody(url, options);
+    const preflight = await this.preflightUrls([String(crawlerBody.url)], 'Tavily Crawl', options.signal);
+    crawlerBody.url = preflight.urls[0] ?? crawlerBody.url;
     await this.assertRobotsAllowedForUrls([String(crawlerBody.url)], 'Tavily Crawl', options.signal);
     const body: Record<string, unknown> = {
       ...crawlerBody,
@@ -261,7 +268,7 @@ export class TavilyClient {
     return {
       baseUrl: payload.base_url,
       results,
-      warnings: budgeted.warnings,
+      warnings: [...preflight.warnings, ...budgeted.warnings],
       cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
@@ -297,6 +304,23 @@ export class TavilyClient {
         signal
       });
     }
+  }
+
+  private async preflightUrls(urls: string[], operation: string, signal?: AbortSignal): Promise<{ urls: string[]; warnings: string[] }> {
+    const results = [];
+    for (const url of urls) {
+      results.push(await preflightWebUrl({
+        url,
+        operation,
+        config: this.config.web,
+        logger: this.logger,
+        signal
+      }));
+    }
+    return {
+      urls: uniqueUrls(results.map(result => result.url)),
+      warnings: results.flatMap(result => result.warnings)
+    };
   }
 
   private async request<T>(endpoint: 'search' | 'extract' | 'map' | 'crawl', body: Record<string, unknown>, signal?: AbortSignal): Promise<{ payload: T; cacheHit: boolean }> {
@@ -476,6 +500,10 @@ export function formatWebExtract(response: WebExtractResponse, maxChars = 5000):
 export function formatWebMap(response: WebMapResponse): string {
   const lines = [response.baseUrl ? `站点：${response.baseUrl}` : '站点 map：'];
   if (response.cacheHit) lines.push('缓存：命中');
+  if (response.warnings?.length) {
+    lines.push('提示：');
+    for (const warning of response.warnings) lines.push(`- ${warning}`);
+  }
   response.results.forEach((url, index) => lines.push(`${index + 1}. ${url}`));
   if (response.responseTime !== undefined) lines.push('', `耗时：${response.responseTime}s`);
   return lines.join('\n');

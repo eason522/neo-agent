@@ -9,10 +9,23 @@ export type SearchDomainPolicy = {
   blockedDomains?: string[];
 };
 
+export const MAX_WEB_URL_LENGTH = 2000;
+
 export function normalizeAndValidateWebUrl(input: string, policy: WebAccessPolicy, operation = '联网工具'): string {
-  const url = new URL(input);
+  if (input.length > MAX_WEB_URL_LENGTH) {
+    throw new Error(`${operation} URL 过长，最大 ${MAX_WEB_URL_LENGTH} 字符。`);
+  }
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error(`${operation} URL 无效，无法解析：${input}`);
+  }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`${operation} 只支持 http/https URL：${input}`);
+  }
+  if (url.username || url.password) {
+    throw new Error(`${operation} 不支持 URL 中携带用户名或密码。`);
   }
   if (url.protocol === 'http:') url.protocol = 'https:';
   validateHostname(url.hostname, policy, operation);
@@ -64,6 +77,16 @@ export function evaluateHostnamePermission(hostname: string, policy: WebAccessPo
       source: 'runtime',
       subject: hostname,
       reason: `${operation} URL 缺少有效域名。`
+    };
+  }
+  if (!net.isIP(normalized) && !normalized.includes('.')) {
+    return {
+      domain: 'web',
+      behavior: 'deny',
+      code: 'invalid_hostname',
+      source: 'runtime',
+      subject: hostname,
+      reason: `${operation} 已阻止非公开域名或单标签主机名：${hostname}`
     };
   }
   return evaluateWebHostnamePermission({

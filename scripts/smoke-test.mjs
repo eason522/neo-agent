@@ -363,7 +363,7 @@ test('模型客户端不会重试 4xx 参数错误', async () => {
 });
 
 test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
-  const { buildSearchDomainPolicy, evaluateHostnamePermission, normalizeAndValidateWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'urlPolicy.js')).href);
+  const { buildSearchDomainPolicy, evaluateHostnamePermission, MAX_WEB_URL_LENGTH, normalizeAndValidateWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'urlPolicy.js')).href);
   const policy = {
     allowedDomains: ['example.com'],
     blockedDomains: ['blocked.example.com'],
@@ -374,6 +374,9 @@ test('联网 URL 策略阻止私有地址并支持域名规则', async () => {
   const safeUrl = normalizeAndValidateWebUrl('http://docs.example.com/path', policy, 'test');
   assertIncludes(safeUrl, 'https://docs.example.com/path');
   assertThrows(() => normalizeAndValidateWebUrl('http://127.0.0.1:8080', policy, 'test'), '内网');
+  assertThrows(() => normalizeAndValidateWebUrl('https://user:pass@example.com', policy, 'test'), '用户名或密码');
+  assertThrows(() => normalizeAndValidateWebUrl('https://internal', { ...policy, allowedDomains: [] }, 'test'), '非公开域名');
+  assertThrows(() => normalizeAndValidateWebUrl(`https://example.com/${'a'.repeat(MAX_WEB_URL_LENGTH)}`, policy, 'test'), 'URL 过长');
   assertThrows(() => normalizeAndValidateWebUrl('https://blocked.example.com', policy, 'test'), 'blockedDomains');
   assertThrows(() => normalizeAndValidateWebUrl('https://other.com', policy, 'test'), 'allowedDomains');
 
@@ -446,6 +449,9 @@ test('TavilyClient 支持缓存、来源去重、失败分类和冲突提示', a
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (url, init) => {
+    if (init?.method === 'HEAD') {
+      return new Response('', { status: 200, headers: { 'content-type': 'text/html', 'content-length': '120' } });
+    }
     if (String(url).endsWith('/robots.txt')) {
       return new Response('User-agent: *\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
@@ -516,6 +522,9 @@ test('TavilyClient 会遵守 robots.txt 拒绝规则', async () => {
   const originalFetch = globalThis.fetch;
   let tavilyCalls = 0;
   globalThis.fetch = async (url, init) => {
+    if (init?.method === 'HEAD') {
+      return new Response('', { status: 200, headers: { 'content-type': 'text/html', 'content-length': '120' } });
+    }
     if (String(url) === 'https://blocked.example.com/robots.txt') {
       return new Response('User-agent: *\nDisallow: /private\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
@@ -541,6 +550,9 @@ test('TavilyClient 会按下载正文预算截断 extract 内容', async () => {
   config.web.maxDownloadChars = 40;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
+    if (init?.method === 'HEAD') {
+      return new Response('', { status: 200, headers: { 'content-type': 'text/html', 'content-length': '80' } });
+    }
     if (String(url).endsWith('/robots.txt')) {
       return new Response('User-agent: *\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
@@ -561,6 +573,41 @@ test('TavilyClient 会按下载正文预算截断 extract 内容', async () => {
     if (!response.warnings?.some(warning => warning.includes('web.maxDownloadChars=40'))) {
       throw new Error(`extract 截断应写入 warning：${JSON.stringify(response.warnings)}`);
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Web preflight 会阻止跨域重定向并提示下载风险', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const { preflightWebUrl } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'webPreflight.js')).href);
+  const config = defaultConfig();
+  config.web.timeoutMs = 1000;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const href = String(url);
+    if (href === 'https://docs.example.com/start') {
+      return new Response('', { status: 302, headers: { location: 'https://evil.example.net/page' } });
+    }
+    if (href === 'https://docs.example.com/same') {
+      return new Response('', { status: 301, headers: { location: '/final.pdf' } });
+    }
+    if (href === 'https://docs.example.com/final.pdf') {
+      return new Response('', { status: 200, headers: { 'content-type': 'application/pdf', 'content-length': '2048' } });
+    }
+    if (href === 'https://docs.example.com/huge') {
+      return new Response('', { status: 200, headers: { 'content-type': 'text/html', 'content-length': String(11 * 1024 * 1024) } });
+    }
+    return new Response('', { status: 404 });
+  };
+  try {
+    await assertRejects(() => preflightWebUrl({ url: 'https://docs.example.com/start', operation: 'WebFetch', config: config.web }), '跨域或降级重定向');
+    const sameHost = await preflightWebUrl({ url: 'https://docs.example.com/same', operation: 'WebFetch', config: config.web });
+    assertIncludes(sameHost.url, 'https://docs.example.com/final.pdf');
+    if (!sameHost.warnings.some(warning => warning.includes('application/pdf'))) {
+      throw new Error(`二进制内容类型应进入预检提示：${JSON.stringify(sameHost)}`);
+    }
+    await assertRejects(() => preflightWebUrl({ url: 'https://docs.example.com/huge', operation: 'WebFetch', config: config.web }), '下载预检拒绝');
   } finally {
     globalThis.fetch = originalFetch;
   }

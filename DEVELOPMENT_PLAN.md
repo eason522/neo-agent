@@ -20,7 +20,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 - 分支：`main`
 - 远端：开发前检查为 `main...origin/main`
-- 最近提交：`e33a36b fix: make vision analysis cancellable`
+- 最近提交：`38bb5b7 feat: require approval for project mcp servers`
 - 校验：2026-05-26 已运行 `npm run typecheck` 和 `npm run smoke` 通过
 
 产品状态：
@@ -69,7 +69,8 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 已交付：Read 增加图片/PDF 元数据摘要、普通二进制拒绝、文本读取预算说明、分页提示和更清晰的路径越界/缺失错误；文件工具 prompt 已同步说明限制。
 - [x] MCP 补项目级 server 审批、权限建议和更完整权限 UI。
   - 已交付：项目 `.mcp.json` 中的 server 默认只列出不加载；审批状态保存在用户配置的 `mcp.projectApprovals`，按项目绝对路径绑定，避免仓库配置自我授权；新增 `neo mcp approve/unapprove`；`neo mcp list/add` 会展示 pending/approved 和启用建议；MCP 权限拒绝原因和 REPL 确认提示补持久允许命令。
-- [ ] Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度。
+- [x] Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度。
+  - 已交付：URL 策略补 2000 字符长度限制、用户名/密码拒绝、单标签非公开主机拒绝；WebFetch/Tavily extract/map/crawl 前新增 HEAD 预检，阻止跨域或降级重定向，允许同域/www 重定向，拒绝超大 `content-length`，对二进制内容、401/403 和异常状态写入 warning；Web prompt 和 map/extract/crawl 输出同步预检提示。
 - [ ] REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行。
 - [ ] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
 
@@ -111,24 +112,24 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度**。
+建议下一步做 **REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行**。
 
 理由：
 
-- 权限、tool result 预算、doctor、日志、文件工具和 MCP 项目级信任边界已经收口；下一步应继续补 Web 的外部访问边界。
-- 当前 Web 已有域名 allow/deny、私网阻断和 robots 配置，但重定向、下载预检、站点策略合并和进度提示还不够完整。
-- 这比继续扩展新工具更符合“权限与文件能力收口”的主线。
+- 权限、tool result 预算、doctor、日志、文件工具、MCP 项目级信任边界和 Web 预检已经收口；下一步应让终端运行状态更透明。
+- 用户刚遇到过“thinking 半天没反应”的真实问题，REPL 状态行需要更早暴露当前阶段、路由原因、记忆命中和工具进度。
+- 这比继续扩展新工具更符合“稳定、可恢复、可调试”的主线。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source WebFetch/WebSearch、URL preflight、download/crawl policy，梳理 neo 当前 Tavily 策略缺口。
-2. 增加重定向/下载预检、站点策略合并说明和更清晰拒绝原因。
-3. 补 smoke 覆盖私网/域名/robots/重定向/下载预算组合场景。
+1. 对照 CC-Source Message/Status/Progress 渲染，梳理 neo 当前 REPL 状态缺口。
+2. 增加路由原因、记忆命中数、视觉/Web/工具阶段状态和更清晰错误恢复提示。
+3. 补 smoke 覆盖非模型命令、状态输出、取消和工具事件摘要。
 
 ## 未决问题
 
 - OpenViking 的持久化写入应该使用哪个稳定 API？
 - 项目级 MCP server 后续是否需要会话级临时审批，还是继续只支持用户配置持久审批？
 - 文件系统权限是只做配置级规则，还是增加会话级临时授权？
-- Web robots、域名 allow/deny、重定向和 Tavily 抓取策略应该如何合并成一个站点策略模型？
+- Web preflight 是否需要从当前 HEAD 预检升级为可配置的站点策略审计和会话级域名授权？
 - 富 TUI 应继续增强 readline，还是引入更接近 CC-Source 的 Ink 层？

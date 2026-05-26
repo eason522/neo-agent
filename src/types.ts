@@ -410,6 +410,7 @@ export type WebExtractResponse = {
 export type WebMapResponse = {
   baseUrl?: string;
   results: string[];
+  warnings?: string[];
   cacheHit?: boolean;
   responseTime?: number;
 };
