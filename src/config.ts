@@ -151,7 +151,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: 4096,
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_MAIN_MAX_TOKENS || '4096', 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
@@ -161,7 +161,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: 2048,
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_SMALL_MAX_TOKENS || '2048', 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '45000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
@@ -171,7 +171,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.MIMO_API_KEY,
         apiBase: process.env.MIMO_API_BASE || 'https://token-plan-cn.xiaomimimo.com/v1',
         temperature: 0.0,
-        maxTokens: 2048,
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_VISION_MAX_TOKENS || '2048', 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
@@ -429,4 +429,13 @@ export async function initConfigFile(cwd = process.cwd()): Promise<string> {
 
 function applyRuntimeEnvOverrides(config: AppConfig): void {
   if (process.env.NEO_AGENT_WORKSPACE_DIR) config.workspace.dir = process.env.NEO_AGENT_WORKSPACE_DIR;
+  applyPositiveIntegerEnvOverride(config.models.main, 'maxTokens', process.env.NEO_AGENT_MAIN_MAX_TOKENS);
+  applyPositiveIntegerEnvOverride(config.models.small, 'maxTokens', process.env.NEO_AGENT_SMALL_MAX_TOKENS);
+  applyPositiveIntegerEnvOverride(config.models.vision, 'maxTokens', process.env.NEO_AGENT_VISION_MAX_TOKENS);
+}
+
+function applyPositiveIntegerEnvOverride<T extends Record<string, unknown>>(target: T, key: keyof T, raw: string | undefined): void {
+  if (!raw) return;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isInteger(parsed) && parsed > 0) target[key] = parsed as T[keyof T];
 }

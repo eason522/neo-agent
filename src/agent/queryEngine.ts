@@ -508,11 +508,12 @@ function hasIncompleteToolArguments(toolCalls: ChatToolCall[]): boolean {
 function buildTruncatedToolArgumentsRecoveryPrompt(consecutiveCount: number): string {
   const base = [
     '上一次工具调用参数被模型输出长度截断，neo 没有执行坏工具调用。',
-    '如果你要写长文件、HTML/CSS/JS、落地页或完整单文件应用，必须改用 Append 分块写入 workspace 文件：第一块调用 Append，mode=create；后续块调用 Append，mode=append；每块 content 不超过 4000 字符。',
-    '不要再次用 Write 传完整长 content，也不要在最终回答里刷出整段长代码。'
+    '如果你要写长文件、HTML/CSS/JS、落地页或完整单文件应用，请改用 Append 分块写入 workspace 文件：第一块调用 Append，mode=create；后续块调用 Append，mode=append。',
+    '不要按 section 切成很多小块；普通单文件落地页应尽量 1-3 次工具调用写完。每块 content 尽量大，但必须保证本次工具参数是完整合法 JSON。',
+    '不要再次用 Write 传会被截断的超长 content，也不要在最终回答里刷出整段长代码。'
   ];
   if (consecutiveCount >= 2) {
-    base.push('你已经连续触发工具参数截断。下一步必须先用 Append 写一个小块，或明确说明无法完成；不要继续生成超长 Write 参数。');
+    base.push('你已经连续触发工具参数截断。下一步必须用 Append 写一个完整合法的大块，或明确说明无法完成；不要继续生成会被截断的 Write 参数，也不要退化成很多极小块。');
   }
   return base.join(' ');
 }

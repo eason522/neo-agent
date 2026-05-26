@@ -208,7 +208,9 @@ neo workspace reset --scope project
 
 workspace 内拥有完整文件管理权限，不再额外询问；写入项目目录其它位置或 `files.additionalWriteDirs` 授权目录时，会显示路径、操作摘要和字符数，并要求用户确认。`Delete` 默认移动到 `workspace/.neo-trash/`；只有 `permanent=true` 且用户确认后才会永久删除。`neo ask` 等非交互入口只能自动写入 workspace；需要写入项目外目录时，必须用 `NEO_AGENT_FILE_WRITE_DIRS=/path/out` 或配置 `files.additionalWriteDirs` 显式加入额外写入目录，且仍然需要交互确认。
 
-生成长 HTML/CSS/JS、落地页或完整单文件应用时，模型应使用 `Append` 分块写入 workspace：第一块 `mode=create`，后续块 `mode=append`，每块控制在约 4000 字符以内。这样可以避免一次性 `Write` 的超长 JSON 参数被模型输出长度截断；如果工具轮次耗尽且文件没有成功写入，neo 会停止输出长代码兜底，避免给出不完整文件。
+生成长 HTML/CSS/JS、落地页或完整单文件应用时，模型会优先写入 workspace 文件。如果完整文件能放进一次合法工具参数，优先用 `Write` 一次写完；只有内容明显超出当前输出预算或已经发生工具参数截断时，才用 `Append` 分块写入：第一块 `mode=create`，后续块 `mode=append`。`Append` 不应按 section 切成很多小块，普通单文件落地页应尽量 1-3 次工具调用写完。
+
+模型服务端支持的最大输出不等于 neo 当前请求实际使用的输出上限。`models.main.maxTokens` 默认是 4096；可以用 `neo config set models.main.maxTokens <数字>` 写入配置，或用 `NEO_AGENT_MAIN_MAX_TOKENS=<数字>` 临时覆盖。`NEO_AGENT_SMALL_MAX_TOKENS` 和 `NEO_AGENT_VISION_MAX_TOKENS` 分别覆盖小模型和视觉模型。
 
 模型还可以使用 `Bash` 和 `Python` 在 workspace 内执行命令。`Bash` 默认 cwd 是 workspace，显式 `cwd` 也必须位于 workspace 内；`pwd/ls/find/rg/grep/cat/head/tail/wc/stat/file/du/tree` 等只读低风险命令会自动执行。写入、删除、安装、网络、git mutation、权限变更、后台进程、环境变量导出、shell 组合和重定向等高风险 Bash 需要交互确认。`Python` 会写入 `workspace/.neo-agent/tmp/python-*.py` 后执行，默认每次都需要确认。
 

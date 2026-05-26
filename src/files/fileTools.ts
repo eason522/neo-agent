@@ -244,7 +244,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
           description: [
             '在 workspace 目录内创建或覆盖文件不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
             '不要用它做小范围替换，替换请使用 Edit。',
-            '长 HTML/CSS/JS/落地页/完整单文件不要一次性用 Write 传完整内容；请改用 Append 分块写入。'
+            '如果完整文件能放进一次合法工具参数，优先用 Write 一次写完；只有内容明显超出当前输出预算或已经发生工具参数截断时，才改用 Append 分块。'
           ].join('\n'),
           parameters: {
             type: 'object',
@@ -263,15 +263,15 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
           name: APPEND_TOOL_NAME,
           description: [
             '分块写入长文件。workspace 目录内不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
-            '长 HTML/CSS/JS/落地页/完整单文件必须优先使用 Append：第一块 mode=create 创建或清空文件，后续块 mode=append 追加。',
-            '每块 content 控制在 4000 字符以内，避免工具参数再次被模型输出长度截断。'
+            '只有内容明显超出当前输出预算或 Write/Append 参数已经被截断时才使用 Append：第一块 mode=create 创建或清空文件，后续块 mode=append 追加。',
+            '不要按 section 切成很多小块；普通单文件落地页应尽量 1-3 次工具调用写完。每块 content 尽量大，但必须保证本次工具参数是完整合法 JSON。'
           ].join('\n'),
           parameters: {
             type: 'object',
             additionalProperties: false,
             properties: {
               file_path: { type: 'string', description: '目标文件路径，可为相对当前项目目录的路径，或已授权额外写入目录内的绝对路径。' },
-              content: { type: 'string', description: '本次要写入或追加的一小块内容。建议不超过 4000 字符。' },
+              content: { type: 'string', description: '本次要写入或追加的内容块。尽量使用较大块，避免把普通单文件拆成很多小块；同时必须保证工具参数是完整合法 JSON。' },
               mode: { type: 'string', enum: ['create', 'append'], description: 'create 表示创建或清空后写入第一块；append 表示追加后续块。默认 append。' }
             },
             required: ['file_path', 'content']
@@ -1011,8 +1011,9 @@ export function getFileToolPrompt(): string {
     '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 List/Glob/Grep 查找文件和内容。',
     '- Read 会拒绝普通二进制文件；图片和 PDF 只返回元数据摘要，不会把原始字节塞进上下文。',
     '- workspace 目录是 neo 的默认可写工作区，Write/Append/Edit/List/Mkdir/Copy/Move/Delete 在 workspace 内拥有完整文件管理能力；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
-    '- Write 在 workspace 内会自动创建父目录。它适合短文件或完整覆盖，不适合一次性写入很长代码。',
-    '- 长文件、HTML/CSS/JS、落地页和完整单文件应用必须优先写入 workspace/<name>，并使用 Append 分块写入：第一块 mode=create，后续块 mode=append，每块 content 控制在 4000 字符以内。不要把完整长代码直接刷屏。',
+    '- Write 在 workspace 内会自动创建父目录。如果完整文件能放进一次合法工具参数，优先用 Write 一次写完。',
+    '- 长文件、HTML/CSS/JS、落地页和完整单文件应用必须优先写入 workspace/<name>，不要把完整长代码直接刷屏。只有内容明显超出当前输出预算或已经发生工具参数截断时，才使用 Append 分块：第一块 mode=create，后续块 mode=append。',
+    '- 使用 Append 时不要按 section 切成很多小块；普通单文件落地页应尽量 1-3 次工具调用写完。每块 content 尽量大，但必须保证本次工具参数是完整合法 JSON。',
     '- Delete 默认移动到 workspace/.neo-trash；只有用户明确要求且权限确认后才能 permanent=true 永久删除。',
     '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；offset/limit 只控制返回行数，不能绕过总字节预算。',
     '- 文件工具默认只能访问 neo 启动时所在的项目目录、workspace 和显式授权额外目录，不能访问其它路径。'

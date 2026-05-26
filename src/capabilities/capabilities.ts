@@ -136,7 +136,7 @@ export function buildCapabilitySnapshot(input: {
   hookRecentEventCount: number;
 }): CapabilitySnapshot {
   const toolNames = input.runtimeTools.map(tool => tool.function.name);
-  const fileTools = toolNames.filter(name => ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'List', 'Mkdir', 'Copy', 'Move', 'Delete'].includes(name));
+  const fileTools = toolNames.filter(name => ['Read', 'Glob', 'Grep', 'Write', 'Append', 'Edit', 'List', 'Mkdir', 'Copy', 'Move', 'Delete'].includes(name));
   const executionTools = toolNames.filter(name => ['Bash', 'Python'].includes(name));
   const webTools = toolNames.filter(name => ['WebSearch', 'WebFetch'].includes(name));
   const callableSkills = input.skills.filter(skill => !skill.disableModelInvocation);
@@ -164,8 +164,8 @@ export function buildCapabilitySnapshot(input: {
       toolResultBudget: input.config.toolResults,
       tools: fileTools,
       canRead: fileTools.some(name => ['Read', 'Glob', 'Grep'].includes(name)),
-      canWrite: fileTools.some(name => ['Write', 'Edit'].includes(name)),
-      writeRequiresInteractiveConfirmation: fileTools.some(name => ['Write', 'Edit'].includes(name)),
+      canWrite: fileTools.some(name => ['Write', 'Append', 'Edit'].includes(name)),
+      writeRequiresInteractiveConfirmation: fileTools.some(name => ['Write', 'Append', 'Edit'].includes(name)),
       writeConfirmationAvailable: input.fileWriteConfirmationAvailable
     },
     execution: {
@@ -257,9 +257,9 @@ function compactSnapshot(snapshot: CapabilitySnapshot): Partial<CapabilitySnapsh
 function buildLimitations(config: AppConfig, fileWriteConfirmationAvailable: boolean, executionConfirmationAvailable: boolean, connectedMcpServerCount: number): string[] {
   const limitations: string[] = [
     `Bash/Python 可在 workspace (${config.workspace.dir}) 内执行；只读 Bash 自动允许，高风险 Bash 和 Python 需要交互式确认。`,
-    `Write/Edit/List/Mkdir/Copy/Move/Delete 在 workspace (${config.workspace.dir}) 内无需额外确认；写入项目其它位置或额外授权目录时需要交互式确认。`
+    `Write/Append/Edit/List/Mkdir/Copy/Move/Delete 在 workspace (${config.workspace.dir}) 内无需额外确认；写入项目其它位置或额外授权目录时需要交互式确认。`
   ];
-  if (!fileWriteConfirmationAvailable) limitations.push(`当前入口没有文件写入确认回调；模型只能自动写入 workspace (${config.workspace.dir})，项目其它位置的 Write/Edit 会被拒绝。`);
+  if (!fileWriteConfirmationAvailable) limitations.push(`当前入口没有文件写入确认回调；模型只能自动写入 workspace (${config.workspace.dir})，项目其它位置的 Write/Append/Edit 会被拒绝。`);
   if (!executionConfirmationAvailable) limitations.push('当前入口没有执行确认回调；Bash 高风险命令和 Python 会被拒绝。');
   if (!config.web.apiKey) limitations.push('未配置 Web API key，WebSearch/WebFetch 不会暴露给模型。');
   if (connectedMcpServerCount === 0) limitations.push('当前没有已连接 MCP server。');

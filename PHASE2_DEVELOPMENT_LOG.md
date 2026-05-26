@@ -473,3 +473,27 @@ neo-agent 的偏离和原因：
 
 - 这仍不是 PTY 截图测试。
 - 真实 Ink 多行输入、权限弹窗、工具进度和 ResumePicker 仍按二阶段计划后续拆分。
+
+## 2026-05-26：修正 Append 分块过小策略
+
+用户复测同一个单 HTML 落地页需求后反馈：8 次工具调用全部用完，文件仍未写完；deepseek-v4-pro 本身输出能力很大，不应该每次只写很小一段。
+
+日志确认：
+
+- 本次已经路由到 main。
+- 没有再发生 `tool.arguments_truncated`。
+- `Skill` 用掉第 0 轮，后续 7 次 `Append` 都成功。
+- 但每次 `Append` 参数只有约 600-1500 字符，导致普通落地页被拆得过碎，最终触发 `tool.max_rounds_reached`。
+- 当前用户配置里的 `models.main.maxTokens` 是 4096，不是服务端可能支持的更大输出上限。
+
+判断：
+
+- 上一次为了避免截断，把 `Append` 写成“每块 4000 字符以内”，这是过度保守。
+- 正确策略不是“长文件一律小块 Append”，而是“能一次合法写完就 Write；确实超预算或发生截断时才 Append，并尽量大块写入”。
+
+修正：
+
+- 文件工具说明改为：普通单文件落地页应尽量 1-3 次工具调用写完，不按 section 拆成很多小块。
+- QueryEngine 截断恢复提示改为要求 `Append` 写完整合法的大块，避免退化成极小块。
+- README 明确：服务端最大输出不等于 neo 当前请求 `maxTokens`；新增 `NEO_AGENT_MAIN_MAX_TOKENS`、`NEO_AGENT_SMALL_MAX_TOKENS`、`NEO_AGENT_VISION_MAX_TOKENS` 运行时覆盖。
+- capability 快照补上 `Append`，避免能力报告遗漏。

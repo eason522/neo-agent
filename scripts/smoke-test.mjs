@@ -165,6 +165,11 @@ test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   const raw = await run(['config', 'show', '--show-secrets']);
   assertIncludes(raw.stdout, 'test-secret-123456');
 
+  const maxTokenOverride = await run(['config', 'show'], {
+    env: { NEO_AGENT_MAIN_MAX_TOKENS: '32768' }
+  });
+  assertIncludes(maxTokenOverride.stdout, '"maxTokens": 32768');
+
   const projectDir = path.join(tempHome, 'config-project');
   await mkdir(projectDir, { recursive: true });
   const setProject = await run(['config', 'set', 'web.maxToolRounds', '9', '--scope', 'project'], { cwd: projectDir });
@@ -1384,6 +1389,7 @@ test('QueryEngine 遇到长文件工具参数截断时强制引导 Append 并禁
         assertIncludes(recovery, 'Append');
         assertIncludes(recovery, 'mode=create');
         assertIncludes(recovery, '不要再次用 Write');
+        assertIncludes(recovery, '1-3 次工具调用');
         sawAppendRecovery = true;
         return { content: '', finishReason: 'length', toolCalls: [truncatedWriteCall] };
       }
@@ -1925,6 +1931,8 @@ test('二阶段文件工具支持完整 workspace 文件管理', async () => {
     for (const name of [APPEND_TOOL_NAME, LIST_TOOL_NAME, MKDIR_TOOL_NAME, COPY_TOOL_NAME, MOVE_TOOL_NAME, DELETE_TOOL_NAME]) {
       assertIncludes(names, name);
     }
+    const appendDefinition = runner.definitions().find(tool => tool.function.name === APPEND_TOOL_NAME);
+    assertIncludes(appendDefinition?.function.description ?? '', '1-3 次工具调用');
 
     const nestedWrite = await runner.execute({
       id: 'write_nested_workspace',
