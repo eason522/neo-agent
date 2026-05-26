@@ -13,7 +13,7 @@ export type RememberOptions = {
 
 export class MemoryService {
   readonly local: LocalMemory;
-  private readonly openViking: OpenVikingMemory;
+  readonly openViking: OpenVikingMemory;
 
   constructor(private readonly config: AppConfig, private readonly logger?: Logger) {
     this.local = new LocalMemory(config);
@@ -22,10 +22,11 @@ export class MemoryService {
 
   async search(query: string): Promise<MemoryHit[]> {
     const start = Date.now();
-    const [localHits, openVikingHits] = await Promise.all([
-      this.config.memory.backend === 'openviking' ? Promise.resolve([]) : this.local.search(query),
-      this.config.memory.backend === 'local' ? Promise.resolve([]) : this.openViking.search(query)
-    ]);
+    const openVikingHits = this.config.memory.backend === 'local' ? [] : await this.openViking.search(query).catch(error => {
+      this.logger?.warn('memory.openviking.search.offline', { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    });
+    const localHits = this.config.memory.backend === 'openviking' && openVikingHits.length > 0 ? [] : await this.local.search(query);
     const hits = [...openVikingHits, ...localHits]
       .sort((a, b) => b.score - a.score)
       .slice(0, this.config.memory.maxHits);
@@ -44,7 +45,8 @@ export class MemoryService {
     const options: RememberOptions = Array.isArray(tagsOrOptions) ? { tags: tagsOrOptions } : tagsOrOptions;
     const record = await this.local.remember({ content, ...options });
     if (this.config.memory.backend !== 'local') {
-      await this.openViking.remember(content, options.tags ?? []).catch(() => undefined);
+      const result = await this.openViking.store(record);
+      if (result.pending) this.logger?.warn('memory.openviking.store.pending', { uri: record.uri });
     }
     this.logger?.debug('memory.remember', {
       category: record.category,
@@ -57,11 +59,19 @@ export class MemoryService {
   }
 
   async list(limit = 20, category?: MemoryCategory): Promise<MemoryRecord[]> {
+    if (this.config.memory.backend !== 'local') {
+      const records = await this.openViking.list(limit, category).catch(() => []);
+      if (records.length > 0) return records;
+    }
     return this.local.list({ limit, category });
   }
 
   async update(idOrUri: string, updates: Partial<Pick<MemoryRecord, 'content' | 'category' | 'tags' | 'pinned' | 'status' | 'metadata'>>): Promise<MemoryRecord | undefined> {
     const record = await this.local.update(idOrUri, updates);
+    if (record && this.config.memory.backend !== 'local') {
+      const result = await this.openViking.store(record);
+      if (result.pending) this.logger?.warn('memory.openviking.update.pending', { uri: record.uri });
+    }
     this.logger?.debug('memory.update', {
       found: Boolean(record),
       idOrUri,
@@ -74,13 +84,33 @@ export class MemoryService {
 
   async forget(idOrUri: string): Promise<MemoryRecord | undefined> {
     const record = await this.local.forget(idOrUri);
+    if (this.config.memory.backend !== 'local') {
+      const result = await this.openViking.forget(record?.uri ?? idOrUri);
+      if (result.pending) this.logger?.warn('memory.openviking.forget.pending', { idOrUri });
+    }
     this.logger?.debug('memory.forget', { found: Boolean(record), idOrUri });
     return record;
   }
 
   async delete(idOrUri: string): Promise<MemoryRecord | undefined> {
     const record = await this.local.delete(idOrUri);
+    if (this.config.memory.backend !== 'local') {
+      const result = await this.openViking.forget(record?.uri ?? idOrUri);
+      if (result.pending) this.logger?.warn('memory.openviking.delete.pending', { idOrUri });
+    }
     this.logger?.debug('memory.delete', { found: Boolean(record), idOrUri });
     return record;
+  }
+
+  async openVikingHealth(): Promise<import('./openVikingMemory.js').OpenVikingHealth> {
+    return this.openViking.health();
+  }
+
+  async syncOpenVikingPending(): Promise<{ attempted: number; synced: number; remaining: number }> {
+    return this.openViking.syncPending();
+  }
+
+  async openVikingPendingCount(): Promise<number> {
+    return this.openViking.pendingCount();
   }
 }

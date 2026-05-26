@@ -188,6 +188,16 @@ export function defaultConfig(): AppConfig {
         'PRD',
         '设计',
         '代码',
+        'HTML',
+        'CSS',
+        'JS',
+        'JavaScript',
+        '落地页',
+        '单文件',
+        '写入文件',
+        '生成文件',
+        '网页',
+        '页面',
         '多步',
         '分析'
       ]

@@ -1,25 +1,89 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import type { AppConfig, MemoryHit } from '../types.js';
+import path from 'node:path';
+import type { AppConfig, MemoryCategory, MemoryHit, MemoryRecord } from '../types.js';
+import { readJsonFile, writeJsonFile } from '../utils/fs.js';
 
-const execFileAsync = promisify(execFile);
+type PendingOperation =
+  | { type: 'store'; record: MemoryRecord; markdown: string; queuedAt: string }
+  | { type: 'forget'; idOrUri: string; queuedAt: string };
+
+export type OpenVikingHealth = {
+  ok: boolean;
+  mode: 'mcp' | 'http-search' | 'offline';
+  message: string;
+};
 
 export class OpenVikingMemory {
-  constructor(private readonly config: AppConfig) {}
+  private readonly pendingPath: string;
+
+  constructor(private readonly config: AppConfig) {
+    this.pendingPath = path.join(config.homeDir, 'memory', 'openviking-pending.json');
+  }
+
+  async health(): Promise<OpenVikingHealth> {
+    const mcp: unknown | { error: string } = await this.callMcpTool('health', {}).catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
+    if (!hasError(mcp)) return { ok: true, mode: 'mcp', message: 'OpenViking /mcp health 可用。' };
+    const http = await fetch(this.config.memory.openVikingUrl, { signal: AbortSignal.timeout(1500) }).catch(() => undefined);
+    if (http?.ok) return { ok: true, mode: 'http-search', message: 'OpenViking HTTP 可访问；/mcp 不可用，将仅尝试旧 search 接口。' };
+    return { ok: false, mode: 'offline', message: `OpenViking 主存储离线，写入会进入待同步队列：${this.config.memory.openVikingUrl}` };
+  }
 
   async search(query: string, limit = this.config.memory.maxHits): Promise<MemoryHit[]> {
     if (this.config.memory.backend === 'local') return [];
 
-    const httpHits = await this.searchHttp(query, limit).catch(() => []);
-    if (httpHits.length > 0) return httpHits;
+    const mcpHits = await this.searchMcp(query, limit).catch(() => []);
+    if (mcpHits.length > 0) return mcpHits;
 
-    return this.searchCli(query, limit).catch(() => []);
+    return this.searchHttp(query, limit).catch(() => []);
   }
 
-  async remember(_content: string, _tags: string[] = []): Promise<void> {
-    // OpenViking writes are intentionally conservative here because its public
-    // CLI/API shape can vary by version. Local memory remains the source of
-    // truth, while OpenViking retrieval is used opportunistically when present.
+  async list(limit = 20, category?: MemoryCategory): Promise<MemoryRecord[]> {
+    const prefix = category ? memoryUriPrefix(category) : 'viking://';
+    const payload = await this.callMcpTool('list', { uri: prefix, limit }).catch(() => undefined);
+    const items = extractResultArray(payload);
+    return items.map((item, index) => memoryRecordFromUnknown(item, index)).filter(Boolean).slice(0, limit) as MemoryRecord[];
+  }
+
+  async store(record: MemoryRecord): Promise<{ stored: boolean; pending: boolean }> {
+    const markdown = memoryToMarkdown(record);
+    const stored = await this.callMcpTool('store', {
+      uri: record.uri,
+      content: markdown
+    }).then(() => true).catch(() => false);
+    if (stored) return { stored: true, pending: false };
+    await this.enqueue({ type: 'store', record, markdown, queuedAt: new Date().toISOString() });
+    return { stored: false, pending: true };
+  }
+
+  async forget(idOrUri: string): Promise<{ forgotten: boolean; pending: boolean }> {
+    const forgotten = await this.callMcpTool('forget', { uri: idOrUri }).then(() => true).catch(() => false);
+    if (forgotten) return { forgotten: true, pending: false };
+    await this.enqueue({ type: 'forget', idOrUri, queuedAt: new Date().toISOString() });
+    return { forgotten: false, pending: true };
+  }
+
+  async pendingCount(): Promise<number> {
+    return (await this.readPending()).length;
+  }
+
+  async syncPending(): Promise<{ attempted: number; synced: number; remaining: number }> {
+    const pending = await this.readPending();
+    const remaining: PendingOperation[] = [];
+    let synced = 0;
+    for (const item of pending) {
+      const ok = item.type === 'store'
+        ? await this.callMcpTool('store', { uri: item.record.uri, content: item.markdown }).then(() => true).catch(() => false)
+        : await this.callMcpTool('forget', { uri: item.idOrUri }).then(() => true).catch(() => false);
+      if (ok) synced += 1;
+      else remaining.push(item);
+    }
+    await writeJsonFile(this.pendingPath, { version: 1, operations: remaining });
+    return { attempted: pending.length, synced, remaining: remaining.length };
+  }
+
+  private async searchMcp(query: string, limit: number): Promise<MemoryHit[]> {
+    const payload = await this.callMcpTool('search', { query, limit });
+    const items = extractResultArray(payload);
+    return items.map((item, index) => memoryHitFromUnknown(item, index)).filter(Boolean).slice(0, limit) as MemoryHit[];
   }
 
   private async searchHttp(query: string, limit: number): Promise<MemoryHit[]> {
@@ -33,7 +97,7 @@ export class OpenVikingMemory {
     return (payload.results ?? []).map((item, index): MemoryHit => ({
       id: item.uri ?? `openviking_${index}`,
       uri: item.uri ?? 'viking://unknown',
-      category: 'preference',
+      category: categoryFromUri(item.uri),
       content: item.content ?? '',
       tags: ['openviking'],
       origin: 'openviking',
@@ -46,28 +110,129 @@ export class OpenVikingMemory {
     })).filter(hit => hit.content);
   }
 
-  private async searchCli(query: string, limit: number): Promise<MemoryHit[]> {
-    const { stdout } = await execFileAsync('ov', ['find', query], {
-      timeout: 2500,
-      maxBuffer: 256 * 1024
+  private async callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const response = await fetch(new URL('/mcp', this.config.memory.openVikingUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: `neo-${Date.now()}`,
+        method: 'tools/call',
+        params: { name, arguments: args }
+      }),
+      signal: AbortSignal.timeout(3000)
     });
-    const content = stdout.trim();
-    if (!content) return [];
-    const now = new Date().toISOString();
-    const hit: MemoryHit = {
-      id: 'openviking_cli',
-      uri: 'viking://openviking/cli/find',
-      category: 'preference',
-      content: content.slice(0, 6000),
-      tags: ['openviking', 'cli'],
-      origin: 'openviking',
-      pinned: false,
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-      score: 1,
-      source: 'openviking'
-    };
-    return [hit].slice(0, limit);
+    if (!response.ok) throw new Error(`OpenViking /mcp ${name} failed: ${response.status}`);
+    const payload = await response.json() as { error?: unknown; result?: unknown };
+    if (payload.error) throw new Error(`OpenViking /mcp ${name} error: ${JSON.stringify(payload.error)}`);
+    return payload.result;
   }
+
+  private async enqueue(operation: PendingOperation): Promise<void> {
+    const pending = await this.readPending();
+    pending.push(operation);
+    await writeJsonFile(this.pendingPath, { version: 1, operations: pending });
+  }
+
+  private async readPending(): Promise<PendingOperation[]> {
+    const raw = await readJsonFile<{ operations?: PendingOperation[] }>(this.pendingPath, { operations: [] });
+    return Array.isArray(raw.operations) ? raw.operations : [];
+  }
+}
+
+export function memoryUriPrefix(category: MemoryCategory): string {
+  if (category === 'preference') return 'viking://user/default/memories/preferences/';
+  if (category === 'project_fact') return 'viking://user/default/memories/project_facts/';
+  if (category === 'workflow') return 'viking://user/default/memories/workflows/';
+  return 'viking://agent/neo-agent/memories/session_summaries/';
+}
+
+export function memoryToMarkdown(record: MemoryRecord): string {
+  const frontmatter = [
+    '---',
+    `id: ${yamlString(record.id)}`,
+    `category: ${yamlString(record.category)}`,
+    `tags: [${record.tags.map(yamlString).join(', ')}]`,
+    `pinned: ${record.pinned}`,
+    `status: ${yamlString(record.status)}`,
+    `origin: ${yamlString(record.origin)}`,
+    `createdAt: ${yamlString(record.createdAt)}`,
+    `updatedAt: ${yamlString(record.updatedAt)}`,
+    `sourceTranscript: ${yamlString(String(record.metadata?.sourceTranscript ?? ''))}`,
+    '---'
+  ].join('\n');
+  return `${frontmatter}\n\n${record.content.trim()}\n`;
+}
+
+function extractResultArray(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.results)) return record.results;
+  if (Array.isArray(record.items)) return record.items;
+  if (record.content && Array.isArray(record.content)) {
+    return record.content.flatMap(item => {
+      if (!item || typeof item !== 'object') return [];
+      const text = (item as Record<string, unknown>).text;
+      if (typeof text !== 'string') return [];
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        return extractResultArray(parsed);
+      } catch {
+        return [];
+      }
+    });
+  }
+  return [];
+}
+
+function memoryHitFromUnknown(item: unknown, index: number): MemoryHit | undefined {
+  const record = memoryRecordFromUnknown(item, index);
+  if (!record) return undefined;
+  const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+  return {
+    ...record,
+    score: typeof raw.score === 'number' ? raw.score : 1,
+    source: 'openviking'
+  };
+}
+
+function memoryRecordFromUnknown(item: unknown, index: number): MemoryRecord | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const raw = item as Record<string, unknown>;
+  const uri = typeof raw.uri === 'string' ? raw.uri : typeof raw.path === 'string' ? raw.path : `viking://openviking/${index}`;
+  const content = typeof raw.content === 'string' ? raw.content : typeof raw.text === 'string' ? raw.text : '';
+  if (!content.trim()) return undefined;
+  const now = new Date().toISOString();
+  return {
+    id: typeof raw.id === 'string' ? raw.id : uri.split('/').pop()?.replace(/\.md$/, '') || `openviking_${index}`,
+    uri,
+    category: categoryFromUri(uri),
+    content: stripFrontmatter(content),
+    tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : ['openviking'],
+    origin: 'openviking',
+    pinned: Boolean(raw.pinned),
+    status: raw.status === 'archived' ? 'archived' : 'active',
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
+  };
+}
+
+function categoryFromUri(uri: string | undefined): MemoryCategory {
+  if (uri?.includes('/project_facts/')) return 'project_fact';
+  if (uri?.includes('/workflows/')) return 'workflow';
+  if (uri?.includes('/session_summaries/')) return 'session_summary';
+  return 'preference';
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+}
+
+function yamlString(input: string): string {
+  return JSON.stringify(input);
+}
+
+function hasError(input: unknown): input is { error: string } {
+  return Boolean(input && typeof input === 'object' && 'error' in input);
 }

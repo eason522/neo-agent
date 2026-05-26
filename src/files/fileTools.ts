@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../types.js';
@@ -13,6 +13,11 @@ export const GLOB_TOOL_NAME = 'Glob';
 export const GREP_TOOL_NAME = 'Grep';
 export const WRITE_TOOL_NAME = 'Write';
 export const EDIT_TOOL_NAME = 'Edit';
+export const LIST_TOOL_NAME = 'List';
+export const MKDIR_TOOL_NAME = 'Mkdir';
+export const COPY_TOOL_NAME = 'Copy';
+export const MOVE_TOOL_NAME = 'Move';
+export const DELETE_TOOL_NAME = 'Delete';
 
 const readInputSchema = z.object({
   file_path: z.string(),
@@ -47,6 +52,33 @@ const editInputSchema = z.object({
   replace_all: z.boolean().optional()
 });
 
+const listInputSchema = z.object({
+  path: z.string().optional(),
+  recursive: z.boolean().optional(),
+  limit: z.number().int().positive().max(1000).optional()
+});
+
+const mkdirInputSchema = z.object({
+  path: z.string()
+});
+
+const copyInputSchema = z.object({
+  source_path: z.string(),
+  target_path: z.string(),
+  overwrite: z.boolean().optional()
+});
+
+const moveInputSchema = z.object({
+  source_path: z.string(),
+  target_path: z.string(),
+  overwrite: z.boolean().optional()
+});
+
+const deleteInputSchema = z.object({
+  path: z.string(),
+  permanent: z.boolean().optional()
+});
+
 const ignoredDirectories = new Set(['.git', '.svn', '.hg', '.jj', 'node_modules', 'dist', 'build', '.neo-agent']);
 const maxReadBytes = 512 * 1024;
 const maxReadOutputChars = 100_000;
@@ -70,13 +102,14 @@ const knownBinaryExtensions = new Set([
 ]);
 
 export type FilePermissionRequest = {
-  toolName: typeof WRITE_TOOL_NAME | typeof EDIT_TOOL_NAME;
+  toolName: typeof WRITE_TOOL_NAME | typeof EDIT_TOOL_NAME | typeof MKDIR_TOOL_NAME | typeof COPY_TOOL_NAME | typeof MOVE_TOOL_NAME | typeof DELETE_TOOL_NAME;
   path: string;
-  operation: 'create' | 'overwrite' | 'edit';
+  operation: 'create' | 'overwrite' | 'edit' | 'mkdir' | 'copy' | 'move' | 'delete';
   summary: string;
   oldChars?: number;
   newChars: number;
   permissionRequired: boolean;
+  permanent?: boolean;
 };
 
 export type FilePermissionAsker = (request: FilePermissionRequest) => Promise<'allow' | 'deny'>;
@@ -184,6 +217,22 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       {
         type: 'function',
         function: {
+          name: LIST_TOOL_NAME,
+          description: '列出当前项目目录、workspace 或已授权额外读取目录内的文件和目录。只返回条目摘要，不读取文件正文。',
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              path: { type: 'string', description: '可选。要列出的目录，默认 workspace。' },
+              recursive: { type: 'boolean', description: '是否递归列出；默认 false。' },
+              limit: { type: 'number', description: '最多返回条目数，最大 1000。' }
+            }
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
           name: WRITE_TOOL_NAME,
           description: [
             '在 workspace 目录内创建或覆盖文件不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
@@ -220,16 +269,95 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
             required: ['file_path', 'old_string', 'new_string']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: MKDIR_TOOL_NAME,
+          description: '在 workspace 内创建目录不需要确认；在项目目录或额外写入目录内创建目录需要用户确认。',
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              path: { type: 'string', description: '要创建的目录路径。相对路径按当前项目目录解析。' }
+            },
+            required: ['path']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: COPY_TOOL_NAME,
+          description: '复制文件。source 必须可读，target 必须位于 workspace、当前项目或额外授权写入目录；workspace 内写入免确认。',
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              source_path: { type: 'string', description: '源文件路径。' },
+              target_path: { type: 'string', description: '目标文件路径。' },
+              overwrite: { type: 'boolean', description: '目标存在时是否覆盖；默认 false。' }
+            },
+            required: ['source_path', 'target_path']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: MOVE_TOOL_NAME,
+          description: '移动或重命名文件。source 和 target 必须位于可写范围；workspace 内操作免确认。',
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              source_path: { type: 'string', description: '源文件路径。' },
+              target_path: { type: 'string', description: '目标文件路径。' },
+              overwrite: { type: 'boolean', description: '目标存在时是否覆盖；默认 false。' }
+            },
+            required: ['source_path', 'target_path']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: DELETE_TOOL_NAME,
+          description: [
+            '删除文件或目录。默认移动到 workspace/.neo-trash/<timestamp>-<relativePath>，可恢复。',
+            'permanent=true 表示永久删除，必须经过交互确认；没有确认回调时会被拒绝。'
+          ].join('\n'),
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              path: { type: 'string', description: '要删除的文件或目录路径，必须位于可写范围。' },
+              permanent: { type: 'boolean', description: '是否永久删除；默认 false，会移动到 workspace trash。' }
+            },
+            required: ['path']
+          }
+        }
       }
     ];
   }
 
   canExecute(name: string): boolean {
-    return name === READ_TOOL_NAME || name === GLOB_TOOL_NAME || name === GREP_TOOL_NAME || name === WRITE_TOOL_NAME || name === EDIT_TOOL_NAME;
+    return [
+      READ_TOOL_NAME,
+      GLOB_TOOL_NAME,
+      GREP_TOOL_NAME,
+      WRITE_TOOL_NAME,
+      EDIT_TOOL_NAME,
+      LIST_TOOL_NAME,
+      MKDIR_TOOL_NAME,
+      COPY_TOOL_NAME,
+      MOVE_TOOL_NAME,
+      DELETE_TOOL_NAME
+    ].includes(name);
   }
 
   executionMode(name: string): 'parallel' | 'exclusive' {
-    return name === WRITE_TOOL_NAME || name === EDIT_TOOL_NAME ? 'exclusive' : 'parallel';
+    return [WRITE_TOOL_NAME, EDIT_TOOL_NAME, MKDIR_TOOL_NAME, COPY_TOOL_NAME, MOVE_TOOL_NAME, DELETE_TOOL_NAME].includes(name) ? 'exclusive' : 'parallel';
   }
 
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: FileToolCallRecord }> {
@@ -239,6 +367,11 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     if (call.function.name === GREP_TOOL_NAME) return this.grep(call.function.arguments, options.signal);
     if (call.function.name === WRITE_TOOL_NAME) return this.write(call.function.arguments, options.signal);
     if (call.function.name === EDIT_TOOL_NAME) return this.edit(call.function.arguments, options.signal);
+    if (call.function.name === LIST_TOOL_NAME) return this.list(call.function.arguments, options.signal);
+    if (call.function.name === MKDIR_TOOL_NAME) return this.mkdirTool(call.function.arguments, options.signal);
+    if (call.function.name === COPY_TOOL_NAME) return this.copy(call.function.arguments, options.signal);
+    if (call.function.name === MOVE_TOOL_NAME) return this.move(call.function.arguments, options.signal);
+    if (call.function.name === DELETE_TOOL_NAME) return this.delete(call.function.arguments, options.signal);
     throw new Error(`未知文件工具：${call.function.name}`);
   }
 
@@ -380,7 +513,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const input = writeInputSchema.parse(parseJsonObject(rawArguments));
     const start = Date.now();
     throwIfAborted(signal);
-    const target = await this.resolveWritableTarget(input.file_path);
+    const target = await this.resolveWritableTarget(input.file_path, { allowMissingParentInWorkspace: true });
     const existing = await readFile(target, 'utf8').catch(() => undefined);
     await this.requireWritePermission({
       toolName: WRITE_TOOL_NAME,
@@ -442,6 +575,181 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     };
   }
 
+  private async list(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = listInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const base = await this.resolveReadablePath(input.path ?? this.workspaceRealPath ?? 'workspace');
+    const baseStat = await stat(base);
+    if (!baseStat.isDirectory()) throw new Error(`List path 必须是目录：${input.path ?? 'workspace'}`);
+    const limit = input.limit ?? 200;
+    const entries = input.recursive
+      ? await this.walkEntries(base, limit, signal)
+      : await this.readDirectoryEntries(base, limit);
+    const lines = entries.map(entry => `${entry.kind}\t${entry.path}${entry.size === undefined ? '' : `\t${formatBytes(entry.size)}`}`);
+    const content = lines.length > 0 ? lines.join('\n') : 'No entries found';
+    return {
+      content,
+      record: {
+        name: LIST_TOOL_NAME,
+        path: this.relativeToScope(base),
+        operation: 'list',
+        resultCount: entries.length,
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async mkdirTool(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = mkdirInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const target = await this.resolveWritableDirectoryTarget(input.path);
+    await this.requireWritePermission({
+      toolName: MKDIR_TOOL_NAME,
+      path: this.relativeToScope(target),
+      operation: 'mkdir',
+      summary: '创建目录',
+      newChars: 0,
+      permissionRequired: !this.isInsideWorkspace(target)
+    });
+    throwIfAborted(signal);
+    await mkdir(target, { recursive: true });
+    const content = `created directory ${this.relativeToScope(target)}`;
+    return {
+      content,
+      record: {
+        name: MKDIR_TOOL_NAME,
+        path: this.relativeToScope(target),
+        operation: 'mkdir',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async copy(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = copyInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const source = await this.resolveReadablePath(input.source_path);
+    const sourceStat = await stat(source);
+    if (!sourceStat.isFile()) throw new Error(`Copy source 只能是文件：${input.source_path}`);
+    const target = await this.resolveWritableTarget(input.target_path, { allowMissingParentInWorkspace: true });
+    const existing = await lstat(target).catch(() => undefined);
+    if (existing && !input.overwrite) throw new Error(`Copy target 已存在，请设置 overwrite=true：${this.relativeToScope(target)}`);
+    await this.requireWritePermission({
+      toolName: COPY_TOOL_NAME,
+      path: this.relativeToScope(target),
+      operation: 'copy',
+      summary: `复制 ${this.relativeToScope(source)} 到目标路径`,
+      oldChars: existing?.size,
+      newChars: sourceStat.size,
+      permissionRequired: !this.isInsideWorkspace(target)
+    });
+    throwIfAborted(signal);
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(source, target);
+    const content = `copied ${this.relativeToScope(source)} -> ${this.relativeToScope(target)}`;
+    return {
+      content,
+      record: {
+        name: COPY_TOOL_NAME,
+        path: this.relativeToScope(source),
+        targetPath: this.relativeToScope(target),
+        operation: 'copy',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async move(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = moveInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const source = await this.resolveWritableExisting(input.source_path);
+    const sourceStat = await stat(source);
+    const target = await this.resolveWritableTarget(input.target_path, { allowMissingParentInWorkspace: true });
+    const existing = await lstat(target).catch(() => undefined);
+    if (existing && !input.overwrite) throw new Error(`Move target 已存在，请设置 overwrite=true：${this.relativeToScope(target)}`);
+    await this.requireWritePermission({
+      toolName: MOVE_TOOL_NAME,
+      path: `${this.relativeToScope(source)} -> ${this.relativeToScope(target)}`,
+      operation: 'move',
+      summary: '移动或重命名文件/目录',
+      oldChars: sourceStat.size,
+      newChars: sourceStat.size,
+      permissionRequired: !this.isInsideWorkspace(source) || !this.isInsideWorkspace(target)
+    });
+    throwIfAborted(signal);
+    await mkdir(path.dirname(target), { recursive: true });
+    if (existing && input.overwrite) await rm(target, { recursive: true, force: true });
+    await rename(source, target);
+    const content = `moved ${this.relativeToScope(source)} -> ${this.relativeToScope(target)}`;
+    return {
+      content,
+      record: {
+        name: MOVE_TOOL_NAME,
+        path: this.relativeToScope(source),
+        targetPath: this.relativeToScope(target),
+        operation: 'move',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async delete(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = deleteInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const target = await this.resolveWritableExisting(input.path);
+    const targetStat = await stat(target);
+    const permanent = input.permanent ?? false;
+    const trashTarget = permanent ? undefined : await this.buildTrashTarget(target);
+    await this.requireWritePermission({
+      toolName: DELETE_TOOL_NAME,
+      path: this.relativeToScope(target),
+      operation: 'delete',
+      summary: permanent ? '永久删除文件或目录' : `移动到 trash：${trashTarget ? this.relativeToScope(trashTarget) : '(unknown)'}`,
+      oldChars: targetStat.size,
+      newChars: 0,
+      permissionRequired: permanent || !this.isInsideWorkspace(target),
+      permanent
+    });
+    throwIfAborted(signal);
+    if (permanent) {
+      await rm(target, { recursive: true, force: true });
+      const content = `permanently deleted ${this.relativeToScope(target)}`;
+      return {
+        content,
+        record: {
+          name: DELETE_TOOL_NAME,
+          path: this.relativeToScope(target),
+          operation: 'delete',
+          resultChars: content.length,
+          durationMs: Date.now() - start
+        }
+      };
+    }
+    await mkdir(path.dirname(trashTarget!), { recursive: true });
+    await rename(target, trashTarget!);
+    const content = `moved to trash ${this.relativeToScope(target)} -> ${this.relativeToScope(trashTarget!)}`;
+    return {
+      content,
+      record: {
+        name: DELETE_TOOL_NAME,
+        path: this.relativeToScope(target),
+        targetPath: this.relativeToScope(trashTarget!),
+        operation: 'delete',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
   private async requireWritePermission(request: FilePermissionRequest): Promise<void> {
     const permission = evaluateFileWritePermission({
       toolName: request.toolName,
@@ -489,6 +797,48 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return output;
   }
 
+  private async readDirectoryEntries(directory: string, limit: number): Promise<Array<{ path: string; kind: string; size?: number }>> {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    const output: Array<{ path: string; kind: string; size?: number }> = [];
+    for (const entry of entries.slice(0, limit)) {
+      if (ignoredDirectories.has(entry.name)) continue;
+      const fullPath = path.join(directory, entry.name);
+      const entryStat = await lstat(fullPath).catch(() => undefined);
+      if (!entryStat || entryStat.isSymbolicLink()) continue;
+      output.push({
+        path: this.relativeToScope(fullPath),
+        kind: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
+        size: entry.isFile() ? entryStat.size : undefined
+      });
+      if (output.length >= limit) break;
+    }
+    return output;
+  }
+
+  private async walkEntries(directory: string, limit: number, signal?: AbortSignal): Promise<Array<{ path: string; kind: string; size?: number }>> {
+    const output: Array<{ path: string; kind: string; size?: number }> = [];
+    const queue = [directory];
+    while (queue.length > 0 && output.length < limit) {
+      throwIfAborted(signal);
+      const current = queue.shift()!;
+      const entries = await readdir(current, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (ignoredDirectories.has(entry.name)) continue;
+        const fullPath = path.join(current, entry.name);
+        const entryStat = await lstat(fullPath).catch(() => undefined);
+        if (!entryStat || entryStat.isSymbolicLink()) continue;
+        if (entry.isDirectory()) queue.push(fullPath);
+        output.push({
+          path: this.relativeToScope(fullPath),
+          kind: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
+          size: entry.isFile() ? entryStat.size : undefined
+        });
+        if (output.length >= limit) break;
+      }
+    }
+    return output;
+  }
+
   private async resolveReadablePath(inputPath: string): Promise<string> {
     const root = this.rootRealPath ?? await realpath(this.projectRoot);
     this.rootRealPath = root;
@@ -505,13 +855,16 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     return resolved;
   }
 
-  private async resolveWritableTarget(inputPath: string): Promise<string> {
+  private async resolveWritableTarget(inputPath: string, options: { allowMissingParentInWorkspace?: boolean } = {}): Promise<string> {
     const root = this.rootRealPath ?? await realpath(this.projectRoot);
     this.rootRealPath = root;
     const absolute = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(root, inputPath);
     const parent = await realpath(path.dirname(absolute)).catch(error => {
       if (isNodeErrorCode(error, 'ENOENT')) {
-        throw new Error(`写入目标父目录不存在：${path.dirname(inputPath)}。请先在 workspace 内创建父目录，或选择已存在的项目/授权写入目录。`);
+        if (options.allowMissingParentInWorkspace && this.workspaceRealPath && pathInsideRoot(path.dirname(absolute), this.workspaceRealPath)) {
+          return path.dirname(absolute);
+        }
+        throw new Error(`写入目标父目录不存在：${path.dirname(inputPath)}。workspace 内会自动创建父目录；项目/授权写入目录需要父目录已存在。`);
       }
       throw error;
     });
@@ -526,6 +879,44 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     if (existing?.isSymbolicLink()) throw new Error(`拒绝写入符号链接：${inputPath}`);
     if (existing && !existing.isFile()) throw new Error(`Write/Edit 只能写入文件：${inputPath}`);
     return target;
+  }
+
+  private async resolveWritableExisting(inputPath: string): Promise<string> {
+    const resolved = await this.resolveReadablePath(inputPath);
+    if (!this.isInsideWriteScope(resolved)) {
+      throw new Error(`文件工具拒绝写入越界路径：${inputPath}。允许范围：workspace、当前项目目录和 files.additionalWriteDirs。`);
+    }
+    return resolved;
+  }
+
+  private async resolveWritableDirectoryTarget(inputPath: string): Promise<string> {
+    const root = this.rootRealPath ?? await realpath(this.projectRoot);
+    this.rootRealPath = root;
+    const absolute = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(root, inputPath);
+    const existing = await realpath(absolute).catch(() => undefined);
+    if (existing) {
+      const existingStat = await stat(existing);
+      if (!existingStat.isDirectory()) throw new Error(`Mkdir 目标已存在但不是目录：${inputPath}`);
+      if (!this.isInsideWriteScope(existing)) throw new Error(`文件工具拒绝创建越界目录：${inputPath}`);
+      return existing;
+    }
+    const parent = await realpath(path.dirname(absolute)).catch(error => {
+      if (isNodeErrorCode(error, 'ENOENT')) {
+        if (this.workspaceRealPath && pathInsideRoot(path.dirname(absolute), this.workspaceRealPath)) return this.workspaceRealPath;
+        throw new Error(`Mkdir 父目录不存在：${path.dirname(inputPath)}。workspace 内会自动创建父目录；项目/授权写入目录需要父目录已存在。`);
+      }
+      throw error;
+    });
+    if (!this.isInsideWriteScope(parent)) throw new Error(`文件工具拒绝创建越界目录：${inputPath}`);
+    if (this.workspaceRealPath && pathInsideRoot(absolute, this.workspaceRealPath)) return absolute;
+    return path.resolve(parent, path.relative(parent, absolute));
+  }
+
+  private async buildTrashTarget(target: string): Promise<string> {
+    if (!this.workspaceRealPath) throw new Error('workspace 尚未初始化，无法使用 trash。');
+    const relative = this.relativeToScope(target).replace(/^[./\\]+/, '').replace(/[\\/]+/g, '-');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return path.join(this.workspaceRealPath, '.neo-trash', `${stamp}-${relative || path.basename(target)}`);
   }
 
   private isInsideReadScope(filePath: string): boolean {
@@ -548,9 +939,11 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
 export function getFileToolPrompt(): string {
   return [
     '# 项目文件工具',
-    '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
+    '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 List/Glob/Grep 查找文件和内容。',
     '- Read 会拒绝普通二进制文件；图片和 PDF 只返回元数据摘要，不会把原始字节塞进上下文。',
-    '- workspace 目录是 neo 的默认可写工作区，Write/Edit 在 workspace 内拥有完全访问权限；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
+    '- workspace 目录是 neo 的默认可写工作区，Write/Edit/List/Mkdir/Copy/Move/Delete 在 workspace 内拥有完整文件管理能力；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
+    '- Write 在 workspace 内会自动创建父目录。长文件、HTML/CSS/JS、落地页和完整单文件应用应优先写入 workspace/<name>，不要把完整长代码直接刷屏。',
+    '- Delete 默认移动到 workspace/.neo-trash；只有用户明确要求且权限确认后才能 permanent=true 永久删除。',
     '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；offset/limit 只控制返回行数，不能绕过总字节预算。',
     '- 文件工具默认只能访问 neo 启动时所在的项目目录、workspace 和显式授权额外目录，不能访问其它路径。'
   ].join('\n');

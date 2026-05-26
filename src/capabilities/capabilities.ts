@@ -37,6 +37,14 @@ export type CapabilitySnapshot = {
     writeRequiresInteractiveConfirmation: boolean;
     writeConfirmationAvailable: boolean;
   };
+  execution: {
+    tools: string[];
+    cwd: string;
+    bashLowRiskAutoAllowed: boolean;
+    highRiskRequiresConfirmation: boolean;
+    pythonRequiresConfirmation: boolean;
+    confirmationAvailable: boolean;
+  };
   skills: {
     total: number;
     callable: number;
@@ -124,10 +132,12 @@ export function buildCapabilitySnapshot(input: {
   connectedMcpServers: string[];
   runtimeTools: ChatToolDefinition[];
   fileWriteConfirmationAvailable: boolean;
+  executionConfirmationAvailable: boolean;
   hookRecentEventCount: number;
 }): CapabilitySnapshot {
   const toolNames = input.runtimeTools.map(tool => tool.function.name);
-  const fileTools = toolNames.filter(name => ['Read', 'Glob', 'Grep', 'Write', 'Edit'].includes(name));
+  const fileTools = toolNames.filter(name => ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'List', 'Mkdir', 'Copy', 'Move', 'Delete'].includes(name));
+  const executionTools = toolNames.filter(name => ['Bash', 'Python'].includes(name));
   const webTools = toolNames.filter(name => ['WebSearch', 'WebFetch'].includes(name));
   const callableSkills = input.skills.filter(skill => !skill.disableModelInvocation);
   const mcpVisibleTools = toolNames.filter(name => name.startsWith('mcp__'));
@@ -158,6 +168,14 @@ export function buildCapabilitySnapshot(input: {
       writeRequiresInteractiveConfirmation: fileTools.some(name => ['Write', 'Edit'].includes(name)),
       writeConfirmationAvailable: input.fileWriteConfirmationAvailable
     },
+    execution: {
+      tools: executionTools,
+      cwd: input.config.workspace.dir,
+      bashLowRiskAutoAllowed: executionTools.includes('Bash'),
+      highRiskRequiresConfirmation: true,
+      pythonRequiresConfirmation: true,
+      confirmationAvailable: input.executionConfirmationAvailable
+    },
     skills: {
       total: input.skills.length,
       callable: callableSkills.length,
@@ -186,7 +204,7 @@ export function buildCapabilitySnapshot(input: {
       name: tool.function.name,
       description: tool.function.description
     })).sort((a, b) => a.name.localeCompare(b.name)),
-    limitations: buildLimitations(input.config, input.fileWriteConfirmationAvailable, input.connectedMcpServers.length)
+    limitations: buildLimitations(input.config, input.fileWriteConfirmationAvailable, input.executionConfirmationAvailable, input.connectedMcpServers.length)
   };
 }
 
@@ -197,6 +215,7 @@ export function formatCapabilitySnapshot(snapshot: CapabilitySnapshot): string {
     `models: main=${snapshot.models.main}, small=${snapshot.models.small}, vision=${snapshot.models.vision}`,
     `web: ${snapshot.web.enabled ? 'enabled' : 'disabled'} provider=${snapshot.web.provider} tools=${snapshot.web.tools.join(',') || '(none)'}`,
     `files: tools=${snapshot.files.tools.join(',') || '(none)'} workspace=${snapshot.files.workspaceDir} readDirs=${snapshot.files.additionalReadDirs.length} writeDirs=${snapshot.files.additionalWriteDirs.length} toolBudget=${snapshot.files.toolResultBudget.enabled ? snapshot.files.toolResultBudget.maxInlineChars : 'off'} write=${snapshot.files.canWrite ? 'available' : 'unavailable'} confirm=${snapshot.files.writeConfirmationAvailable ? 'interactive' : 'not-interactive'}`,
+    `execution: tools=${snapshot.execution.tools.join(',') || '(none)'} cwd=${snapshot.execution.cwd} highRiskConfirm=${snapshot.execution.confirmationAvailable ? 'interactive' : 'not-interactive'}`,
     `skills: total=${snapshot.skills.total} callable=${snapshot.skills.callable}${snapshot.skills.names.length ? ` names=${snapshot.skills.names.join(',')}` : ''}`,
     `mcp: servers=${snapshot.mcp.connectedServers.join(',') || '(none)'} tools=${snapshot.mcp.visibleTools.length}`,
     `subAgents: background=${snapshot.subAgents.supportsBackground} stop=${snapshot.subAgents.supportsStop} isolation=${snapshot.subAgents.toolIsolation}`,
@@ -222,6 +241,7 @@ function compactSnapshot(snapshot: CapabilitySnapshot): Partial<CapabilitySnapsh
     models: snapshot.models,
     web: snapshot.web,
     files: snapshot.files,
+    execution: snapshot.execution,
     skills: {
       total: snapshot.skills.total,
       callable: snapshot.skills.callable,
@@ -234,12 +254,13 @@ function compactSnapshot(snapshot: CapabilitySnapshot): Partial<CapabilitySnapsh
   };
 }
 
-function buildLimitations(config: AppConfig, fileWriteConfirmationAvailable: boolean, connectedMcpServerCount: number): string[] {
+function buildLimitations(config: AppConfig, fileWriteConfirmationAvailable: boolean, executionConfirmationAvailable: boolean, connectedMcpServerCount: number): string[] {
   const limitations: string[] = [
-    '没有通用 shell/python/git 执行工具；只能通过已暴露工具和命令入口完成操作。',
-    `Write/Edit 在 workspace (${config.workspace.dir}) 内无需额外确认；写入项目其它位置或额外授权目录时需要交互式确认。`
+    `Bash/Python 可在 workspace (${config.workspace.dir}) 内执行；只读 Bash 自动允许，高风险 Bash 和 Python 需要交互式确认。`,
+    `Write/Edit/List/Mkdir/Copy/Move/Delete 在 workspace (${config.workspace.dir}) 内无需额外确认；写入项目其它位置或额外授权目录时需要交互式确认。`
   ];
   if (!fileWriteConfirmationAvailable) limitations.push(`当前入口没有文件写入确认回调；模型只能自动写入 workspace (${config.workspace.dir})，项目其它位置的 Write/Edit 会被拒绝。`);
+  if (!executionConfirmationAvailable) limitations.push('当前入口没有执行确认回调；Bash 高风险命令和 Python 会被拒绝。');
   if (!config.web.apiKey) limitations.push('未配置 Web API key，WebSearch/WebFetch 不会暴露给模型。');
   if (connectedMcpServerCount === 0) limitations.push('当前没有已连接 MCP server。');
   limitations.push('Hooks 目前只记录内部事件，不执行外部 shell、HTTP、prompt 或 agent hook。');

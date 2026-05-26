@@ -1,4 +1,4 @@
-import type { ChatToolCall, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatToolCall, ExecutionToolCallRecord, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, ToolCallRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 
 export function summarizeToolArguments(call: ChatToolCall): Record<string, unknown> {
   const base = {
@@ -55,6 +55,20 @@ export function summarizeToolResult(record: ToolCallRecord | undefined, content:
       installedCount: record.installedCount,
       resultChars: record.resultChars,
       durationMs: record.durationMs
+    };
+  }
+  if (isExecutionRecord(record)) {
+    return {
+      resultKind: 'execution',
+      name: record.name,
+      commandChars: record.command?.length,
+      cwd: record.cwd,
+      exitCode: record.exitCode,
+      stdoutChars: record.stdoutChars,
+      stderrChars: record.stderrChars,
+      durationMs: record.durationMs,
+      timedOut: record.timedOut,
+      resultChars: content.length
     };
   }
   return summarizeWebRecord(record, content);
@@ -184,6 +198,8 @@ function formatToolStartSummary(name: string, metadata: Record<string, unknown>)
   if (name === 'Read') return `Read 读取文件：${metadata.argumentKeys ? '参数已解析' : '参数未解析'}`;
   if (name === 'Glob') return 'Glob 查找文件';
   if (name === 'Grep') return `Grep 搜索内容：pattern ${metadata.argumentKeys ? '已提供' : '未解析'}`;
+  if (name === 'Bash') return 'Bash 执行 shell 命令';
+  if (name === 'Python') return 'Python 执行临时脚本';
   if (name === 'Skill') return 'Skill 加载技能说明';
   if (name === 'InstallSkillPackage') return 'InstallSkillPackage 安装 skill 包';
   if (name.startsWith('mcp__')) return `MCP 工具：${name}`;
@@ -207,6 +223,9 @@ function formatToolSuccessSummary(name: string, metadata: Record<string, unknown
       return `${name} 完成：安装 ${metadata.installedCount ?? 0} 个 skill，${metadata.resultChars ?? 0} 字符`;
     }
     return `${name} 完成：${metadata.skillName ?? 'unknown'}，${metadata.resultChars ?? 0} 字符`;
+  }
+  if (kind === 'execution') {
+    return `${name} 完成：exit=${metadata.exitCode ?? 'null'} stdout=${metadata.stdoutChars ?? 0} stderr=${metadata.stderrChars ?? 0}`;
   }
   return `${name} 完成：${metadata.resultChars ?? 0} 字符`;
 }
@@ -258,4 +277,8 @@ function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
 
 function isSkillRecord(record: ToolCallRecord): record is SkillToolCallRecord {
   return 'skillName' in record && 'scope' in record;
+}
+
+function isExecutionRecord(record: ToolCallRecord): record is ExecutionToolCallRecord {
+  return 'exitCode' in record && 'stdoutChars' in record && 'stderrChars' in record;
 }

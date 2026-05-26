@@ -23,7 +23,7 @@ export type PermissionRuleInput = {
 export type FileWritePermissionInput = {
   toolName: string;
   path: string;
-  operation: 'create' | 'overwrite' | 'edit';
+  operation: 'create' | 'overwrite' | 'edit' | 'mkdir' | 'copy' | 'move' | 'delete';
   permissionRequired: boolean;
   interactive: boolean;
 };

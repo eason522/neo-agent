@@ -54,7 +54,7 @@ export class LocalMemory {
     const now = new Date().toISOString();
     const record: MemoryRecord = {
       id: stableId('mem'),
-      uri: `viking://user/memories/${now.slice(0, 10)}/${stableId('item')}`,
+      uri: buildMemoryUri(payload.category ?? 'preference', stableId('item')),
       category: payload.category ?? 'preference',
       content: payload.content.trim(),
       tags: normalizeTags(payload.tags ?? []),
@@ -239,6 +239,17 @@ function sourceFromLegacyKind(kind: LegacyMemoryRecord['kind']): MemoryOrigin {
 
 function normalizeTags(tags: string[]): string[] {
   return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))].slice(0, 16);
+}
+
+function buildMemoryUri(category: MemoryCategory, id: string): string {
+  const prefix = category === 'preference'
+    ? 'viking://user/default/memories/preferences/'
+    : category === 'project_fact'
+      ? 'viking://user/default/memories/project_facts/'
+      : category === 'workflow'
+        ? 'viking://user/default/memories/workflows/'
+        : 'viking://agent/neo-agent/memories/session_summaries/';
+  return `${prefix}${id}.md`;
 }
 
 function matchesRecord(record: MemoryRecord, idOrUri: string): boolean {

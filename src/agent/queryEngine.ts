@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolCall, ChatToolDefinition, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolPairRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
+import type { ChatMessage, ChatToolCall, ChatToolDefinition, ExecutionToolCallRecord, FileToolCallRecord, McpToolCallRecord, SkillToolCallRecord, TextModelKind, ToolCallRecord, ToolPairRecord, ToolProgressEvent, WebToolCallRecord } from '../types.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import type { Logger } from '../logging/logger.js';
 import { errorCodeFor } from '../logging/logger.js';
@@ -25,6 +25,7 @@ export type QueryEngineResult = {
   webToolCalls: WebToolCallRecord[];
   mcpToolCalls: McpToolCallRecord[];
   fileToolCalls: FileToolCallRecord[];
+  executionToolCalls: ExecutionToolCallRecord[];
   skillToolCalls: SkillToolCallRecord[];
   toolEvents: ToolProgressEvent[];
   toolPairs: ToolPairRecord[];
@@ -64,6 +65,7 @@ export class QueryEngine {
     const webToolCalls: WebToolCallRecord[] = [];
     const mcpToolCalls: McpToolCallRecord[] = [];
     const fileToolCalls: FileToolCallRecord[] = [];
+    const executionToolCalls: ExecutionToolCallRecord[] = [];
     const skillToolCalls: SkillToolCallRecord[] = [];
     const toolEvents: ToolProgressEvent[] = [];
     const toolPairs: ToolPairRecord[] = [];
@@ -75,6 +77,7 @@ export class QueryEngine {
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
+        executionToolCalls,
         skillToolCalls,
         toolEvents,
         toolPairs
@@ -94,8 +97,24 @@ export class QueryEngine {
       });
       throwIfAborted(runOptions.signal);
 
+      if (response.finishReason === 'length' && response.toolCalls.length > 0 && hasIncompleteToolArguments(response.toolCalls)) {
+        this.logger.warn('tool.arguments_truncated', {
+          round,
+          toolCallCount: response.toolCalls.length
+        });
+        loopMessages.push({
+          role: 'assistant',
+          content: response.content || '[模型输出因长度限制被截断，包含不完整工具调用参数。]'
+        });
+        loopMessages.push({
+          role: 'user',
+          content: '上一次工具调用参数被模型输出长度截断，neo 没有执行坏工具调用。请改用更小块、分段写入，或重新生成完整合法 JSON 参数后再调用工具。长 HTML/CSS/JS 请优先写入 workspace 文件并分块。'
+        });
+        continue;
+      }
+
       if (response.toolCalls.length === 0) {
-        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs };
+        return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, executionToolCalls, skillToolCalls, toolEvents, toolPairs };
       }
 
       const toolCalls = normalizeToolCallIds(response.toolCalls);
@@ -110,6 +129,7 @@ export class QueryEngine {
         webToolCalls,
         mcpToolCalls,
         fileToolCalls,
+        executionToolCalls,
         skillToolCalls,
         toolEvents,
         toolPairs
@@ -121,6 +141,7 @@ export class QueryEngine {
           webToolCalls,
           mcpToolCalls,
           fileToolCalls,
+          executionToolCalls,
           skillToolCalls,
           toolEvents,
           toolPairs,
@@ -148,7 +169,7 @@ export class QueryEngine {
       stream: this.streamHandlers()
     });
     throwIfAborted(runOptions.signal);
-    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs };
+    return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, executionToolCalls, skillToolCalls, toolEvents, toolPairs };
   }
 
   private findRunner(name: string): ToolRunner<ToolCallRecord> | undefined {
@@ -401,6 +422,7 @@ export class QueryEngine {
       webToolCalls: state.webToolCalls,
       mcpToolCalls: state.mcpToolCalls,
       fileToolCalls: state.fileToolCalls,
+      executionToolCalls: state.executionToolCalls,
       skillToolCalls: state.skillToolCalls,
       toolEvents: state.toolEvents,
       toolPairs: state.toolPairs
@@ -456,6 +478,17 @@ function normalizeToolCallIds(toolCalls: ChatToolCall[]): ChatToolCall[] {
   });
 }
 
+function hasIncompleteToolArguments(toolCalls: ChatToolCall[]): boolean {
+  return toolCalls.some(toolCall => {
+    try {
+      const parsed = JSON.parse(toolCall.function.arguments || '{}');
+      return !parsed || typeof parsed !== 'object' || Array.isArray(parsed);
+    } catch {
+      return true;
+    }
+  });
+}
+
 function orderedRoundOutput(
   toolCalls: ChatToolCall[],
   outputs: Map<string, ToolRoundOutput>,
@@ -506,6 +539,7 @@ function recordToolResult(record: ToolCallRecord | undefined, state: Omit<QueryE
   if (!record) return;
   if (isMcpRecord(record)) state.mcpToolCalls.push(record);
   else if (isFileRecord(record)) state.fileToolCalls.push(record);
+  else if (isExecutionRecord(record)) state.executionToolCalls.push(record);
   else if (isSkillRecord(record)) state.skillToolCalls.push(record);
   else state.webToolCalls.push(record);
 }
@@ -516,6 +550,10 @@ function isMcpRecord(record: ToolCallRecord): record is McpToolCallRecord {
 
 function isFileRecord(record: ToolCallRecord): record is FileToolCallRecord {
   return 'resultChars' in record && 'durationMs' in record && !('serverName' in record) && !('searchedAt' in record) && !('skillName' in record);
+}
+
+function isExecutionRecord(record: ToolCallRecord): record is ExecutionToolCallRecord {
+  return 'exitCode' in record && 'stdoutChars' in record && 'stderrChars' in record;
 }
 
 function isSkillRecord(record: ToolCallRecord): record is SkillToolCallRecord {

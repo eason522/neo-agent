@@ -11,7 +11,7 @@ export class ModelRouter {
       };
     }
 
-    const shouldUseMain = this.config.routing.forceMainKeywords.some(keyword => input.includes(keyword));
+    const shouldUseMain = this.config.routing.forceMainKeywords.some(keyword => input.includes(keyword)) || isLongFileGenerationTask(input);
     if (shouldUseMain) {
       return {
         modelKind: 'main',
@@ -31,4 +31,8 @@ export class ModelRouter {
       reason: 'long input benefits from the main model'
     };
   }
+}
+
+function isLongFileGenerationTask(input: string): boolean {
+  return /(html|css|javascript|js|landing page|single[- ]file|write (a )?file|create (a )?file|生成.*(文件|网页|页面)|写入.*文件|落地页|单文件|完整.*(HTML|代码|页面))/i.test(input);
 }

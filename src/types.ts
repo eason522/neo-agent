@@ -312,6 +312,7 @@ export type AgentResponse = {
   webToolCalls?: WebToolCallRecord[];
   mcpToolCalls?: McpToolCallRecord[];
   fileToolCalls?: FileToolCallRecord[];
+  executionToolCalls?: ExecutionToolCallRecord[];
   skillToolCalls?: SkillToolCallRecord[];
   toolEvents?: ToolProgressEvent[];
   toolPairs?: ToolPairRecord[];
@@ -345,13 +346,25 @@ export type McpToolCallRecord = {
 };
 
 export type FileToolCallRecord = {
-  name: 'Read' | 'Glob' | 'Grep' | 'Write' | 'Edit';
+  name: 'Read' | 'Glob' | 'Grep' | 'Write' | 'Edit' | 'List' | 'Mkdir' | 'Copy' | 'Move' | 'Delete';
   path?: string;
+  targetPath?: string;
   pattern?: string;
-  operation?: 'read' | 'glob' | 'grep' | 'write' | 'edit';
+  operation?: 'read' | 'glob' | 'grep' | 'write' | 'edit' | 'list' | 'mkdir' | 'copy' | 'move' | 'delete';
   resultCount?: number;
   resultChars: number;
   durationMs: number;
+};
+
+export type ExecutionToolCallRecord = {
+  name: 'Bash' | 'Python';
+  command?: string;
+  cwd: string;
+  exitCode: number | null;
+  stdoutChars: number;
+  stderrChars: number;
+  durationMs: number;
+  timedOut?: boolean;
 };
 
 export type SkillToolCallRecord = {
@@ -364,7 +377,7 @@ export type SkillToolCallRecord = {
   installedCount?: number;
 };
 
-export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord | SkillToolCallRecord;
+export type ToolCallRecord = WebToolCallRecord | McpToolCallRecord | FileToolCallRecord | SkillToolCallRecord | ExecutionToolCallRecord;
 
 export type ToolProgressEvent = {
   phase: 'start' | 'success' | 'error' | 'unknown' | 'max_rounds';

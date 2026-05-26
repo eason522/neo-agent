@@ -7,12 +7,14 @@ import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { AgentStatusEvent, MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import type { FilePermissionRequest } from '../files/fileTools.js';
+import type { ExecutionPermissionRequest } from '../tools/executionTools.js';
 import type { McpPermissionAskRequest } from '../mcp/mcpToolRunner.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
 import type { TranscriptSessionSummary } from '../transcript/transcriptService.js';
 import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary, formatPermissionPrompt } from './rendering.js';
+import { showWorkspace } from '../workspace/workspaceCommands.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -31,6 +33,7 @@ type ReplState = {
     webToolCalls: number;
     mcpToolCalls: number;
     fileToolCalls: number;
+    executionToolCalls: number;
     skillToolCalls: number;
   };
 };
@@ -88,6 +91,12 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       : await rl.question(formatFilePermissionPrompt(request));
     return parseFilePermissionAnswer(answer);
   } : undefined);
+  agent.setExecutionPermissionAsker(isInteractive ? async request => {
+    const answer = activeController
+      ? await rl.question(formatExecutionPermissionPrompt(request), { signal: activeController.signal })
+      : await rl.question(formatExecutionPermissionPrompt(request));
+    return parseExecutionPermissionAnswer(answer);
+  } : undefined);
   agent.setToolEventHandler(isInteractive ? event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
   } : undefined);
@@ -127,6 +136,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     rl.off('SIGINT', handleSigint);
     agent.setToolEventHandler(undefined);
     agent.setFilePermissionAsker(undefined);
+    agent.setExecutionPermissionAsker(undefined);
     rl.close();
     await agent.close();
   }
@@ -157,6 +167,10 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
   agent.setFilePermissionAsker(async request => {
     const answer = await askQuestion(formatFilePermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
     return parseFilePermissionAnswer(answer);
+  });
+  agent.setExecutionPermissionAsker(async request => {
+    const answer = await askQuestion(formatExecutionPermissionPrompt(request), activeController?.signal ?? new AbortController().signal);
+    return parseExecutionPermissionAnswer(answer);
   });
   agent.setToolEventHandler(event => {
     output.write(`${formatToolProgressEvent(event)}\n`);
@@ -202,6 +216,7 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
     agent.setToolEventHandler(undefined);
     agent.setMcpPermissionAsker(undefined);
     agent.setFilePermissionAsker(undefined);
+    agent.setExecutionPermissionAsker(undefined);
     input.off('data', handleGlobalData);
     output.write(disableModifyOtherKeys);
     output.write(disableKittyKeyboard);
@@ -589,6 +604,7 @@ async function runAgentTurn(
       webToolCalls: response.webToolCalls?.length ?? 0,
       mcpToolCalls: response.mcpToolCalls?.length ?? 0,
       fileToolCalls: response.fileToolCalls?.length ?? 0,
+      executionToolCalls: response.executionToolCalls?.length ?? 0,
       skillToolCalls: response.skillToolCalls?.length ?? 0
     };
     if (streamed) output.write('\n');
@@ -763,6 +779,7 @@ export function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): stri
   const detail = [
     turn.webToolCalls > 0 ? `web=${turn.webToolCalls}` : '',
     turn.fileToolCalls > 0 ? `file=${turn.fileToolCalls}` : '',
+    turn.executionToolCalls > 0 ? `exec=${turn.executionToolCalls}` : '',
     turn.mcpToolCalls > 0 ? `mcp=${turn.mcpToolCalls}` : '',
     turn.skillToolCalls > 0 ? `skill=${turn.skillToolCalls}` : ''
   ].filter(Boolean);
@@ -1128,6 +1145,7 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
         webToolCalls: 0,
         mcpToolCalls: 0,
         fileToolCalls: 0,
+        executionToolCalls: 0,
         skillToolCalls: 0
       };
       return true;
@@ -1142,6 +1160,17 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
       await agent.transcripts.append('command', line, { command, taskChars: arg.length });
       if (!arg) console.log('用法：/assess <任务>');
       else console.log(await agent.formatTaskAssessment(arg));
+      return true;
+    }
+    case '/workspace': {
+      await agent.transcripts.append('command', line, { command });
+      const info = await showWorkspace();
+      console.log([
+        `workspace: ${info.path}`,
+        chalk.gray(`configured=${info.configuredDir} source=${info.source}`),
+        chalk.gray(`readable=${info.readable} writable=${info.writable}`),
+        chalk.gray(`trash=${info.trashPath}`)
+      ].join('\n'));
       return true;
     }
     case '/debug': {
@@ -1490,6 +1519,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/compact [说明]       手动压缩当前会话上下文',
     '/capabilities         查看当前运行时能力快照',
     '/assess <任务>        评估任务是否可完成',
+    '/workspace            查看当前 workspace 路径和权限',
     '/debug [on|off|last]  开关轻量 debug 视图',
     `换行                 当前推荐 ${support.recommended.join(' / ')}；${support.note}`,
     '/remember <内容>      保存一条用户记忆，支持 --type/--tag/--pin',
@@ -1621,6 +1651,33 @@ export function formatFilePermissionPrompt(request: FilePermissionRequest): stri
 }
 
 export function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
+  return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
+}
+
+export function formatExecutionPermissionPrompt(request: ExecutionPermissionRequest): string {
+  return formatPermissionPrompt({
+    title: chalk.yellow(`权限确认：${request.toolName}`),
+    subtitle: '命令将在 workspace 内执行。',
+    fields: [
+      { label: '工具', value: request.toolName },
+      { label: 'cwd', value: request.cwd },
+      { label: '说明', value: request.description },
+      { label: '风险', value: request.risk },
+      { label: '原因', value: request.reason },
+      { label: '命令', value: request.command }
+    ],
+    question: '是否允许这次执行？',
+    actions: [
+      { key: 'y', label: '允许本次' },
+      { key: 'n', label: '拒绝' }
+    ],
+    footer: [
+      '只读低风险 Bash 会自动执行；高风险 Bash 和 Python 只支持本次确认。'
+    ]
+  });
+}
+
+export function parseExecutionPermissionAnswer(answer: string): 'allow' | 'deny' {
   return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
 }
 

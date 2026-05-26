@@ -14,6 +14,7 @@ import { Logger } from './logging/logger.js';
 import { TranscriptService, type TranscriptConversationSnapshot } from './transcript/transcriptService.js';
 import { DreamService } from './dream/dreamService.js';
 import { FileToolRunner, getFileToolPrompt, type FilePermissionAsker } from './files/fileTools.js';
+import { ExecutionToolRunner, getExecutionToolPrompt, type ExecutionPermissionAsker } from './tools/executionTools.js';
 import { formatWebContext, TavilyClient } from './web/tavilyClient.js';
 import { planWebUseWithModel } from './web/webPlanner.js';
 import { getWebToolPrompt, WebToolRunner } from './web/webTools.js';
@@ -69,6 +70,7 @@ export class NeoAgent {
   private readonly conversationHistory: ConversationHistory;
   private readonly webToolRunner: WebToolRunner;
   private readonly fileToolRunner: FileToolRunner;
+  private readonly executionToolRunner: ExecutionToolRunner;
   private readonly skillToolRunner: SkillToolRunner;
   private readonly toolSearchRunner: ToolSearchRunner;
   private readonly mcpToolRunner: McpToolRunner;
@@ -102,11 +104,12 @@ export class NeoAgent {
       additionalReadDirs: config.files.additionalReadDirs,
       additionalWriteDirs: config.files.additionalWriteDirs
     });
+    this.executionToolRunner = new ExecutionToolRunner(config, process.cwd(), undefined, this.hooks);
     this.skillToolRunner = new SkillToolRunner(this.skills, process.cwd());
     this.webToolRunner = new WebToolRunner(config, this.web);
     this.capabilityToolRunner = new CapabilityToolRunner(() => this.capabilitySnapshot());
     this.taskAssessmentToolRunner = new TaskAssessmentToolRunner(() => this.capabilitySnapshot());
-    this.toolRunners = [this.capabilityToolRunner, this.taskAssessmentToolRunner, this.skillToolRunner, this.fileToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner];
+    this.toolRunners = [this.capabilityToolRunner, this.taskAssessmentToolRunner, this.skillToolRunner, this.fileToolRunner, this.executionToolRunner, this.webToolRunner, this.toolSearchRunner, this.mcpToolRunner, this.mcpResourceRunner];
     this.queryEngine = new QueryEngine(this.models, this.toolRunners, this.logger, {
       maxToolRounds: config.web.maxToolRounds,
       toolResultBudget: config.toolResults,
@@ -242,6 +245,10 @@ export class NeoAgent {
     this.fileToolRunner.setPermissionAsker(permissionAsker);
   }
 
+  setExecutionPermissionAsker(permissionAsker: ExecutionPermissionAsker | undefined): void {
+    this.executionToolRunner.setPermissionAsker(permissionAsker);
+  }
+
   setToolEventHandler(handler: ((event: ToolProgressEvent) => void) | undefined): void {
     this.toolEventHandler = handler;
   }
@@ -264,6 +271,7 @@ export class NeoAgent {
       connectedMcpServers: this.mcp.connectedServerNames(),
       runtimeTools: this.queryEngine.toolDefinitions(),
       fileWriteConfirmationAvailable: this.fileToolRunner.hasPermissionAsker(),
+      executionConfirmationAvailable: this.executionToolRunner.hasPermissionAsker(),
       hookRecentEventCount: this.hooks.listRecent().length
     });
   }
@@ -391,9 +399,16 @@ export class NeoAgent {
           historyChars: historyStats.charCount
         }
       });
-      const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs } = useToolLoop
+      const { text, webToolCalls, mcpToolCalls, fileToolCalls, executionToolCalls, skillToolCalls, toolEvents, toolPairs } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
-        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal, stream: options.onContentDelta ? { onContentDelta: options.onContentDelta } : undefined }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
+        : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal, stream: options.onContentDelta ? { onContentDelta: options.onContentDelta } : undefined }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], executionToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
+      const safeWebToolCalls = webToolCalls ?? [];
+      const safeMcpToolCalls = mcpToolCalls ?? [];
+      const safeFileToolCalls = fileToolCalls ?? [];
+      const safeExecutionToolCalls = executionToolCalls ?? [];
+      const safeSkillToolCalls = skillToolCalls ?? [];
+      const safeToolEvents = toolEvents ?? [];
+      const safeToolPairs = toolPairs ?? [];
       await this.transcripts.append('assistant', text, {
         modelKind: decision.modelKind,
         model: this.config.models[decision.modelKind].model,
@@ -411,7 +426,7 @@ export class NeoAgent {
           extractResults: webContext.extracts?.results.length ?? 0,
           searchedAt: webContext.searchedAt
         } : undefined,
-        webToolCalls: webToolCalls.map(call => ({
+        webToolCalls: safeWebToolCalls.map(call => ({
           name: call.name,
           queryChars: call.query?.length,
           urlDomain: call.url ? safeUrlDomain(call.url) : undefined,
@@ -419,14 +434,14 @@ export class NeoAgent {
           failedCount: call.failedCount,
           searchedAt: call.searchedAt
         })),
-        mcpToolCalls: mcpToolCalls.map(call => ({
+        mcpToolCalls: safeMcpToolCalls.map(call => ({
           name: call.name,
           serverName: call.serverName,
           toolName: call.toolName,
           resultChars: call.resultChars,
           durationMs: call.durationMs
         })),
-        fileToolCalls: fileToolCalls.map(call => ({
+        fileToolCalls: safeFileToolCalls.map(call => ({
           name: call.name,
           path: call.path,
           operation: call.operation,
@@ -435,7 +450,17 @@ export class NeoAgent {
           resultChars: call.resultChars,
           durationMs: call.durationMs
         })),
-        skillToolCalls: skillToolCalls.map(call => ({
+        executionToolCalls: safeExecutionToolCalls.map(call => ({
+          name: call.name,
+          commandChars: call.command?.length,
+          cwd: call.cwd,
+          exitCode: call.exitCode,
+          stdoutChars: call.stdoutChars,
+          stderrChars: call.stderrChars,
+          durationMs: call.durationMs,
+          timedOut: call.timedOut
+        })),
+        skillToolCalls: safeSkillToolCalls.map(call => ({
           name: call.name,
           skillName: call.skillName,
           scope: call.scope,
@@ -444,21 +469,21 @@ export class NeoAgent {
           resultChars: call.resultChars,
           durationMs: call.durationMs
         })),
-        toolEvents: toolEvents.map(event => ({
+        toolEvents: safeToolEvents.map(event => ({
           phase: event.phase,
           name: event.name,
           round: event.round,
           summary: event.summary,
           metadata: event.metadata
         })),
-        toolPairs
+        toolPairs: safeToolPairs
       });
       await this.memory.remember(`User: ${input}\nAssistant: ${text.slice(0, 1200)}`, {
         category: 'session_summary',
         tags: ['session'],
         origin: 'session'
       });
-      const skillSuggestion = skillToolCalls.some(call => call.name === 'InstallSkillPackage')
+      const skillSuggestion = safeSkillToolCalls.some(call => call.name === 'InstallSkillPackage')
         ? undefined
         : await this.skills.maybeSuggestSkill(input, text).catch(error => {
           this.logger.error('skill.suggest.error', error);
@@ -478,7 +503,7 @@ export class NeoAgent {
           workflowSteps: skillSuggestion.workflow.length
         });
       }
-      const skillImprovementSuggestion = await this.skills.maybeSuggestSkillImprovement(input, text, skillToolCalls).catch(error => {
+      const skillImprovementSuggestion = await this.skills.maybeSuggestSkillImprovement(input, text, safeSkillToolCalls).catch(error => {
         this.logger.error('skill.improvement.suggest.error', error);
         return undefined;
       });
@@ -551,12 +576,13 @@ export class NeoAgent {
         memories,
         skills: matchedSkills,
         webContext,
-        webToolCalls,
-        mcpToolCalls,
-        fileToolCalls,
-        skillToolCalls,
-        toolEvents,
-        toolPairs,
+        webToolCalls: safeWebToolCalls,
+        mcpToolCalls: safeMcpToolCalls,
+        fileToolCalls: safeFileToolCalls,
+        executionToolCalls: safeExecutionToolCalls,
+        skillToolCalls: safeSkillToolCalls,
+        toolEvents: safeToolEvents,
+        toolPairs: safeToolPairs,
         skillSuggestion,
         skillImprovementSuggestion
       };
@@ -600,6 +626,7 @@ export class NeoAgent {
       getTaskAssessmentPrompt(),
       getSkillToolPrompt(enabled.skills),
       enabled.file ? getFileToolPrompt() : '',
+      enabled.file ? getExecutionToolPrompt() : '',
       enabled.web ? getWebToolPrompt() : '',
       enabled.mcp ? getToolSearchPrompt() : '',
       enabled.mcp ? getMcpToolPrompt() : '',

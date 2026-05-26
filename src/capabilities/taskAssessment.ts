@@ -312,11 +312,17 @@ function capabilityAvailability(id: string, snapshot: CapabilitySnapshot): { ava
       : { available: false, impact: '当前 WebSearch/WebFetch 未启用或缺少 API key。', workaround: '请用户提供资料链接/内容，或配置 Web API key 后重试。' };
   }
   if (id === 'shell') {
-    return {
-      available: false,
-      impact: '当前 neo 没有通用 shell/python/git/npm 执行工具。',
-      workaround: '输出需要用户执行的命令，或由用户提供命令输出后继续分析。'
-    };
+    if (snapshot.execution.tools.length === 0) {
+      return { available: false, impact: '当前 neo 没有 Bash/Python 执行工具。', workaround: '输出需要用户执行的命令，或由用户提供命令输出后继续分析。' };
+    }
+    if (!snapshot.execution.confirmationAvailable) {
+      return {
+        available: false,
+        impact: 'Bash/Python 工具可用，但当前入口没有执行确认回调；只能自动执行只读低风险 Bash，高风险 Bash 和 Python 会被拒绝。',
+        workaround: '在交互式 REPL/TUI 中执行需要确认的命令，或让用户手动运行命令并回传输出。'
+      };
+    }
+    return { available: true, impact: '', constraint: `Bash/Python 在 workspace (${snapshot.execution.cwd}) 内执行；只读 Bash 自动允许，高风险 Bash 和 Python 需要确认。` };
   }
   if (id === 'external_api') {
     return snapshot.mcp.visibleTools.length > 0
@@ -360,6 +366,7 @@ function inferConfidence(task: string, required: RequiredCapability[]): TaskAsse
 function buildUserInputNeeded(required: RequiredCapability[], missing: MissingCapability[], snapshot: CapabilitySnapshot): string[] {
   const needs: string[] = [];
   if (missing.some(item => item.id === 'shell')) needs.push('需要用户执行测试/构建/命令并把输出贴回来，或接受不运行命令的静态分析结果。');
+  if (required.some(item => item.id === 'shell') && snapshot.execution.tools.length > 0 && !snapshot.execution.confirmationAvailable) needs.push('高风险 Bash 和 Python 需要交互确认；当前入口没有确认回调时只能自动执行只读 Bash。');
   if (missing.some(item => item.id === 'web_search')) needs.push('需要用户提供相关网页、文档内容，或配置 Web API key。');
   if (missing.some(item => item.id === 'external_api')) needs.push('需要用户配置对应 MCP server/API 工具，或手动完成外部系统动作。');
   if (missing.some(item => item.id === 'file_write') && snapshot.files.canWrite) needs.push(`如果必须写入 workspace (${snapshot.files.workspaceDir}) 之外的位置，需要进入支持交互确认的 REPL，或允许 neo 只输出补丁。`);

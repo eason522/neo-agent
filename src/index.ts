@@ -5,9 +5,11 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { initConfigFile, loadConfig } from './config.js';
 import { setConfigValue, showConfig } from './configCommands.js';
+import { resetWorkspace, setWorkspace, showWorkspace } from './workspace/workspaceCommands.js';
 import { NeoAgent } from './neoAgent.js';
 import { extractImageAttachments } from './input/attachments.js';
 import { startRepl } from './terminal/repl.js';
+import { startTui } from './tui/startTui.js';
 import { Logger } from './logging/logger.js';
 import { TranscriptService, tailFile } from './transcript/transcriptService.js';
 import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
@@ -54,6 +56,50 @@ program
 const configCommand = program
   .command('config')
   .description('查看和修改 neo-agent 配置');
+
+const workspaceCommand = program
+  .command('workspace')
+  .description('查看和修改 neo workspace');
+
+workspaceCommand
+  .command('show')
+  .description('显示当前 workspace 真实路径、读写权限和 trash 路径')
+  .action(async () => {
+    const info = await showWorkspace();
+    console.log(`configured: ${info.configuredDir}`);
+    console.log(`path: ${info.path}`);
+    console.log(`trash: ${info.trashPath}`);
+    console.log(`readable: ${info.readable}`);
+    console.log(`writable: ${info.writable}`);
+    console.log(`source: ${info.source}`);
+  });
+
+workspaceCommand
+  .command('set')
+  .description('设置 workspace 路径')
+  .argument('<path>', 'workspace 路径')
+  .option('--scope <user|project>', '写入位置，默认 project', 'project')
+  .action(async (workspacePath: string, options: { scope: string }) => {
+    const scope = parseConfigScope(options.scope);
+    const result = await setWorkspace({ path: workspacePath, scope });
+    console.log(chalk.green('已更新 workspace'));
+    console.log(chalk.gray(`scope=${result.scope}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(result.workspace.path);
+  });
+
+workspaceCommand
+  .command('reset')
+  .description('重置 workspace 配置，恢复默认 workspace/')
+  .option('--scope <user|project>', '重置位置，默认 project', 'project')
+  .action(async (options: { scope: string }) => {
+    const scope = parseConfigScope(options.scope);
+    const result = await resetWorkspace({ scope });
+    console.log(chalk.green('已重置 workspace'));
+    console.log(chalk.gray(`scope=${result.scope}`));
+    console.log(chalk.gray(result.filePath));
+    console.log(result.workspace.path);
+  });
 
 configCommand
   .command('show')
@@ -293,6 +339,75 @@ const dreamCommand = program
       console.log(`读取会话：${result.reviewedSessions}，读取记忆：${result.reviewedMemories}`);
       console.log(`新增/更新建议：${result.upserts.length}，归档建议：${result.archives.length}，灵感：${result.insights.length}`);
       if (result.reportPath) console.log(chalk.gray(result.reportPath));
+    } finally {
+      await agent.close();
+    }
+  });
+
+const openVikingCommand = program
+  .command('openviking')
+  .description('诊断和同步 OpenViking 主记忆存储');
+
+openVikingCommand
+  .command('doctor')
+  .description('检查 OpenViking /mcp 连接和 pending queue')
+  .action(async () => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const health = await agent.memory.openVikingHealth();
+      const pending = await agent.memory.openVikingPendingCount();
+      console.log(`${health.ok ? chalk.green('ok') : chalk.yellow('offline')} mode=${health.mode}`);
+      console.log(health.message);
+      console.log(`pending=${pending}`);
+      if (!health.ok) process.exitCode = 1;
+    } finally {
+      await agent.close();
+    }
+  });
+
+openVikingCommand
+  .command('sync-pending')
+  .description('同步 OpenViking 离线期间排队的记忆写入')
+  .action(async () => {
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const result = await agent.memory.syncOpenVikingPending();
+      console.log(`attempted=${result.attempted} synced=${result.synced} remaining=${result.remaining}`);
+      if (result.remaining > 0) process.exitCode = 1;
+    } finally {
+      await agent.close();
+    }
+  });
+
+openVikingCommand
+  .command('import-local')
+  .description('把本地 JSON 记忆导入 OpenViking')
+  .option('--dry-run', '只预览，不写入')
+  .option('--apply', '执行导入')
+  .action(async (options: { dryRun?: boolean; apply?: boolean }) => {
+    if (!options.dryRun && !options.apply) throw new Error('请指定 --dry-run 或 --apply。');
+    const config = await loadConfig();
+    const agent = new NeoAgent(config);
+    await agent.initialize({ scheduledDreams: false });
+    try {
+      const records = await agent.memory.local.list({ limit: 10_000, includeArchived: true });
+      console.log(`local memories=${records.length}`);
+      if (options.dryRun) {
+        for (const record of records.slice(0, 20)) console.log(`${record.category} ${record.uri} ${record.content.slice(0, 80).replace(/\s+/g, ' ')}`);
+        if (records.length > 20) console.log(chalk.gray(`... ${records.length - 20} more`));
+        return;
+      }
+      let pending = 0;
+      for (const record of records) {
+        const result = await agent.memory.openViking.store(record);
+        if (result.pending) pending += 1;
+      }
+      console.log(`imported=${records.length - pending} pending=${pending}`);
+      if (pending > 0) process.exitCode = 1;
     } finally {
       await agent.close();
     }
@@ -965,11 +1080,13 @@ program
   .command('chat')
   .description('启动终端对话')
   .option('--resume [session]', '从最近或指定 transcript 恢复上下文')
-  .action(async (options: { resume?: string | boolean }) => {
+  .option('--legacy', '使用 legacy readline REPL')
+  .action(async (options: { resume?: string | boolean; legacy?: boolean }) => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);
     await agent.initialize({ resumeSessionId: normalizeResumeOption(options.resume ?? program.opts<{ resume?: string | boolean }>().resume) });
-    await startRepl(agent);
+    if (options.legacy || process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent);
+    else await startTui(agent);
   });
 
 program
@@ -977,7 +1094,8 @@ program
     const config = await loadConfig();
     const agent = new NeoAgent(config);
     await agent.initialize({ resumeSessionId: normalizeResumeOption(program.opts<{ resume?: string | boolean }>().resume) });
-    await startRepl(agent);
+    if (process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent);
+    else await startTui(agent);
   });
 
 program.parseAsync(process.argv).catch(error => {
