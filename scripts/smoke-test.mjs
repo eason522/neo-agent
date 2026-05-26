@@ -855,6 +855,64 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
   await rm(dreamHome, { recursive: true, force: true });
 });
 
+test('NeoAgent 会上报路由、上下文和模型阶段状态', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const { NeoAgent } = await import(pathToFileURL(path.join(root, 'dist', 'neoAgent.js')).href);
+  const agentHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-status-events-'));
+  const config = defaultConfig();
+  config.homeDir = agentHome;
+  config.web.apiKey = 'test-key';
+  config.logging.console = false;
+  const agent = new NeoAgent(config);
+  const memoryHit = {
+    id: 'mem-status',
+    uri: 'viking://user/memories/status',
+    category: 'workflow',
+    content: '状态测试记忆',
+    tags: ['status'],
+    origin: 'manual',
+    pinned: false,
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    score: 1,
+    source: 'local'
+  };
+  agent.memory.search = async () => [memoryHit];
+  agent.memory.remember = async () => memoryHit;
+  agent.mcp.listTools = async () => [];
+  agent.vision.analyze = async () => undefined;
+  agent.queryEngine.run = async () => ({
+    text: 'ok',
+    webToolCalls: [],
+    mcpToolCalls: [],
+    fileToolCalls: [],
+    skillToolCalls: [],
+    toolEvents: [],
+    toolPairs: []
+  });
+  agent.skills.maybeSuggestSkill = async () => undefined;
+  agent.skills.maybeSuggestSkillImprovement = async () => undefined;
+  const statuses = [];
+  try {
+    const response = await agent.ask('简短状态测试', [], {
+      onStatus: event => statuses.push(event)
+    });
+    if (response.routerReason !== 'short text-only task') throw new Error(`应返回路由原因：${JSON.stringify(response)}`);
+    if (response.memories.length !== 1) throw new Error(`应返回记忆命中：${JSON.stringify(response.memories)}`);
+    const stages = statuses.map(event => event.stage).join(',');
+    assertIncludes(stages, 'context');
+    assertIncludes(stages, 'routing');
+    assertIncludes(stages, 'model');
+    assertIncludes(stages, 'done');
+    if (!statuses.some(event => event.message.includes('记忆 1'))) throw new Error(`上下文状态应包含记忆命中数：${JSON.stringify(statuses)}`);
+    if (!statuses.some(event => event.message.includes('short text-only task'))) throw new Error(`路由状态应包含原因：${JSON.stringify(statuses)}`);
+  } finally {
+    await agent.close();
+    await rm(agentHome, { recursive: true, force: true });
+  }
+});
+
 test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {
   const { summarizeToolArguments, summarizeToolError, summarizeToolResult } = await import(pathToFileURL(path.join(root, 'dist', 'tools', 'toolLog.js')).href);
   const args = summarizeToolArguments({

@@ -5,7 +5,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
-import type { MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
+import type { AgentStatusEvent, MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
 import type { FilePermissionRequest } from '../files/fileTools.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
@@ -18,8 +18,14 @@ type ReplState = {
   lastTurn?: {
     inputChars: number;
     modelKind: string;
+    routerReason?: string;
+    memoryHits: number;
+    matchedSkills: number;
+    hasVisionContext: boolean;
+    hasWebContext: boolean;
     durationMs: number;
     toolEvents: ToolProgressEvent[];
+    statusEvents: AgentStatusEvent[];
     webToolCalls: number;
     mcpToolCalls: number;
     fileToolCalls: number;
@@ -551,8 +557,13 @@ async function runAgentTurn(
       output.write(chalk.gray(`vision: 正在预分析 ${attachments.length} 张图片，较大的本地图片可能需要几十秒；Ctrl-C 可立即取消。\n`));
     }
     let streamed = false;
+    const statusEvents: AgentStatusEvent[] = [];
     const response = await agent.ask(text, attachments, {
       signal: turnController.signal,
+      onStatus: event => {
+        statusEvents.push(event);
+        output.write(`${formatAgentStatusEvent(event)}\n`);
+      },
       onContentDelta: delta => {
         if (!streamed) {
           output.write(chalk.cyan('neo:stream '));
@@ -565,8 +576,14 @@ async function runAgentTurn(
     state.lastTurn = {
       inputChars: text.length,
       modelKind: response.modelKind,
+      routerReason: response.routerReason,
+      memoryHits: response.memories.length,
+      matchedSkills: response.skills.length,
+      hasVisionContext: Boolean(response.visionContext),
+      hasWebContext: Boolean(response.webContext),
       durationMs,
       toolEvents: response.toolEvents ?? [],
+      statusEvents,
       webToolCalls: response.webToolCalls?.length ?? 0,
       mcpToolCalls: response.mcpToolCalls?.length ?? 0,
       fileToolCalls: response.fileToolCalls?.length ?? 0,
@@ -736,6 +753,8 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   const toolCount = turn.toolEvents.filter(event => event.phase === 'start').length;
   const parts = [
     `模型=${turn.modelKind}`,
+    `记忆=${turn.memoryHits}`,
+    `skills=${turn.matchedSkills}`,
     `工具=${toolCount}`,
     `耗时=${formatElapsedTime(turn.durationMs)}`
   ];
@@ -745,7 +764,10 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
     turn.mcpToolCalls > 0 ? `mcp=${turn.mcpToolCalls}` : '',
     turn.skillToolCalls > 0 ? `skill=${turn.skillToolCalls}` : ''
   ].filter(Boolean);
+  if (turn.hasVisionContext) detail.push('vision');
+  if (turn.hasWebContext) detail.push('webContext');
   if (detail.length > 0) parts.push(detail.join(','));
+  if (turn.routerReason) parts.push(`route="${turn.routerReason}"`);
   return chalk.gray(`status ${parts.join(' ')}`);
 }
 
@@ -789,11 +811,18 @@ function formatDebugView(agent: NeoAgent, state: ReplState): string {
   const events = turn.toolEvents.length > 0
     ? turn.toolEvents.map(event => `- ${event.phase} round=${event.round + 1} ${event.name}: ${event.summary}`).join('\n')
     : chalk.gray('- 无工具事件');
+  const statuses = turn.statusEvents.length > 0
+    ? turn.statusEvents.map(event => `- ${event.stage}: ${event.message}`).join('\n')
+    : chalk.gray('- 无状态事件');
   return [
     chalk.gray('debug'),
-    chalk.gray(`inputChars=${turn.inputChars} durationMs=${turn.durationMs}`),
+    chalk.gray(`inputChars=${turn.inputChars} durationMs=${turn.durationMs} route=${turn.routerReason ?? 'unknown'}`),
+    chalk.gray(`memoryHits=${turn.memoryHits} matchedSkills=${turn.matchedSkills} vision=${turn.hasVisionContext} webContext=${turn.hasWebContext}`),
     chalk.gray(`log=${agent.logger.filePath}`),
     chalk.gray(`transcript=${agent.transcripts.filePath}`),
+    chalk.gray('status events:'),
+    statuses,
+    chalk.gray('tool events:'),
     events
   ].join('\n');
 }
@@ -1536,6 +1565,19 @@ function formatToolProgressEvent(event: ToolProgressEvent): string {
         : chalk.red('tool!');
   const round = event.phase === 'max_rounds' ? '上限' : `round ${event.round + 1}`;
   return `${prefix} ${chalk.gray(round)} ${event.summary}`;
+}
+
+function formatAgentStatusEvent(event: AgentStatusEvent): string {
+  const prefix = event.stage === 'routing'
+    ? chalk.cyan('route>')
+    : event.stage === 'model'
+      ? chalk.cyan('model>')
+      : event.stage === 'compact'
+        ? chalk.yellow('compact>')
+        : event.stage === 'done'
+          ? chalk.green('done>')
+          : chalk.gray('ctx>');
+  return `${prefix} ${chalk.gray(event.stage)} ${event.message}`;
 }
 
 function parseRememberArgs(arg: string): { content: string; category: MemoryCategory; tags: string[]; pinned: boolean } {

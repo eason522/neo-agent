@@ -1,4 +1,4 @@
-import type { AgentResponse, AppConfig, Attachment, ChatMessage, Skill, ToolCallRecord, ToolProgressEvent, WebContext } from './types.js';
+import type { AgentResponse, AgentStatusEvent, AppConfig, Attachment, ChatMessage, Skill, ToolCallRecord, ToolProgressEvent, WebContext } from './types.js';
 import { ModelRegistry } from './models/modelRegistry.js';
 import { ModelRouter } from './router.js';
 import { VisionAnalyzer } from './vision/visionAnalyzer.js';
@@ -33,6 +33,7 @@ import type { ToolRunner } from './tools/tool.js';
 export type AskOptions = {
   signal?: AbortSignal;
   onContentDelta?: (delta: string) => void;
+  onStatus?: (event: AgentStatusEvent) => void;
 };
 
 export type NeoAgentOptions = {
@@ -241,6 +242,14 @@ export class NeoAgent {
       }))
     });
     const useWebToolLoop = this.shouldUseWebToolLoop();
+    emitAgentStatus(options.onStatus, {
+      stage: 'context',
+      message: '加载记忆、skills、MCP、视觉和 Web 上下文',
+      metadata: {
+        attachmentCount: attachments.length,
+        webToolLoop: useWebToolLoop
+      }
+    });
     const [memories, allSkills, mcpTools, visionContext, soul, webContext] = await Promise.all([
       this.memory.search(input),
       this.skills.loadSkills(),
@@ -250,6 +259,17 @@ export class NeoAgent {
       useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);
     const matchedSkills = this.skills.matchLoaded(input, allSkills);
+    emitAgentStatus(options.onStatus, {
+      stage: 'context',
+      message: `上下文已就绪：记忆 ${memories.length}，skills ${matchedSkills.length}，MCP tools ${mcpTools.length}`,
+      metadata: {
+        memoryHits: memories.length,
+        matchedSkills: matchedSkills.length,
+        mcpTools: mcpTools.length,
+        hasVisionContext: Boolean(visionContext),
+        hasWebContext: Boolean(webContext)
+      }
+    });
     const skillChanges = this.skills.lastChangeSummary();
     if (skillChanges.changed) {
       this.logger.info('skill.reload', {
@@ -261,6 +281,14 @@ export class NeoAgent {
     }
 
     const decision = this.router.decide(input, attachments);
+    emitAgentStatus(options.onStatus, {
+      stage: 'routing',
+      message: `路由到 ${decision.modelKind}：${decision.reason}`,
+      metadata: {
+        modelKind: decision.modelKind,
+        reason: decision.reason
+      }
+    });
     const hasMcpServers = this.mcp.connectedServerNames().length > 0;
     this.logger.info('router.decision', {
       modelKind: decision.modelKind,
@@ -298,6 +326,16 @@ export class NeoAgent {
     const historyStats = this.conversationHistory.stats();
 
     try {
+      emitAgentStatus(options.onStatus, {
+        stage: 'model',
+        message: useToolLoop ? `开始模型/tool loop：${decision.modelKind}` : `开始模型请求：${decision.modelKind}`,
+        metadata: {
+          modelKind: decision.modelKind,
+          toolLoop: useToolLoop,
+          historyMessages: messages.length,
+          historyChars: historyStats.charCount
+        }
+      });
       const { text, webToolCalls, mcpToolCalls, fileToolCalls, skillToolCalls, toolEvents, toolPairs } = useToolLoop
         ? await this.queryEngine.run(decision.modelKind, messages, { signal: options.signal })
         : { text: await this.models.get(decision.modelKind).chat({ messages, signal: options.signal, stream: options.onContentDelta ? { onContentDelta: options.onContentDelta } : undefined }), webToolCalls: [], mcpToolCalls: [], fileToolCalls: [], skillToolCalls: [], toolEvents: [], toolPairs: [] };
@@ -404,6 +442,11 @@ export class NeoAgent {
       }
       const compactResult = await this.conversationHistory.append(input, text, this.models.get('small'));
       if (compactResult.compacted) {
+        emitAgentStatus(options.onStatus, {
+          stage: 'compact',
+          message: `会话上下文已自动压缩：${compactResult.beforeChars} -> ${compactResult.afterChars} 字符`,
+          metadata: compactResult
+        });
         await this.transcripts.append('compact', '自动压缩会话上下文', {
           source: compactResult.source,
           beforeChars: compactResult.beforeChars,
@@ -419,6 +462,16 @@ export class NeoAgent {
         this.logger.debug('conversation.compact.skip', compactResult);
       }
 
+      emitAgentStatus(options.onStatus, {
+        stage: 'done',
+        message: `完成：${decision.modelKind}，工具事件 ${toolEvents.length}`,
+        metadata: {
+          modelKind: decision.modelKind,
+          outputChars: text.length,
+          toolEvents: toolEvents.length,
+          durationMs: Date.now() - start
+        }
+      });
       this.logger.info('agent.ask.success', {
         modelKind: decision.modelKind,
         outputChars: text.length,
@@ -438,6 +491,7 @@ export class NeoAgent {
       return {
         text,
         modelKind: decision.modelKind,
+        routerReason: decision.reason,
         visionContext,
         memories,
         skills: matchedSkills,
@@ -583,6 +637,10 @@ export class NeoAgent {
     }
   }
 
+}
+
+function emitAgentStatus(handler: ((event: AgentStatusEvent) => void) | undefined, event: AgentStatusEvent): void {
+  handler?.(event);
 }
 
 function safeUrlDomain(input: string): string | undefined {

@@ -306,6 +306,7 @@ export type SkillImprovementSuggestion = {
 export type AgentResponse = {
   text: string;
   modelKind: TextModelKind;
+  routerReason?: string;
   visionContext?: string;
   webContext?: WebContext;
   webToolCalls?: WebToolCallRecord[];
@@ -318,6 +319,12 @@ export type AgentResponse = {
   skillImprovementSuggestion?: SkillImprovementSuggestion;
   memories: MemoryHit[];
   skills: Skill[];
+};
+
+export type AgentStatusEvent = {
+  stage: 'context' | 'routing' | 'model' | 'compact' | 'done';
+  message: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type WebToolCallRecord = {

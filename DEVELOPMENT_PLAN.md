@@ -20,7 +20,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 - 分支：`main`
 - 远端：开发前检查为 `main...origin/main`
-- 最近提交：`38bb5b7 feat: require approval for project mcp servers`
+- 最近提交：`112dccb feat: add web fetch preflight checks`
 - 校验：2026-05-26 已运行 `npm run typecheck` 和 `npm run smoke` 通过
 
 产品状态：
@@ -71,7 +71,8 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 已交付：项目 `.mcp.json` 中的 server 默认只列出不加载；审批状态保存在用户配置的 `mcp.projectApprovals`，按项目绝对路径绑定，避免仓库配置自我授权；新增 `neo mcp approve/unapprove`；`neo mcp list/add` 会展示 pending/approved 和启用建议；MCP 权限拒绝原因和 REPL 确认提示补持久允许命令。
 - [x] Web 工具补更完整站点限制策略、重定向/下载预检和更细粒度进度。
   - 已交付：URL 策略补 2000 字符长度限制、用户名/密码拒绝、单标签非公开主机拒绝；WebFetch/Tavily extract/map/crawl 前新增 HEAD 预检，阻止跨域或降级重定向，允许同域/www 重定向，拒绝超大 `content-length`，对二进制内容、401/403 和异常状态写入 warning；Web prompt 和 map/extract/crawl 输出同步预检提示。
-- [ ] REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行。
+- [x] REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行。
+  - 已交付：`NeoAgent.ask` 新增状态事件回调，覆盖 context/routing/model/compact/done 阶段；REPL 运行时输出上下文、路由和模型阶段；每轮 status/debug  now 包含路由原因、记忆命中数、匹配 skill 数、vision/web context、工具事件和状态事件。
 - [ ] 增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见。
 
 ### P2：暂缓，除非用户明确要求
@@ -112,19 +113,19 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行**。
+建议下一步做 **增加手动 `/compact`，并让 compact/resume 的状态在 REPL 中可见**。
 
 理由：
 
-- 权限、tool result 预算、doctor、日志、文件工具、MCP 项目级信任边界和 Web 预检已经收口；下一步应让终端运行状态更透明。
-- 用户刚遇到过“thinking 半天没反应”的真实问题，REPL 状态行需要更早暴露当前阶段、路由原因、记忆命中和工具进度。
-- 这比继续扩展新工具更符合“稳定、可恢复、可调试”的主线。
+- REPL 现在能显示上下文、路由、模型和工具阶段；下一步应把上下文压缩从“后台自动发生”变成用户可主动触发、可查看状态。
+- QueryEngine tool result 预算和 transcript resume 已经补齐，手动 compact 是上下文可恢复链路里剩下的直接用户入口。
+- 这比继续扩展新工具更符合“上下文与工具结果可恢复”的主线。
 
 建议拆成三个小提交：
 
-1. 对照 CC-Source Message/Status/Progress 渲染，梳理 neo 当前 REPL 状态缺口。
-2. 增加路由原因、记忆命中数、视觉/Web/工具阶段状态和更清晰错误恢复提示。
-3. 补 smoke 覆盖非模型命令、状态输出、取消和工具事件摘要。
+1. 对照 CC-Source compact/microcompact/session storage，梳理 neo 当前自动 compact 和 resume 状态缺口。
+2. 增加 `/compact` 命令、compact 状态输出和 resume 后 compact boundary 可见提示。
+3. 补 smoke 覆盖手动 compact、compact transcript 记录和 `/status` 展示。
 
 ## 未决问题
 

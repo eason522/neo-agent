@@ -818,6 +818,24 @@ neo 使用 Tavily 作为 WebSearch/WebFetch 后端，不直接下载网页正文
 
 验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过；smoke 覆盖 URL 凭据/长度/单标签主机拒绝、跨域重定向拒绝、同域重定向跟随、二进制 content-type warning、超大 content-length 拒绝，以及 Tavily extract/robots/budget 与 preflight 的组合。
 
+### 2026-05-26：REPL 路由、上下文和工具阶段状态第一阶段
+
+继续推进 P1“REPL 补更丰富消息渲染、记忆命中数、路由原因和更接近 CC-Source 的状态行”。先对照 CC-Source：
+
+- `tasks/LocalAgentTask/LocalAgentTask.tsx` 和 `tasks/LocalMainSessionTask.ts`：用 progress tracker 记录 token、工具调用数和最近活动，状态展示不只靠最终结果。
+- `tools/WebSearchTool/UI.tsx` 和 `tools/WebFetchTool/UI.tsx`：工具运行中会展示 Searching/Fetching 等轻量进度，完成后显示结果数量、耗时或字节数。
+- `constants/prompts.ts`：要求长任务在关键节点向用户做简短状态更新，不能假设用户能看见内部工具调用和 thinking。
+
+neo 当前已有 `toolEvents`、`/debug last` 和最终 status line，但用户仍可能只看到 `thinking...`。本轮不引入 Ink TUI，而是在现有 readline REPL 上增加轻量状态流：
+
+- `NeoAgent.ask` 新增 `onStatus` 回调，按阶段发出 `context/routing/model/compact/done` 状态事件。
+- REPL 在运行中即时打印上下文加载、上下文就绪、路由原因、模型/tool loop 开始、自动 compact 和完成状态。
+- `AgentResponse` 返回 `routerReason`；每轮 `status` 行新增记忆命中数、匹配 skill 数、vision/web context 标记和路由原因。
+- `/debug last` 新增状态事件列表，并保留工具事件列表，便于区分“卡在上下文、视觉、模型还是工具”。
+- smoke 增加 `NeoAgent.ask` 状态事件覆盖，确认上下文、路由、模型和完成阶段都会上报，并且包含记忆命中数和路由原因。
+
+验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？
