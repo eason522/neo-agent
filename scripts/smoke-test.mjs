@@ -418,6 +418,41 @@ test('TavilyClient 会遵守 robots.txt 拒绝规则', async () => {
   }
 });
 
+test('TavilyClient 会按下载正文预算截断 extract 内容', async () => {
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const { TavilyClient } = await import(pathToFileURL(path.join(root, 'dist', 'web', 'tavilyClient.js')).href);
+  const config = defaultConfig();
+  config.web.apiKey = 'test-key';
+  config.web.apiBase = 'https://api.tavily.test';
+  config.web.timeoutMs = 1000;
+  config.web.maxDownloadChars = 40;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/robots.txt')) {
+      return new Response('User-agent: *\nAllow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    if (init?.body) {
+      return new Response(JSON.stringify({
+        results: [{ url: 'https://budget.example.com/long', raw_content: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' }],
+        failed_results: []
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('', { status: 404 });
+  };
+  try {
+    const client = new TavilyClient(config);
+    const response = await client.extract(['https://budget.example.com/long']);
+    if (response.results[0]?.content.length > 40 || !response.results[0]?.content.includes('[已截断]')) {
+      throw new Error(`extract 内容应受 maxDownloadChars 预算保护：${JSON.stringify(response.results)}`);
+    }
+    if (!response.warnings?.some(warning => warning.includes('web.maxDownloadChars=40'))) {
+      throw new Error(`extract 截断应写入 warning：${JSON.stringify(response.warnings)}`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Logger 脱敏覆盖密钥、URL query、MCP 参数和错误栈', async () => {
   const { Logger, redact, serializeError } = await import(pathToFileURL(path.join(root, 'dist', 'logging', 'logger.js')).href);
   const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);

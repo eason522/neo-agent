@@ -164,16 +164,17 @@ export class TavilyClient {
       extract_depth: options.depth ?? this.config.web.extractDepth
     }, options.signal);
     const payload = response.payload;
-    const results = dedupeExtractResults((payload.results ?? [])
+    const budgeted = applyContentBudget(dedupeExtractResults((payload.results ?? [])
       .map(item => ({
         url: item.url ?? '',
         content: item.raw_content ?? item.content ?? ''
       }))
-      .filter(item => item.url && item.content));
+      .filter(item => item.url && item.content)), this.config.web.maxDownloadChars);
+    const results = budgeted.results;
     const failedResults = (payload.failed_results ?? [])
       .map(item => ({ url: item.url ?? '', error: item.error, category: classifyFailureText(item.error ?? '') }))
       .filter(item => item.url);
-    const warnings = detectExtractWarnings(results, failedResults);
+    const warnings = [...detectExtractWarnings(results, failedResults), ...budgeted.warnings];
     this.logger?.info('web.extract.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
@@ -247,9 +248,10 @@ export class TavilyClient {
     });
     const response = await this.request<TavilyCrawlPayload>('crawl', body, options.signal);
     const payload = response.payload;
-    const results = dedupeExtractResults((payload.results ?? [])
+    const budgeted = applyContentBudget(dedupeExtractResults((payload.results ?? [])
       .map(item => ({ url: item.url ?? '', content: item.raw_content ?? item.content ?? '' }))
-      .filter(item => item.url && item.content));
+      .filter(item => item.url && item.content)), this.config.web.maxDownloadChars);
+    const results = budgeted.results;
     this.logger?.info('web.crawl.success', {
       provider: this.config.web.provider,
       durationMs: Date.now() - start,
@@ -259,6 +261,7 @@ export class TavilyClient {
     return {
       baseUrl: payload.base_url,
       results,
+      warnings: budgeted.warnings,
       cacheHit: response.cacheHit,
       responseTime: payload.response_time
     };
@@ -481,6 +484,10 @@ export function formatWebMap(response: WebMapResponse): string {
 export function formatWebCrawl(response: WebCrawlResponse, maxChars = 1200): string {
   const lines = [response.baseUrl ? `站点：${response.baseUrl}` : '站点 crawl：'];
   if (response.cacheHit) lines.push('缓存：命中');
+  if (response.warnings?.length) {
+    lines.push('提示：');
+    for (const warning of response.warnings) lines.push(`- ${warning}`);
+  }
   response.results.forEach((result, index) => {
     lines.push('', `${index + 1}. ${result.url}`);
     lines.push(truncate(result.content.trim(), maxChars));
@@ -580,6 +587,29 @@ function detectExtractWarnings(results: WebExtractResponse['results'], failedRes
     warnings.push('所有 URL 均读取失败，需要改用搜索、检查 URL，或说明无法获取页面正文。');
   }
   return warnings;
+}
+
+function applyContentBudget<T extends { url: string; content: string }>(results: T[], maxChars: number): { results: T[]; warnings: string[] } {
+  let remaining = Math.max(1, maxChars);
+  let truncatedCount = 0;
+  const output = results.map(result => {
+    if (remaining <= 0) {
+      truncatedCount += 1;
+      return { ...result, content: '' };
+    }
+    if (result.content.length <= remaining) {
+      remaining -= result.content.length;
+      return result;
+    }
+    truncatedCount += 1;
+    const content = `${result.content.slice(0, Math.max(0, remaining - 20)).trimEnd()}\n[已截断]`;
+    remaining = 0;
+    return { ...result, content };
+  }).filter(result => result.content.length > 0);
+  const warnings = truncatedCount > 0
+    ? [`网页正文超过 web.maxDownloadChars=${maxChars} 字符，已截断 ${truncatedCount} 个结果。`]
+    : [];
+  return { results: output, warnings };
 }
 
 function classifyHttpFailure(status: number, text: string): WebFailureCategory {

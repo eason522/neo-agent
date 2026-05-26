@@ -205,7 +205,8 @@ M4 后续硬化项：
 - [ ] MCP 继续补项目级 server 审批、权限建议、企业 allow/deny 策略和更完整权限 UI，参考 CC-Source MCP manager、permission rules、settings schema。
 - [x] Web 工具补缓存、来源去重、跨来源冲突标注和失败分类，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
 - [x] Web 工具补 robots.txt 限制第一阶段：`WebFetch` / extract / map / crawl 读取目标站点 robots.txt，命中 Disallow 时拒绝继续请求 Tavily，可用 `NEO_AGENT_WEB_RESPECT_ROBOTS_TXT=0` 显式关闭。
-- [ ] Web 工具继续补更完整站点限制策略、下载内容统一预算和更细粒度进度，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
+- [x] Web 工具补下载内容统一预算第一阶段：`extract/crawl` 按 `web.maxDownloadChars` / `NEO_AGENT_WEB_MAX_DOWNLOAD_CHARS` 限制返回正文总量，截断写入 warning。
+- [ ] Web 工具继续补更完整站点限制策略和更细粒度进度，参考 CC-Source WebSearch/WebFetch 的 prompt、preflight、blocklist 和 tool result 管理。
 - [x] Tool hooks 预留：PostToolUse、PermissionRequest、Stop/Notification 等 hook 点暂不实现执行，但 QueryEngine 结构要避免后续难以接入。
 
 ### M5：终端体验向 CC-Source 设计靠拢
@@ -642,6 +643,12 @@ DeepSeek V4 默认启用 thinking mode。真实验证发现，当模型在 think
 继续收敛 M4 Web 硬化项时，先补最小 robots 执行边界：`WebFetch`、`neo web extract`、map 和 crawl 在请求 Tavily 前读取目标站点 `robots.txt`，对 `User-agent: *` 或 `neo-agent` 命中的 `Disallow` 路径直接拒绝，不再把该 URL 交给 Tavily。默认开启，可用 `NEO_AGENT_WEB_RESPECT_ROBOTS_TXT=0` 关闭。
 
 这一步只解决执行期 robots 拒绝，不扩展成完整站点策略面板；后续仍保留下载预算、重定向预检和更细粒度进度等 Web 硬化项。
+
+### 2026-05-26：Web 下载正文预算第一阶段
+
+继续收敛 M4 Web 硬化项时，`extract` 和 `crawl` 返回正文现在会经过 `web.maxDownloadChars` 总量预算，默认 200000 字符，也可用 `NEO_AGENT_WEB_MAX_DOWNLOAD_CHARS` 调整。超过预算的正文会截断并写入 warning，避免大页面或 crawl 结果直接挤爆上下文。
+
+这一步只处理 Tavily 返回正文进入 neo 内部结构前的预算保护；后续仍保留更细粒度下载进度和完整站点策略。
 
 ### 2026-05-25：统一工具结果预算和落盘引用
 

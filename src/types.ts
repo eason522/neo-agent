@@ -163,6 +163,7 @@ export type AppConfig = {
     extractDepth: WebExtractDepth;
     maxResults: number;
     maxContextChars: number;
+    maxDownloadChars: number;
     maxDepth: number;
     maxBreadth: number;
     maxPages: number;
@@ -419,6 +420,7 @@ export type WebCrawlResult = {
 export type WebCrawlResponse = {
   baseUrl?: string;
   results: WebCrawlResult[];
+  warnings?: string[];
   cacheHit?: boolean;
   responseTime?: number;
 };
