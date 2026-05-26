@@ -66,9 +66,10 @@ export class OpenVikingMemory {
 
   async store(record: MemoryRecord): Promise<{ stored: boolean; pending: boolean }> {
     const markdown = memoryToMarkdown(record);
-    const stored = await this.callMcpTool('store', {
-      uri: record.uri,
-      content: markdown
+    const stored = await this.callMcpTool('remember', {
+      messages: [
+        { role: 'user', content: markdown }
+      ]
     }).then(() => true).catch(() => false);
     if (stored) return { stored: true, pending: false };
     await this.enqueue({ type: 'store', record, markdown, queuedAt: new Date().toISOString() });
@@ -92,7 +93,7 @@ export class OpenVikingMemory {
     let synced = 0;
     for (const item of pending) {
       const ok = item.type === 'store'
-        ? await this.callMcpTool('store', { uri: item.record.uri, content: item.markdown }).then(() => true).catch(() => false)
+        ? await this.callMcpTool('remember', { messages: [{ role: 'user', content: item.markdown }] }).then(() => true).catch(() => false)
         : await this.callMcpTool('forget', { uri: item.idOrUri }).then(() => true).catch(() => false);
       if (ok) synced += 1;
       else remaining.push(item);
@@ -132,20 +133,72 @@ export class OpenVikingMemory {
   }
 
   private async callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const request = {
+      jsonrpc: '2.0',
+      id: `neo-${Date.now()}`,
+      method: 'tools/call',
+      params: { name, arguments: args }
+    };
+    const direct = await this.postMcpRpc(request).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Missing session ID')) return undefined;
+      throw error;
+    });
+    if (direct !== undefined) return direct;
+
+    const sessionId = await this.initializeMcpSession();
+    return this.postMcpRpc(request, sessionId);
+  }
+
+  private async initializeMcpSession(): Promise<string> {
     const response = await fetch(new URL('/mcp', this.config.memory.openVikingUrl), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: mcpHeaders(),
       body: JSON.stringify({
         jsonrpc: '2.0',
-        id: `neo-${Date.now()}`,
-        method: 'tools/call',
-        params: { name, arguments: args }
+        id: `neo-init-${Date.now()}`,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'neo-agent', version: '0.1.0' }
+        }
       }),
       signal: AbortSignal.timeout(3000)
     });
-    if (!response.ok) throw new Error(`OpenViking /mcp ${name} failed: ${response.status}`);
-    const payload = await response.json() as { error?: unknown; result?: unknown };
-    if (payload.error) throw new Error(`OpenViking /mcp ${name} error: ${JSON.stringify(payload.error)}`);
+    const sessionId = response.headers.get('mcp-session-id');
+    if (!response.ok || !sessionId) throw new Error(`OpenViking /mcp initialize failed: ${response.status}`);
+    const payload = parseMcpResponse(await response.text()) as { error?: unknown };
+    if (payload.error) throw new Error(`OpenViking /mcp initialize error: ${JSON.stringify(payload.error)}`);
+    await this.postMcpNotification('notifications/initialized', sessionId);
+    return sessionId;
+  }
+
+  private async postMcpNotification(method: string, sessionId: string): Promise<void> {
+    const response = await fetch(new URL('/mcp', this.config.memory.openVikingUrl), {
+      method: 'POST',
+      headers: mcpHeaders(sessionId),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method,
+        params: {}
+      }),
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok && response.status !== 202) throw new Error(`OpenViking /mcp ${method} failed: ${response.status}`);
+  }
+
+  private async postMcpRpc(request: Record<string, unknown>, sessionId?: string): Promise<unknown> {
+    const response = await fetch(new URL('/mcp', this.config.memory.openVikingUrl), {
+      method: 'POST',
+      headers: mcpHeaders(sessionId),
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(3000)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`OpenViking /mcp ${String(request.method)} failed: ${response.status} ${text.slice(0, 200)}`);
+    const payload = parseMcpResponse(text) as { error?: unknown; result?: unknown };
+    if (payload.error) throw new Error(`OpenViking /mcp ${String(request.method)} error: ${JSON.stringify(payload.error)}`);
     return payload.result;
   }
 
@@ -172,6 +225,7 @@ export function memoryToMarkdown(record: MemoryRecord): string {
   const frontmatter = [
     '---',
     `id: ${yamlString(record.id)}`,
+    `uri: ${yamlString(record.uri)}`,
     `category: ${yamlString(record.category)}`,
     `tags: [${record.tags.map(yamlString).join(', ')}]`,
     `pinned: ${record.pinned}`,
@@ -191,6 +245,10 @@ function extractResultArray(payload: unknown): unknown[] {
   const record = payload as Record<string, unknown>;
   if (Array.isArray(record.results)) return record.results;
   if (Array.isArray(record.items)) return record.items;
+  if (record.structuredContent && typeof record.structuredContent === 'object') {
+    const nested = extractResultArray(record.structuredContent);
+    if (nested.length > 0) return nested;
+  }
   if (record.content && Array.isArray(record.content)) {
     return record.content.flatMap(item => {
       if (!item || typeof item !== 'object') return [];
@@ -205,6 +263,26 @@ function extractResultArray(payload: unknown): unknown[] {
     });
   }
   return [];
+}
+
+export function parseMcpResponse(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (!trimmed.startsWith('event:') && !trimmed.startsWith('data:')) return JSON.parse(trimmed) as unknown;
+  const dataLines = trimmed
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.replace(/^data:\s?/, ''));
+  if (dataLines.length === 0) return {};
+  return JSON.parse(dataLines.join('\n')) as unknown;
+}
+
+export function mcpHeaders(sessionId?: string): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    ...(sessionId ? { 'mcp-session-id': sessionId } : {})
+  };
 }
 
 function memoryHitFromUnknown(item: unknown, index: number): MemoryHit | undefined {

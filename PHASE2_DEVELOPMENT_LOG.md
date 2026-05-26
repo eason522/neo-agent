@@ -534,3 +534,51 @@ neo-agent 的偏离和原因：
 - `OpenVikingMemory.health()` 离线提示中加入官方本地服务流程。
 - `neo doctor` 的 OpenViking 检查改为优先探测 `/health`，服务可用后再探测 `/mcp` 的 `health` tool。
 - README 和二阶段计划同步说明本地服务安装部署流程。
+
+## 2026-05-26：OpenViking 本地服务真实部署和 neo 联调
+
+按用户要求在 Ubuntu server 上完成 OpenViking server 本地部署，并配置为 systemd user service 随系统启动。
+
+部署结果：
+
+- 使用 `uv tool install openviking --upgrade` 安装 OpenViking 0.3.20。
+- OpenViking 配置文件：`/home/eason/.openviking/ov.conf`。
+- Embedding 使用 SiliconFlow OpenAI-compatible endpoint：
+  - model：`Qwen/Qwen3-Embedding-8B`
+  - dimension：4096
+- VLM 使用 neo 现有视觉模型配置：
+  - model：`mimo-v2.5`
+  - apiBase：`https://token-plan-cn.xiaomimimo.com/v1`
+- `openviking-server doctor` 全部通过。
+- 创建并启用 systemd user service：`/home/eason/.config/systemd/user/openviking.service`。
+- `systemctl --user is-enabled openviking.service` 输出 `enabled`。
+- `systemctl --user is-active openviking.service` 输出 `active`。
+- `loginctl enable-linger eason` 成功，`Linger=yes`，服务可在用户未登录时随系统启动。
+
+联调发现和修正：
+
+- OpenViking `/mcp` 使用 Streamable HTTP MCP，要求 `Accept: application/json, text/event-stream`。
+- `/mcp` 工具调用不能直接裸 `tools/call`，需要先 `initialize`，保存 `mcp-session-id`，发送 `notifications/initialized`，再调用工具。
+- 实际 OpenViking 0.3.20 暴露的写入工具是 `remember`，不是二阶段计划中假设的 `store`。
+- 已修正 `OpenVikingMemory` 和 `neo doctor` 的 MCP 调用流程。
+
+验证：
+
+```bash
+openviking-server doctor
+curl http://127.0.0.1:1933/health
+node dist/index.js openviking doctor
+node dist/index.js openviking sync-pending
+node dist/index.js doctor
+npm run typecheck
+npm run smoke
+```
+
+结果：
+
+- `/health` 返回 healthy。
+- `neo openviking doctor` 返回 `ok mode=mcp`。
+- 3 条离线 pending 记忆已成功同步。
+- neo 通过 OpenViking 真实服务写入测试记忆，并能搜索命中。
+- `npm run typecheck` 通过。
+- `npm run smoke` 通过。

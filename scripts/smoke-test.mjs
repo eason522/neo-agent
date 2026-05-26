@@ -859,8 +859,10 @@ test('OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pendin
       let result = {};
       if (name === 'health') {
         result = { ok: true };
-      } else if (name === 'store') {
-        stored.set(args.uri, args.content);
+      } else if (name === 'remember') {
+        const content = args.messages?.[0]?.content ?? '';
+        const uri = content.match(/^uri: "([^"]+)"/m)?.[1] ?? `viking://mock/${stored.size}`;
+        stored.set(uri, content);
         result = { stored: true };
       } else if (name === 'search') {
         result = {
@@ -902,7 +904,7 @@ test('OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pendin
       tags: ['phase2', 'feedback']
     });
     assertIncludes(record.uri, 'viking://user/default/memories/workflows/');
-    if (!calls.some(call => call.name === 'store')) throw new Error(`remember 应写入 OpenViking：${JSON.stringify(calls)}`);
+    if (!calls.some(call => call.name === 'remember')) throw new Error(`remember 应写入 OpenViking：${JSON.stringify(calls)}`);
     const markdown = stored.get(record.uri);
     assertIncludes(markdown, 'category: "workflow"');
     assertIncludes(markdown, '处理用户反馈');

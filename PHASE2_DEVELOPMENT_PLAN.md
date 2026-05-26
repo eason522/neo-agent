@@ -131,12 +131,15 @@
 
 - 当前机器上 `http://localhost:1933` 未运行，`neo openviking doctor` 正确报告 OpenViking 离线，pending 为 0。
 - `neo doctor` / `neo openviking doctor` 已按 OpenViking 官方 GitHub 文档提示本地服务部署流程：`pip install openviking --upgrade --force-reinstall`、`openviking-server init`、`openviking-server doctor`、`openviking-server`、`curl http://localhost:1933/health`。
+- 当前 Ubuntu server 已真实部署 OpenViking 0.3.20：Embedding 使用 SiliconFlow `Qwen/Qwen3-Embedding-8B`，VLM 使用 neo 现有 `mimo-v2.5`；`openviking-server doctor`、`neo openviking doctor` 和真实写入/搜索联调均通过。
+- OpenViking 已配置为 systemd user service：`openviking.service` enabled/active，且 `loginctl enable-linger eason` 已开启，可随系统启动。
 
 待收口：
 
-- 用真实 `openviking-server` 做 `/mcp` 联调。
+- [x] 用真实 `openviking-server` 做 `/mcp` 联调。
 - [x] 用 mock `/mcp` 增加 health/store/search/list/forget 自动化测试。
-- 明确 OpenViking `/mcp` 返回结构后，收紧解析逻辑。
+- [x] 明确 OpenViking `/mcp` 返回结构后，收紧解析逻辑。
+- 后续如切换 OpenViking 版本，需要复核 `/mcp` Streamable HTTP 会话和工具 schema 是否变化。
 
 ## 里程碑四：Ink TUI 体验等价重建
 

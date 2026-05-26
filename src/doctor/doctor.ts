@@ -8,7 +8,7 @@ import type { AppConfig } from '../types.js';
 import { loadConfig } from '../config.js';
 import { pathExists } from '../utils/fs.js';
 import { loadSoul } from '../prompts/soul.js';
-import { getOpenVikingLocalServiceSetupHint } from '../memory/openVikingMemory.js';
+import { getOpenVikingLocalServiceSetupHint, mcpHeaders, parseMcpResponse } from '../memory/openVikingMemory.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -554,9 +554,41 @@ async function checkOpenViking(config: AppConfig): Promise<DoctorCheck> {
 }
 
 async function probeOpenVikingMcp(url: string): Promise<{ ok: boolean; status: number }> {
+  const initResponse = await fetch(new URL('/mcp', url), {
+    method: 'POST',
+    headers: mcpHeaders(),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'neo-doctor-init',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'neo-agent', version: '0.1.0' }
+      }
+    }),
+    signal: AbortSignal.timeout(1500)
+  });
+  if (!initResponse.ok) return { ok: false, status: initResponse.status };
+  const sessionId = initResponse.headers.get('mcp-session-id');
+  if (!sessionId) return { ok: false, status: initResponse.status };
+  const initPayload = parseMcpResponse(await initResponse.text()) as { error?: unknown };
+  if (initPayload.error) return { ok: false, status: initResponse.status };
+
+  await fetch(new URL('/mcp', url), {
+    method: 'POST',
+    headers: mcpHeaders(sessionId),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+      params: {}
+    }),
+    signal: AbortSignal.timeout(1500)
+  }).catch(() => undefined);
+
   const response = await fetch(new URL('/mcp', url), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: mcpHeaders(sessionId),
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 'neo-doctor',
@@ -566,7 +598,7 @@ async function probeOpenVikingMcp(url: string): Promise<{ ok: boolean; status: n
     signal: AbortSignal.timeout(1500)
   });
   if (!response.ok) return { ok: false, status: response.status };
-  const payload = await response.json() as { error?: unknown };
+  const payload = parseMcpResponse(await response.text()) as { error?: unknown };
   return { ok: !payload.error, status: response.status };
 }
 
