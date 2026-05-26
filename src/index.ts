@@ -119,7 +119,7 @@ configCommand
 
 configCommand
   .command('set')
-  .description('设置用户或项目配置，例如 neo config set web.maxToolRounds 8')
+  .description('设置用户或项目配置，例如 neo config set web.maxToolRounds 64')
   .argument('<keyPath>', '点号分隔的配置路径')
   .argument('<value>', '配置值，支持 true/false/数字/JSON 数组或对象/字符串')
   .option('--scope <user|project>', '写入位置，默认 user', 'user')

@@ -17,6 +17,7 @@ const modelSchema = z.object({
 
 export const DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216;
 export const MIMO_MAX_OUTPUT_TOKENS = 131_072;
+export const DEFAULT_MAX_TOOL_ROUNDS = 64;
 
 export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   homeDir: z.string(),
@@ -233,7 +234,7 @@ export function defaultConfig(): AppConfig {
       apiBase: process.env.TAVILY_API_BASE || 'https://api.tavily.com',
       autoSearch: process.env.NEO_AGENT_WEB_AUTO_SEARCH !== '0',
       toolLoopEnabled: process.env.NEO_AGENT_WEB_TOOL_LOOP_ENABLED !== '0',
-      maxToolRounds: Number.parseInt(process.env.NEO_AGENT_WEB_MAX_TOOL_ROUNDS || '8', 10),
+      maxToolRounds: Number.parseInt(process.env.NEO_AGENT_MAX_TOOL_ROUNDS || process.env.NEO_AGENT_WEB_MAX_TOOL_ROUNDS || String(DEFAULT_MAX_TOOL_ROUNDS), 10),
       plannerEnabled: process.env.NEO_AGENT_WEB_PLANNER_ENABLED !== '0',
       plannerModelKind: (process.env.NEO_AGENT_WEB_PLANNER_MODEL_KIND as AppConfig['web']['plannerModelKind']) || 'small',
       searchDepth: (process.env.NEO_AGENT_WEB_SEARCH_DEPTH as AppConfig['web']['searchDepth']) || 'basic',
@@ -439,6 +440,7 @@ function applyRuntimeEnvOverrides(config: AppConfig): void {
   applyPositiveIntegerEnvOverride(config.models.main, 'maxTokens', process.env.NEO_AGENT_MAIN_MAX_TOKENS);
   applyPositiveIntegerEnvOverride(config.models.small, 'maxTokens', process.env.NEO_AGENT_SMALL_MAX_TOKENS);
   applyPositiveIntegerEnvOverride(config.models.vision, 'maxTokens', process.env.NEO_AGENT_VISION_MAX_TOKENS);
+  applyPositiveIntegerEnvOverride(config.web, 'maxToolRounds', process.env.NEO_AGENT_MAX_TOOL_ROUNDS ?? process.env.NEO_AGENT_WEB_MAX_TOOL_ROUNDS);
 }
 
 function applyPositiveIntegerEnvOverride<T extends Record<string, unknown>>(target: T, key: keyof T, raw: string | undefined): void {

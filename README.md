@@ -185,7 +185,7 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --select-paths "/docum
 
 `map/crawl` 支持 Tavily 官方的正则过滤参数：`--select-paths`、`--exclude-paths`、`--select-domains`、`--exclude-domains`。也可以通过 `NEO_AGENT_WEB_SELECT_PATHS`、`NEO_AGENT_WEB_EXCLUDE_PATHS`、`NEO_AGENT_WEB_SELECT_DOMAINS`、`NEO_AGENT_WEB_EXCLUDE_DOMAINS` 写入默认过滤规则。
 
-普通自然语言提问默认使用 CC-Source 风格的 tool loop：模型先回答或发起 `WebSearch` / `WebFetch` 工具调用，工具结果作为 `tool` 消息回灌给模型，再继续推理直到最终回答。可用 `neo ask --no-web` 临时关闭，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭。默认最多允许 8 轮联网工具调用，可通过 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 调整。若设置 `NEO_AGENT_WEB_TOOL_LOOP_ENABLED=0`，neo 会回落到过渡版小模型 planner；可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭 planner，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
+普通自然语言提问默认使用 CC-Source 风格的 tool loop：模型先回答或发起工具调用，工具结果作为 `tool` 消息回灌给模型，再继续推理直到最终回答。CC-Source 主会话默认不固定 8 轮工具上限；neo 当前默认最多允许 64 轮工具 loop，用来覆盖文件、Bash/Python、Web、MCP 和 skill 等工具。可通过 `NEO_AGENT_MAX_TOOL_ROUNDS` 或配置项 `web.maxToolRounds` 调整；旧的 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 仍兼容。可用 `neo ask --no-web` 临时关闭联网，也可设置 `NEO_AGENT_WEB_AUTO_SEARCH=0` 全局关闭联网工具。若设置 `NEO_AGENT_WEB_TOOL_LOOP_ENABLED=0`，neo 会回落到过渡版小模型 planner；可设置 `NEO_AGENT_WEB_PLANNER_ENABLED=0` 关闭 planner，或通过 `NEO_AGENT_WEB_PLANNER_MODEL_KIND=main` 改用主模型规划。
 
 交互式 REPL 会显示工具开始、成功、失败和达到上限的简短状态行。状态行和日志只展示查询长度、域名、结果数、字符数、MCP server/tool 名等元数据，不展示完整查询词、完整 URL query 或 MCP 参数值。工具失败时，neo 会把结构化错误和恢复提示回灌给模型，让它继续换路径或明确说明未执行。
 

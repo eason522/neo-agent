@@ -648,3 +648,36 @@ neo-agent 的偏离和原因：
 验证：
 
 - smoke 增加 `date +%Y-%m-%d` 自动执行覆盖。
+
+## 2026-05-26：提高默认工具 loop 上限
+
+用户测试复杂任务时发现 8 次工具调用很容易耗尽，要求对照 CC-Source 判断是否过于保守。
+
+CC-Source 对照结论：
+
+- `src/query.ts` 的主 `queryLoop` 是 `while (true)`。
+- 只有调用方传入 `maxTurns` 时才会在工具结果回灌后停止。
+- 普通主会话默认不固定 8 轮；子 agent 路径可配置，内置 fork subagent 默认 `maxTurns: 200`。
+
+neo-agent 根因：
+
+- 早期 `web.maxToolRounds` 是为 WebSearch/WebFetch tool loop 增加的保护。
+- 二阶段后 QueryEngine 已统一承载文件、Bash/Python、Web、MCP、skill 等工具，但仍沿用 `web.maxToolRounds=8` 控制所有工具 loop。
+- 这使普通复杂任务、长文件写入和多步排障过早触顶。
+
+修正：
+
+- 默认工具 loop 上限从 8 提高到 64。
+- 新增通用环境变量 `NEO_AGENT_MAX_TOOL_ROUNDS`。
+- 旧 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 继续兼容。
+- 仍保留 `web.maxToolRounds` 配置项，避免本次支线扩大到配置 schema 迁移。
+
+收敛边界：
+
+- 本次只修正默认轮次过低和命名说明不准确。
+- 没有引入 CC-Source 的无限主循环、完整 `maxTurns` CLI、task budget 或自动继续机制；这些需要后续结合 TUI 状态和预算 UI 单独设计。
+
+验证：
+
+- smoke 覆盖默认 `maxToolRounds: 64`。
+- smoke 覆盖 `NEO_AGENT_MAX_TOOL_ROUNDS` 运行时覆盖。

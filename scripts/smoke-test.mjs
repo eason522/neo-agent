@@ -51,6 +51,7 @@ test('初始化配置', async () => {
   assertIncludes(config, '"autoSearch"');
   assertIncludes(config, '"toolLoopEnabled"');
   assertIncludes(config, '"maxToolRounds"');
+  assertIncludes(config, '"maxToolRounds": 64');
   assertIncludes(config, '"plannerEnabled"');
   assertIncludes(config, '"plannerModelKind"');
   assertIncludes(config, '"allowedDomains"');
@@ -181,6 +182,13 @@ test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   assertIncludes(maxTokenOverride.stdout, '"maxTokens": 16384');
   assertIncludes(maxTokenOverride.stdout, '"backend": "openviking"');
   assertIncludes(maxTokenOverride.stdout, '"openVikingUrl": "http://127.0.0.1:1933"');
+
+  const maxToolRoundsOverride = await run(['config', 'show'], {
+    env: {
+      NEO_AGENT_MAX_TOOL_ROUNDS: '72'
+    }
+  });
+  assertIncludes(maxToolRoundsOverride.stdout, '"maxToolRounds": 72');
 
   const projectDir = path.join(tempHome, 'config-project');
   await mkdir(projectDir, { recursive: true });

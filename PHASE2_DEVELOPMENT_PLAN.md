@@ -73,6 +73,7 @@
 - 默认输出上限已按当前模型能力同步：`deepseek-v4-pro`/`deepseek-v4-flash` 为 393216，`mimo-v2.5` 为 131072；已有用户配置需用 `neo config set` 更新。
 - QueryEngine 遇到 `finish_reason=length` 且工具参数 JSON 不完整时，不执行坏工具调用，而是强制回灌 `Append` 分块恢复提示。
 - 工具轮次耗尽且长文件没有成功落盘时，最终提示禁止输出长代码兜底，避免返回被截断的不完整 HTML/CSS/JS。
+- 对照 CC-Source 后，工具 loop 默认上限从 8 提高到 64；`NEO_AGENT_MAX_TOOL_ROUNDS` 为新的通用覆盖变量，旧 `NEO_AGENT_WEB_MAX_TOOL_ROUNDS` 继续兼容。
 
 待收口：
 
