@@ -41,6 +41,16 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 4. **诊断与日志可运维**：doctor、debug、错误码、隐私分级和 usage/retry 统计需要成为排障入口。
 5. **记忆/OpenViking 收口**：OpenViking 写入链路要等本地服务 API 确认后再做，不再凭猜测开发。
 
+## 收口规则
+
+P1 从现在开始冻结，不再因为完成一项又追加新的 P1 功能项。
+
+- 当前唯一未完成 P1 是 **M5 终端体验回归复查**，它是收口闸门，不是新功能入口。
+- 回归中发现的阻塞问题只允许作为该收口项的子修复处理；修完后仍关闭同一个收口项。
+- 回归中发现的非阻塞体验改进、架构想法和新增能力，统一写入 P2、未决问题或 `DEVELOPMENT_LOG.md`，不回填 P1。
+- P1 关闭标准：`npm run typecheck`、`npm run smoke`、关键 REPL 路径回归通过，并且没有影响日常使用的阻塞问题。
+- P1 关闭后，近期只允许进入“稳定修 bug / 用户明确要求 / P2 单项升级”三类工作。
+
 ## 当前优先级
 
 ### P0：下一阶段主线
@@ -61,7 +71,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - CC-Source 参考：Doctor/context warning/config diagnostics。
   - 已交付：`neo doctor` 新增版本/ripgrep、上下文预算、workspace、额外文件范围、tool result 目录、skill 根目录、配置文件权限等诊断；保留模型、日志、transcript、SOUL、OpenViking、Web 和 MCP 检查。
 
-### P1：稳定性和体验
+### P1：稳定性和体验（冻结收口）
 
 - [x] 日志系统补 debug 开关、结构化错误码、usage/retry 统计和隐私分级。
   - 已交付：`--debug`/REPL `/debug on` 可把运行期日志提升到 debug；日志记录增加 `privacy` 标记、No-PII diagnostic 写入、结构化 `errorCode`；模型 retry/success 和 usage 记录补 `retryCount`。
@@ -83,9 +93,10 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
   - 范围：把 MCP 和文件写入确认提示整理成统一样式，明确一次允许/持久允许/拒绝选项、风险摘要和对应持久化命令。
   - CC-Source 参考：permission request UI、filesystem permission rules、MCP permission prompt。
   - 已交付：新增统一 `formatPermissionPrompt` 文本渲染；MCP 权限确认展示工具来源、原因、风险、参数字段、一次/持久允许和一次/持久拒绝；文件写入确认使用相同边界并明确当前仅支持本次确认，长期授权走 workspace/额外写入目录配置。
-- [ ] M5 终端体验回归复查。
+- [ ] M5 终端体验回归复查（P1 收口闸门）。
   - 范围：围绕状态流、富消息渲染、compact/resume、权限确认、图片预分析和工具事件跑一轮 REPL 回归，清理影响长期使用的小缺口。
   - CC-Source 参考：message rendering、StatusLine、PermissionRequest、ResumeConversation、tool progress UI。
+  - 收口约束：只修复回归中发现的阻塞或明显错乱问题；非阻塞改进不新增 P1 项。
 
 ### P2：暂缓，除非用户明确要求
 
@@ -111,7 +122,7 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 - **M2：记忆和 dreaming**：本地记忆、dreaming、复查和人工采纳已可用；OpenViking 写入待确认。
 - **M3：skill 生命周期**：已完成第一阶段，包括安装、校验、导出、scope、Skill tool、usage、reload、plugin manifest 导入和用户确认建议。
 - **M4：工具和 MCP 执行**：已完成第一阶段，包括 Web、MCP、文件工具、ToolSearch、tool loop、超时/取消、结果预算、workspace。
-- **M5：终端体验**：进行中。已补输入历史、多行输入、状态行、debug 视图、resume 选择器、粘贴处理、富消息渲染第一阶段、权限确认 UI 第一阶段；完整 Ink/TUI 仍未完成。
+- **M5：终端体验**：进入 P1 收口回归。已补输入历史、多行输入、状态行、debug 视图、resume 选择器、粘贴处理、富消息渲染第一阶段、权限确认 UI 第一阶段；完整 Ink/TUI 明确放入 P2，不作为 P1 收尾条件。
 
 ## 下一次开发启动流程
 
@@ -125,13 +136,13 @@ neo-agent 是基于 CC-Source 的个人化二次开发，不是从零另造 agen
 
 ## 当前建议下一步
 
-建议下一步做 **M5 终端体验回归复查**。
+建议下一步做 **M5 终端体验回归复查**，并以此关闭 P1。
 
 理由：
 
 - 近期连续补了视觉预分析状态、REPL 状态流、手动 compact、富消息渲染和权限确认 UI；这些都在同一条终端体验链路上，需要先整体回归，而不是继续加新能力。
 - CC-Source 的终端体验不是单个提示，而是 message rendering、status、permission、resume/compact 和 tool progress 的组合；neo 现在需要验证这些文本 UI 是否在真实 REPL 中互不打架。
-- 这一步可以把 M5 第一阶段收口，为后续是否引入完整 Ink/TUI 提供更清楚的判断。
+- 这一步是 P1 收口闸门，不再派生新的 P1 功能项；只处理阻塞回归，非阻塞改进全部后移。
 
 建议拆成三个小步骤：
 

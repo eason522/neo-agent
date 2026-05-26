@@ -895,6 +895,14 @@ neo 当前仍是 readline REPL，没有 CC-Source 的完整 Ink permission dialo
 
 验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过；新增 smoke 覆盖 MCP/File 权限提示的范围、选项、持久化命令、参数字段摘要、参数值不泄露和解析结果。
 
+### 2026-05-26：P1 收口规则调整
+
+用户指出 P1 每完成一项又追加一项，会导致计划无法收尾。这个判断成立：前几轮把“发现的新缺口”继续放回 P1，虽然每项都合理，但整体上会造成 scope creep。
+
+已调整 `DEVELOPMENT_PLAN.md`：P1 从现在开始冻结，唯一未完成项是 “M5 终端体验回归复查”，并明确它是收口闸门而不是新功能入口。回归中发现的阻塞问题只能作为该收口项的子修复处理；非阻塞体验改进、架构想法和新增能力统一后移到 P2、未决问题或历史日志，不再回填 P1。
+
+新的 P1 关闭标准是：`npm run typecheck`、`npm run smoke`、关键 REPL 路径回归通过，并且没有影响日常使用的阻塞问题。完整 Ink/TUI 明确属于 P2，不作为 P1 收尾条件。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？
