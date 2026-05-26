@@ -357,3 +357,28 @@ npm run smoke
   - `NEO_AGENT_MEMORY_BACKEND=openviking` 示例。
 
 验证：文档变更，无需重新跑 smoke。
+
+## 2026-05-26：OpenViking 真实服务联调条件检查
+
+按二阶段计划继续检查 OpenViking 真实服务联调条件。
+
+本机检查结果：
+
+```bash
+command -v openviking-server
+command -v ov
+node dist/index.js openviking doctor
+```
+
+结果：
+
+- 本机没有 `openviking-server`。
+- 本机没有 `ov` CLI。
+- `neo openviking doctor` 报告 `http://localhost:1933` 离线，pending 为 0。
+
+结论：
+
+- OpenViking 真实服务联调当前受本机环境阻塞。
+- 已有 mock `/mcp` smoke 覆盖主存储写入、搜索、列表、归档和 pending 同步。
+- 不在当前支线尝试自动安装 OpenViking，避免扩大范围。
+- 下一步转入二阶段下一个可推进项：拆分 Ink TUI 所需状态模型。
