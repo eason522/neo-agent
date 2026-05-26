@@ -702,3 +702,23 @@ neo-agent 根因：
 
 - 本次只修正文案和状态含义，不把 OpenViking 记忆工具注册进 `McpManager`。
 - 这样避免把记忆内部读写工具暴露成通用模型工具，保持当前 OpenViking 主存储边界。
+
+## 2026-05-26：增加 TUI 真实 PTY 文本回归
+
+回到二阶段 TUI 待收口，先补真实终端安全网，再继续拆组件。此前已有非交互 stdin 回退测试和状态行纯函数宽度测试，但没有验证 Ink 在真实 TTY/PTY 下是否实际渲染 header。
+
+CC-Source 参考：
+
+- CC-Source 的 Ink 层大量依赖真实 TTY 能力、终端宽度和 CSI 控制序列，相关边界分布在 `ink/`、`hooks/useTerminalSize.ts`、`utils/gracefulShutdown.ts` 等模块。
+- neo 当前还没有完整 Ink 组件，先用 PTY 文本回归覆盖最小启动渲染边界，而不是直接移植复杂测试框架。
+
+更新：
+
+- smoke 新增 Linux PTY helper，使用 `script -qfec` 运行 `node dist/index.js chat`。
+- 覆盖 120 列终端下 TUI header 完整显示 `memory=openviking:mcp`。
+- 覆盖 48 列终端下 TUI header 宽度不超过终端宽度，并出现宽度感知省略。
+
+收敛边界：
+
+- 这是 PTY 文本回归，不是截图像素回归。
+- 不实现 PromptInput、PermissionDialog 或消息流组件；这些继续按后续小步推进。

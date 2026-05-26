@@ -167,7 +167,7 @@
 - [x] 拆分现有 REPL 输入粘贴/历史纯逻辑和权限确认模型第一版，使 Ink PromptInput/PermissionDialog 能复用核心交互数据结构。
 - [x] 增加 TUI 默认入口的非交互 stdin 回退文本回归，防止 TUI header 截断脚本输入。
 - [x] 增加 TUI 状态行窄终端文本回归，覆盖中文宽度截断。
-- 增加 PTY 截图回归，覆盖真实 Ink 交互下的宽窄终端渲染。
+- [x] 增加 PTY 文本回归，覆盖真实 Ink 交互下的宽窄终端渲染。
 - 分步实现消息流、PromptInput、StatusLine、PermissionDialog、ToolProgress、ResumePicker 和 DebugPanel。
 
 ## 全局验证

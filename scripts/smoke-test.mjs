@@ -3037,6 +3037,27 @@ test('TUI 默认入口在非交互 stdin 下回退 legacy REPL', async () => {
   }
 });
 
+test('TUI 在真实 PTY 下渲染 header 并按终端宽度截断', async () => {
+  if (process.platform !== 'linux') return;
+  const wide = await runPty(['chat'], {
+    columns: 120,
+    input: '/exit\n'
+  });
+  const wideText = stripAnsi(wide.stdout);
+  assertIncludes(wideText, 'model=deepseek-v4-pro workspace=workspace memory=openviking:mcp');
+
+  const narrow = await runPty(['chat'], {
+    columns: 48,
+    input: '/exit\n'
+  });
+  const narrowHeader = stripAnsi(narrow.stdout)
+    .split(/\r?\n/)
+    .find(line => line.includes('model=deepseek-v4-pro workspace=workspace'));
+  if (!narrowHeader) throw new Error(`真实 PTY 输出中应包含 TUI header：${narrow.stdout}`);
+  if (displayWidth(narrowHeader) > 48) throw new Error(`真实 PTY header 不应超过终端宽度：${displayWidth(narrowHeader)} ${narrowHeader}`);
+  assertIncludes(narrowHeader, '…');
+});
+
 test('REPL 会根据终端环境提示多行输入方式', async () => {
   const { detectTerminalMultilineSupport } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'repl.js')));
   const wezterm = detectTerminalMultilineSupport({
@@ -3430,6 +3451,75 @@ async function run(args, options = {}) {
     throw new Error(`命令退出码 ${result.code}。\nstdout=${result.stdout}\nstderr=${result.stderr}`);
   }
   return result;
+}
+
+async function runPty(args, options = {}) {
+  const env = {
+    ...process.env,
+    NEO_AGENT_HOME: tempHome,
+    DEEPSEEK_API_KEY: '',
+    MIMO_API_KEY: '',
+    TAVILY_API_KEY: '',
+    NEO_AGENT_LOG_MAX_BYTES: '2048',
+    NEO_AGENT_LOG_MAX_FILES: '3',
+    NEO_AGENT_LOG_RETENTION_DAYS: '14',
+    TERM: 'xterm-256color',
+    COLUMNS: String(options.columns ?? 80),
+    ...(options.env ?? {})
+  };
+  const escaped = [node, cli, ...args].map(shellQuote).join(' ');
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn('script', ['-qfec', escaped, '/dev/null'], {
+      cwd: options.cwd ?? root,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`PTY 命令超时：${escaped}`));
+    }, options.timeout ?? 10000);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', chunk => {
+      stderr += chunk;
+    });
+    child.on('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code: code ?? 0 });
+    });
+
+    if (options.input) child.stdin.write(options.input);
+    child.stdin.end();
+  });
+  if (result.code !== 0) {
+    throw new Error(`PTY 命令退出码 ${result.code}。\nstdout=${result.stdout}\nstderr=${result.stderr}`);
+  }
+  return result;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
 function assertIncludes(haystack, needle) {
