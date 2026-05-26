@@ -15,7 +15,7 @@
 - dreaming：`neo dream` 或 `/dream` 会整理记忆和近期 transcript，提炼长期记忆与灵感报告。
 - 联网能力：`neo web search/extract/map/crawl` 通过 Tavily 搜索互联网、读取网页正文、发现站点 URL 和有限深度爬取。
 - 自动联网：普通 ask/REPL 默认把 `WebSearch`、`WebFetch` 暴露为模型可调用工具，由模型在回答过程中自行搜索或读取网页；关闭 tool loop 后才回落到过渡版小模型 planner。
-- 项目文件工具：普通 ask/REPL 默认提供 `Read`、`Glob`、`Grep`、`List`、`Write`、`Edit`、`Mkdir`、`Copy`、`Move`、`Delete`，可访问当前项目目录、默认 `workspace/` 和显式授权的额外目录。
+- 项目文件工具：普通 ask/REPL 默认提供 `Read`、`Glob`、`Grep`、`List`、`Write`、`Append`、`Edit`、`Mkdir`、`Copy`、`Move`、`Delete`，可访问当前项目目录、默认 `workspace/` 和显式授权的额外目录。
 - 工作区目录：默认 `workspace/`，可用 `neo workspace show/set/reset`、`workspace.dir` 或 `NEO_AGENT_WORKSPACE_DIR` 配置；workspace 内拥有完整文件管理权限，写入项目其它位置仍需交互式确认。
 - Shell/Python：模型可通过 `Bash` 和 `Python` 在 workspace 内执行命令；只读低风险 Bash 自动执行，高风险 Bash 和 Python 需要交互确认。
 - TUI：`neo chat` 默认进入 Ink TUI 入口层；`neo chat --legacy` 或 `NEO_AGENT_LEGACY_REPL=1` 可回退 legacy readline REPL。
@@ -193,7 +193,7 @@ neo web crawl https://docs.tavily.com --limit 5 --depth 1 --select-paths "/docum
 
 REPL 会保留当前 session 的对话上下文，默认最多约 300000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_HISTORY_CHARS` 调整。单条消息默认最多保留 50000 字符，可通过 `NEO_AGENT_CONVERSATION_MAX_MESSAGE_CHARS` 调整。接近上下文预算时，neo 会参考 CC-Source compact 思路，用小模型把较早对话压缩成“自动压缩的历史摘要”，再保留近期原文；可用 `NEO_AGENT_CONVERSATION_COMPACT_ENABLED=0` 关闭，或用 `NEO_AGENT_CONVERSATION_COMPACT_THRESHOLD_RATIO`、`NEO_AGENT_CONVERSATION_COMPACT_KEEP_RECENT_CHARS`、`NEO_AGENT_CONVERSATION_COMPACT_MAX_SUMMARY_CHARS` 调整阈值和摘要大小。
 
-普通 ask/REPL 会向模型提供项目文件工具：`Read` 读取文件片段，`Glob` 按文件名查找文件，`Grep` 搜索文件内容，`List` 列出目录，`Write/Edit/Mkdir/Copy/Move/Delete` 管理文件。这些工具默认可以访问启动 neo 时所在项目目录、工作区目录和显式授权的额外目录，并默认跳过 `.git`、`node_modules`、`dist` 等噪声目录。
+普通 ask/REPL 会向模型提供项目文件工具：`Read` 读取文件片段，`Glob` 按文件名查找文件，`Grep` 搜索文件内容，`List` 列出目录，`Write/Append/Edit/Mkdir/Copy/Move/Delete` 管理文件。这些工具默认可以访问启动 neo 时所在项目目录、工作区目录和显式授权的额外目录，并默认跳过 `.git`、`node_modules`、`dist` 等噪声目录。
 
 工作区默认是当前项目下的 `workspace/`。可以用以下命令查看和修改：
 
@@ -207,6 +207,8 @@ neo workspace reset --scope project
 也可以用 `NEO_AGENT_WORKSPACE_DIR=/path/workspace` 或配置 `workspace.dir` 改成相对项目目录的路径或绝对路径；环境变量优先级最高。确实需要读取项目外资料时，可以用 `NEO_AGENT_FILE_READ_DIRS=/path/a,/path/b` 或配置 `files.additionalReadDirs` 显式加入额外读取目录。
 
 workspace 内拥有完整文件管理权限，不再额外询问；写入项目目录其它位置或 `files.additionalWriteDirs` 授权目录时，会显示路径、操作摘要和字符数，并要求用户确认。`Delete` 默认移动到 `workspace/.neo-trash/`；只有 `permanent=true` 且用户确认后才会永久删除。`neo ask` 等非交互入口只能自动写入 workspace；需要写入项目外目录时，必须用 `NEO_AGENT_FILE_WRITE_DIRS=/path/out` 或配置 `files.additionalWriteDirs` 显式加入额外写入目录，且仍然需要交互确认。
+
+生成长 HTML/CSS/JS、落地页或完整单文件应用时，模型应使用 `Append` 分块写入 workspace：第一块 `mode=create`，后续块 `mode=append`，每块控制在约 4000 字符以内。这样可以避免一次性 `Write` 的超长 JSON 参数被模型输出长度截断；如果工具轮次耗尽且文件没有成功写入，neo 会停止输出长代码兜底，避免给出不完整文件。
 
 模型还可以使用 `Bash` 和 `Python` 在 workspace 内执行命令。`Bash` 默认 cwd 是 workspace，显式 `cwd` 也必须位于 workspace 内；`pwd/ls/find/rg/grep/cat/head/tail/wc/stat/file/du/tree` 等只读低风险命令会自动执行。写入、删除、安装、网络、git mutation、权限变更、后台进程、环境变量导出、shell 组合和重定向等高风险 Bash 需要交互确认。`Python` 会写入 `workspace/.neo-agent/tmp/python-*.py` 后执行，默认每次都需要确认。
 

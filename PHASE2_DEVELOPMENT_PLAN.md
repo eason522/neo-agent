@@ -68,12 +68,15 @@
 - workspace 内文件管理免确认；项目根目录和额外写入目录仍走确认。
 - 文件工具 prompt 已要求长 HTML/CSS/JS/落地页/完整单文件优先写入 `workspace/<name>`。
 - 路由器已把 HTML/CSS/JS、落地页、单文件、写入文件等任务强制走 main 模型。
-- QueryEngine 遇到 `finish_reason=length` 且工具参数 JSON 不完整时，不执行坏工具调用，而是回灌恢复提示。
+- 新增 `Append` 文件工具，专门用于长文件分块写入：第一块 `mode=create`，后续块 `mode=append`。
+- QueryEngine 遇到 `finish_reason=length` 且工具参数 JSON 不完整时，不执行坏工具调用，而是强制回灌 `Append` 分块恢复提示。
+- 工具轮次耗尽且长文件没有成功落盘时，最终提示禁止输出长代码兜底，避免返回被截断的不完整 HTML/CSS/JS。
 
 待收口：
 
 - [x] 为新增 `List/Mkdir/Copy/Move/Delete` 增加更细的独立 smoke 覆盖。
 - [x] README 中的文件工具章节需要同步补充完整文件管理能力。
+- [x] 修复长落地页生成中 `Write` 参数反复被 length 截断、最后刷出不完整代码的问题。
 
 ## 里程碑二：Shell / Python 执行能力
 

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../types.js';
@@ -12,6 +12,7 @@ export const READ_TOOL_NAME = 'Read';
 export const GLOB_TOOL_NAME = 'Glob';
 export const GREP_TOOL_NAME = 'Grep';
 export const WRITE_TOOL_NAME = 'Write';
+export const APPEND_TOOL_NAME = 'Append';
 export const EDIT_TOOL_NAME = 'Edit';
 export const LIST_TOOL_NAME = 'List';
 export const MKDIR_TOOL_NAME = 'Mkdir';
@@ -43,6 +44,12 @@ const grepInputSchema = z.object({
 const writeInputSchema = z.object({
   file_path: z.string(),
   content: z.string()
+});
+
+const appendInputSchema = z.object({
+  file_path: z.string(),
+  content: z.string(),
+  mode: z.enum(['create', 'append']).optional()
 });
 
 const editInputSchema = z.object({
@@ -102,9 +109,9 @@ const knownBinaryExtensions = new Set([
 ]);
 
 export type FilePermissionRequest = {
-  toolName: typeof WRITE_TOOL_NAME | typeof EDIT_TOOL_NAME | typeof MKDIR_TOOL_NAME | typeof COPY_TOOL_NAME | typeof MOVE_TOOL_NAME | typeof DELETE_TOOL_NAME;
+  toolName: typeof WRITE_TOOL_NAME | typeof APPEND_TOOL_NAME | typeof EDIT_TOOL_NAME | typeof MKDIR_TOOL_NAME | typeof COPY_TOOL_NAME | typeof MOVE_TOOL_NAME | typeof DELETE_TOOL_NAME;
   path: string;
-  operation: 'create' | 'overwrite' | 'edit' | 'mkdir' | 'copy' | 'move' | 'delete';
+  operation: 'create' | 'overwrite' | 'append' | 'edit' | 'mkdir' | 'copy' | 'move' | 'delete';
   summary: string;
   oldChars?: number;
   newChars: number;
@@ -236,7 +243,8 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
           name: WRITE_TOOL_NAME,
           description: [
             '在 workspace 目录内创建或覆盖文件不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
-            '不要用它做小范围替换，替换请使用 Edit。'
+            '不要用它做小范围替换，替换请使用 Edit。',
+            '长 HTML/CSS/JS/落地页/完整单文件不要一次性用 Write 传完整内容；请改用 Append 分块写入。'
           ].join('\n'),
           parameters: {
             type: 'object',
@@ -244,6 +252,27 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
             properties: {
               file_path: { type: 'string', description: '目标文件路径，可为相对当前项目目录的路径，或已授权额外写入目录内的绝对路径。' },
               content: { type: 'string', description: '要写入文件的完整内容。' }
+            },
+            required: ['file_path', 'content']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: APPEND_TOOL_NAME,
+          description: [
+            '分块写入长文件。workspace 目录内不需要额外确认；写入项目目录或其它授权写入目录时必须经过用户确认。',
+            '长 HTML/CSS/JS/落地页/完整单文件必须优先使用 Append：第一块 mode=create 创建或清空文件，后续块 mode=append 追加。',
+            '每块 content 控制在 4000 字符以内，避免工具参数再次被模型输出长度截断。'
+          ].join('\n'),
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              file_path: { type: 'string', description: '目标文件路径，可为相对当前项目目录的路径，或已授权额外写入目录内的绝对路径。' },
+              content: { type: 'string', description: '本次要写入或追加的一小块内容。建议不超过 4000 字符。' },
+              mode: { type: 'string', enum: ['create', 'append'], description: 'create 表示创建或清空后写入第一块；append 表示追加后续块。默认 append。' }
             },
             required: ['file_path', 'content']
           }
@@ -347,6 +376,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
       GLOB_TOOL_NAME,
       GREP_TOOL_NAME,
       WRITE_TOOL_NAME,
+      APPEND_TOOL_NAME,
       EDIT_TOOL_NAME,
       LIST_TOOL_NAME,
       MKDIR_TOOL_NAME,
@@ -357,7 +387,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
   }
 
   executionMode(name: string): 'parallel' | 'exclusive' {
-    return [WRITE_TOOL_NAME, EDIT_TOOL_NAME, MKDIR_TOOL_NAME, COPY_TOOL_NAME, MOVE_TOOL_NAME, DELETE_TOOL_NAME].includes(name) ? 'exclusive' : 'parallel';
+    return [WRITE_TOOL_NAME, APPEND_TOOL_NAME, EDIT_TOOL_NAME, MKDIR_TOOL_NAME, COPY_TOOL_NAME, MOVE_TOOL_NAME, DELETE_TOOL_NAME].includes(name) ? 'exclusive' : 'parallel';
   }
 
   async execute(call: ChatToolCall, options: ToolExecutionOptions = {}): Promise<{ content: string; record: FileToolCallRecord }> {
@@ -366,6 +396,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     if (call.function.name === GLOB_TOOL_NAME) return this.glob(call.function.arguments, options.signal);
     if (call.function.name === GREP_TOOL_NAME) return this.grep(call.function.arguments, options.signal);
     if (call.function.name === WRITE_TOOL_NAME) return this.write(call.function.arguments, options.signal);
+    if (call.function.name === APPEND_TOOL_NAME) return this.append(call.function.arguments, options.signal);
     if (call.function.name === EDIT_TOOL_NAME) return this.edit(call.function.arguments, options.signal);
     if (call.function.name === LIST_TOOL_NAME) return this.list(call.function.arguments, options.signal);
     if (call.function.name === MKDIR_TOOL_NAME) return this.mkdirTool(call.function.arguments, options.signal);
@@ -535,6 +566,44 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
         name: WRITE_TOOL_NAME,
         path: this.relativeToScope(target),
         operation: 'write',
+        resultChars: content.length,
+        durationMs: Date.now() - start
+      }
+    };
+  }
+
+  private async append(rawArguments: string, signal?: AbortSignal): Promise<{ content: string; record: FileToolCallRecord }> {
+    const input = appendInputSchema.parse(parseJsonObject(rawArguments));
+    const start = Date.now();
+    throwIfAborted(signal);
+    const mode = input.mode ?? 'append';
+    const target = await this.resolveWritableTarget(input.file_path, { allowMissingParentInWorkspace: true });
+    const existing = await readFile(target, 'utf8').catch(() => undefined);
+    const nextChars = mode === 'create'
+      ? input.content.length
+      : (existing?.length ?? 0) + input.content.length;
+    await this.requireWritePermission({
+      toolName: APPEND_TOOL_NAME,
+      path: this.relativeToScope(target),
+      operation: mode === 'create' && existing === undefined ? 'create' : 'append',
+      summary: mode === 'create'
+        ? (existing === undefined ? '创建文件并写入第一块' : '清空文件并写入第一块')
+        : '追加文件分块内容',
+      oldChars: existing?.length,
+      newChars: nextChars,
+      permissionRequired: !this.isInsideWorkspace(target)
+    });
+    throwIfAborted(signal);
+    await mkdir(path.dirname(target), { recursive: true });
+    if (mode === 'create') await writeFile(target, input.content, 'utf8');
+    else await appendFile(target, input.content, 'utf8');
+    const content = `${mode === 'create' ? 'initialized' : 'appended'} ${this.relativeToScope(target)} (+${input.content.length} chars, total=${nextChars} chars)`;
+    return {
+      content,
+      record: {
+        name: APPEND_TOOL_NAME,
+        path: this.relativeToScope(target),
+        operation: 'append',
         resultChars: content.length,
         durationMs: Date.now() - start
       }
@@ -941,8 +1010,9 @@ export function getFileToolPrompt(): string {
     '# 项目文件工具',
     '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 List/Glob/Grep 查找文件和内容。',
     '- Read 会拒绝普通二进制文件；图片和 PDF 只返回元数据摘要，不会把原始字节塞进上下文。',
-    '- workspace 目录是 neo 的默认可写工作区，Write/Edit/List/Mkdir/Copy/Move/Delete 在 workspace 内拥有完整文件管理能力；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
-    '- Write 在 workspace 内会自动创建父目录。长文件、HTML/CSS/JS、落地页和完整单文件应用应优先写入 workspace/<name>，不要把完整长代码直接刷屏。',
+    '- workspace 目录是 neo 的默认可写工作区，Write/Append/Edit/List/Mkdir/Copy/Move/Delete 在 workspace 内拥有完整文件管理能力；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
+    '- Write 在 workspace 内会自动创建父目录。它适合短文件或完整覆盖，不适合一次性写入很长代码。',
+    '- 长文件、HTML/CSS/JS、落地页和完整单文件应用必须优先写入 workspace/<name>，并使用 Append 分块写入：第一块 mode=create，后续块 mode=append，每块 content 控制在 4000 字符以内。不要把完整长代码直接刷屏。',
     '- Delete 默认移动到 workspace/.neo-trash；只有用户明确要求且权限确认后才能 permanent=true 永久删除。',
     '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；offset/limit 只控制返回行数，不能绕过总字节预算。',
     '- 文件工具默认只能访问 neo 启动时所在的项目目录、workspace 和显式授权额外目录，不能访问其它路径。'

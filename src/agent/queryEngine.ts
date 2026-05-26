@@ -70,6 +70,7 @@ export class QueryEngine {
     const toolEvents: ToolProgressEvent[] = [];
     const toolPairs: ToolPairRecord[] = [];
     const initialToolDefinitions = this.toolDefinitions();
+    let truncatedToolArgumentRounds = 0;
 
     if (initialToolDefinitions.length === 0) {
       return {
@@ -98,9 +99,11 @@ export class QueryEngine {
       throwIfAborted(runOptions.signal);
 
       if (response.finishReason === 'length' && response.toolCalls.length > 0 && hasIncompleteToolArguments(response.toolCalls)) {
+        truncatedToolArgumentRounds += 1;
         this.logger.warn('tool.arguments_truncated', {
           round,
-          toolCallCount: response.toolCalls.length
+          toolCallCount: response.toolCalls.length,
+          consecutiveCount: truncatedToolArgumentRounds
         });
         loopMessages.push({
           role: 'assistant',
@@ -108,10 +111,11 @@ export class QueryEngine {
         });
         loopMessages.push({
           role: 'user',
-          content: '上一次工具调用参数被模型输出长度截断，neo 没有执行坏工具调用。请改用更小块、分段写入，或重新生成完整合法 JSON 参数后再调用工具。长 HTML/CSS/JS 请优先写入 workspace 文件并分块。'
+          content: buildTruncatedToolArgumentsRecoveryPrompt(truncatedToolArgumentRounds)
         });
         continue;
       }
+      truncatedToolArgumentRounds = 0;
 
       if (response.toolCalls.length === 0) {
         return { text: response.content, webToolCalls, mcpToolCalls, fileToolCalls, executionToolCalls, skillToolCalls, toolEvents, toolPairs };
@@ -161,7 +165,7 @@ export class QueryEngine {
         ...loopMessages,
         {
           role: 'user',
-          content: '工具调用轮次已达到上限。请基于已有工具结果直接给出最终回答；如果信息不足，要明确说明。'
+          content: buildMaxRoundsFinalPrompt(messages, fileToolCalls, executionToolCalls)
         }
       ],
       toolChoice: 'none',
@@ -169,6 +173,18 @@ export class QueryEngine {
       stream: this.streamHandlers()
     });
     throwIfAborted(runOptions.signal);
+    if (shouldSuppressLongCodeFallback(messages, fileToolCalls, executionToolCalls, finalResponse)) {
+      return {
+        text: '未完成：工具调用轮次已达到上限，且目标文件没有成功写入 workspace。为避免输出被截断的不完整代码，neo 已停止刷屏兜底。请重新发起任务，或要求我用 Append 分块写入目标文件。',
+        webToolCalls,
+        mcpToolCalls,
+        fileToolCalls,
+        executionToolCalls,
+        skillToolCalls,
+        toolEvents,
+        toolPairs
+      };
+    }
     return { text: finalResponse.content, webToolCalls, mcpToolCalls, fileToolCalls, executionToolCalls, skillToolCalls, toolEvents, toolPairs };
   }
 
@@ -487,6 +503,61 @@ function hasIncompleteToolArguments(toolCalls: ChatToolCall[]): boolean {
       return true;
     }
   });
+}
+
+function buildTruncatedToolArgumentsRecoveryPrompt(consecutiveCount: number): string {
+  const base = [
+    '上一次工具调用参数被模型输出长度截断，neo 没有执行坏工具调用。',
+    '如果你要写长文件、HTML/CSS/JS、落地页或完整单文件应用，必须改用 Append 分块写入 workspace 文件：第一块调用 Append，mode=create；后续块调用 Append，mode=append；每块 content 不超过 4000 字符。',
+    '不要再次用 Write 传完整长 content，也不要在最终回答里刷出整段长代码。'
+  ];
+  if (consecutiveCount >= 2) {
+    base.push('你已经连续触发工具参数截断。下一步必须先用 Append 写一个小块，或明确说明无法完成；不要继续生成超长 Write 参数。');
+  }
+  return base.join(' ');
+}
+
+function buildMaxRoundsFinalPrompt(
+  originalMessages: ChatMessage[],
+  fileToolCalls: FileToolCallRecord[],
+  executionToolCalls: ExecutionToolCallRecord[]
+): string {
+  if (isLikelyLongFileGenerationRequest(originalMessages) && !hasSuccessfulFileWriteSurface(fileToolCalls, executionToolCalls)) {
+    return [
+      '工具调用轮次已达到上限，且用户请求看起来是生成长文件/HTML/CSS/JS/落地页/完整单文件，但没有成功写入目标文件。',
+      '不要输出完整代码兜底，不要输出长代码块。',
+      '请用简短中文明确说明未完成、原因是工具参数被截断或轮次耗尽，并建议重新使用 Append 分块写入 workspace 文件。'
+    ].join(' ');
+  }
+  return '工具调用轮次已达到上限。请基于已有工具结果直接给出最终回答；如果信息不足，要明确说明。不要输出可能被截断的长代码兜底。';
+}
+
+function shouldSuppressLongCodeFallback(
+  originalMessages: ChatMessage[],
+  fileToolCalls: FileToolCallRecord[],
+  executionToolCalls: ExecutionToolCallRecord[],
+  response: { content: string; finishReason?: string | null }
+): boolean {
+  if (!isLikelyLongFileGenerationRequest(originalMessages)) return false;
+  if (hasSuccessfulFileWriteSurface(fileToolCalls, executionToolCalls)) return false;
+  if (response.finishReason === 'length') return true;
+  return response.content.length > 6000 && /```|<html|<!DOCTYPE|<style|<script/i.test(response.content);
+}
+
+function isLikelyLongFileGenerationRequest(messages: ChatMessage[]): boolean {
+  const userText = messages
+    .filter(message => message.role === 'user')
+    .map(message => message.content)
+    .join('\n');
+  return /(html|css|javascript|js|landing page|single[- ]file|write (a )?file|create (a )?file|生成.*(文件|网页|页面)|写入.*文件|落地页|单文件|完整.*(HTML|代码|页面))/i.test(userText);
+}
+
+function hasSuccessfulFileWriteSurface(
+  fileToolCalls: FileToolCallRecord[],
+  executionToolCalls: ExecutionToolCallRecord[]
+): boolean {
+  if (fileToolCalls.some(call => ['write', 'append', 'edit', 'copy', 'move'].includes(call.operation ?? ''))) return true;
+  return executionToolCalls.some(call => call.exitCode === 0);
 }
 
 function orderedRoundOutput(

@@ -346,11 +346,11 @@ export type McpToolCallRecord = {
 };
 
 export type FileToolCallRecord = {
-  name: 'Read' | 'Glob' | 'Grep' | 'Write' | 'Edit' | 'List' | 'Mkdir' | 'Copy' | 'Move' | 'Delete';
+  name: 'Read' | 'Glob' | 'Grep' | 'Write' | 'Append' | 'Edit' | 'List' | 'Mkdir' | 'Copy' | 'Move' | 'Delete';
   path?: string;
   targetPath?: string;
   pattern?: string;
-  operation?: 'read' | 'glob' | 'grep' | 'write' | 'edit' | 'list' | 'mkdir' | 'copy' | 'move' | 'delete';
+  operation?: 'read' | 'glob' | 'grep' | 'write' | 'append' | 'edit' | 'list' | 'mkdir' | 'copy' | 'move' | 'delete';
   resultCount?: number;
   resultChars: number;
   durationMs: number;

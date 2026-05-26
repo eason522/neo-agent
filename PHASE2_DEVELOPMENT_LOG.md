@@ -429,3 +429,31 @@ node dist/index.js openviking doctor
 
 - 这不是完整 PTY 截图测试。
 - 宽窄终端、中文宽度和真实 Ink 交互仍待后续专项处理。
+
+## 2026-05-26：修复长落地页生成工具参数截断
+
+用户反馈：让 neo 生成单 HTML 个人介绍落地页时，模型已经路由到 main，但连续多轮 `Write` 工具参数因为 `finish_reason=length` 被截断；neo 没有执行坏工具调用，最后却输出了一段不完整 HTML 兜底。
+
+按总开发计划最高原则先查 CC-Source 相近实现：
+
+- `CC-Source/src/tools/FileWriteTool/prompt.ts`：强调完整写入会覆盖文件，修改现有文件前要先读，修改小范围内容应使用 Edit。
+- `CC-Source/src/tools/FileWriteTool/FileWriteTool.ts`：文件写入走权限、校验、结果渲染和 diff/历史记录，不靠最终回答刷代码。
+- `CC-Source/src/tools/BashTool/prompt.ts`：复杂外部操作通过工具完成，不把执行结果伪装成已完成。
+
+neo-agent 的偏离和原因：
+
+- CC-Source 没有专门的 `Append` 工具；neo 当前模型在长 HTML 场景中会把完整文件塞入一次 `Write` JSON 参数，导致参数在模型输出层被截断。
+- 本次新增 `Append` 作为二阶段 workspace 可靠生成能力的一部分：第一块 `mode=create`，后续块 `mode=append`，每块建议小于 4000 字符。
+- QueryEngine 的截断恢复提示从“分块或重试”收紧为“必须用 Append 分块，禁止再次用 Write 传完整长 content”。
+- 工具轮次耗尽且长文件没有成功写入时，最终提示禁止输出完整代码兜底；如果模型仍返回被截断长代码，QueryEngine 会替换为简短未完成说明。
+
+收敛边界：
+
+- 本次只处理长文件生成、工具参数截断和不完整代码兜底。
+- 没有扩展 TUI、OpenViking 或权限持久化。
+- 没有引入 Bash heredoc 自动替代方案，避免把文件写入可靠性问题扩散到 shell 执行策略。
+
+验证：
+
+- smoke 新增 `Append` 分块写入 workspace 文件覆盖。
+- smoke 新增 QueryEngine 截断恢复覆盖：坏 `Write` 参数不执行、恢复提示包含 `Append/mode=create`、连续截断写日志、最终禁止长代码兜底。
