@@ -12,6 +12,19 @@ export type OpenVikingHealth = {
   message: string;
 };
 
+export function getOpenVikingLocalServiceSetupHint(url = 'http://localhost:1933'): string {
+  const healthUrl = new URL('/health', url).toString();
+  return [
+    '按 OpenViking 官方 GitHub 文档，本地服务推荐流程：',
+    '1. pip install openviking --upgrade --force-reinstall',
+    '2. openviking-server init',
+    '3. openviking-server doctor',
+    '4. openviking-server',
+    `5. curl ${healthUrl}`,
+    'OpenViking /mcp 与 REST API 共用同一个 openviking-server 进程和端口；本地 localhost 开发模式不需要额外 API key。'
+  ].join('\n');
+}
+
 export class OpenVikingMemory {
   private readonly pendingPath: string;
 
@@ -22,9 +35,17 @@ export class OpenVikingMemory {
   async health(): Promise<OpenVikingHealth> {
     const mcp: unknown | { error: string } = await this.callMcpTool('health', {}).catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
     if (!hasError(mcp)) return { ok: true, mode: 'mcp', message: 'OpenViking /mcp health 可用。' };
-    const http = await fetch(this.config.memory.openVikingUrl, { signal: AbortSignal.timeout(1500) }).catch(() => undefined);
-    if (http?.ok) return { ok: true, mode: 'http-search', message: 'OpenViking HTTP 可访问；/mcp 不可用，将仅尝试旧 search 接口。' };
-    return { ok: false, mode: 'offline', message: `OpenViking 主存储离线，写入会进入待同步队列：${this.config.memory.openVikingUrl}` };
+    const healthUrl = new URL('/health', this.config.memory.openVikingUrl);
+    const http = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) }).catch(() => undefined);
+    if (http?.ok) return { ok: true, mode: 'http-search', message: 'OpenViking /health 可访问；/mcp 不可用，将仅尝试旧 search 接口。' };
+    return {
+      ok: false,
+      mode: 'offline',
+      message: [
+        `OpenViking 主存储离线，写入会进入待同步队列：${this.config.memory.openVikingUrl}`,
+        getOpenVikingLocalServiceSetupHint(this.config.memory.openVikingUrl)
+      ].join('\n')
+    };
   }
 
   async search(query: string, limit = this.config.memory.maxHits): Promise<MemoryHit[]> {

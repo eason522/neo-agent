@@ -8,6 +8,7 @@ import type { AppConfig } from '../types.js';
 import { loadConfig } from '../config.js';
 import { pathExists } from '../utils/fs.js';
 import { loadSoul } from '../prompts/soul.js';
+import { getOpenVikingLocalServiceSetupHint } from '../memory/openVikingMemory.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -523,22 +524,50 @@ async function checkOpenViking(config: AppConfig): Promise<DoctorCheck> {
   }
 
   try {
-    const response = await fetch(config.memory.openVikingUrl, { signal: AbortSignal.timeout(1500) });
+    const healthUrl = new URL('/health', config.memory.openVikingUrl);
+    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) });
+    const mcpResponse = response.ok ? await probeOpenVikingMcp(config.memory.openVikingUrl).catch(() => undefined) : undefined;
+    if (response.ok && mcpResponse?.ok) {
+      return {
+        status: 'pass',
+        name: 'OpenViking',
+        message: 'OpenViking 本地服务和 /mcp 可访问。',
+        detail: `${healthUrl.toString()} -> ${response.status}, /mcp health -> ok`
+      };
+    }
     return {
-      status: response.ok ? 'pass' : 'warn',
+      status: 'warn',
       name: 'OpenViking',
-      message: response.ok ? 'OpenViking 服务可访问。' : 'OpenViking 地址有响应，但状态不是 2xx。',
-      detail: `${config.memory.openVikingUrl} -> ${response.status}`
+      message: response.ok ? 'OpenViking /health 可访问，但 /mcp health 不可用。' : 'OpenViking /health 有响应，但状态不是 2xx。',
+      detail: `${healthUrl.toString()} -> ${response.status}${mcpResponse ? `, /mcp -> ${mcpResponse.status}` : ''}`,
+      fix: response.ok ? '确认 openviking-server 版本包含同进程 /mcp 端点，并按官方文档检查 openviking-server doctor。' : getOpenVikingLocalServiceSetupHint(config.memory.openVikingUrl)
     };
   } catch {
     return {
       status: 'warn',
       name: 'OpenViking',
-      message: 'OpenViking 服务当前不可访问，将回退到本地记忆。',
+      message: 'OpenViking 本地服务当前不可访问，将回退到本地记忆。',
       detail: config.memory.openVikingUrl,
-      fix: '如果需要 OpenViking 检索，请启动 OpenViking 服务，或把 NEO_AGENT_MEMORY_BACKEND 设置为 local。'
+      fix: getOpenVikingLocalServiceSetupHint(config.memory.openVikingUrl)
     };
   }
+}
+
+async function probeOpenVikingMcp(url: string): Promise<{ ok: boolean; status: number }> {
+  const response = await fetch(new URL('/mcp', url), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'neo-doctor',
+      method: 'tools/call',
+      params: { name: 'health', arguments: {} }
+    }),
+    signal: AbortSignal.timeout(1500)
+  });
+  if (!response.ok) return { ok: false, status: response.status };
+  const payload = await response.json() as { error?: unknown };
+  return { ok: !payload.error, status: response.status };
 }
 
 function checkWebConfig(config: AppConfig): DoctorCheck {

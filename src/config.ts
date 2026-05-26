@@ -431,6 +431,10 @@ export async function initConfigFile(cwd = process.cwd()): Promise<string> {
 }
 
 function applyRuntimeEnvOverrides(config: AppConfig): void {
+  if (process.env.NEO_AGENT_MEMORY_BACKEND === 'local' || process.env.NEO_AGENT_MEMORY_BACKEND === 'openviking' || process.env.NEO_AGENT_MEMORY_BACKEND === 'hybrid') {
+    config.memory.backend = process.env.NEO_AGENT_MEMORY_BACKEND;
+  }
+  if (process.env.NEO_AGENT_OPENVIKING_URL) config.memory.openVikingUrl = process.env.NEO_AGENT_OPENVIKING_URL;
   if (process.env.NEO_AGENT_WORKSPACE_DIR) config.workspace.dir = process.env.NEO_AGENT_WORKSPACE_DIR;
   applyPositiveIntegerEnvOverride(config.models.main, 'maxTokens', process.env.NEO_AGENT_MAIN_MAX_TOKENS);
   applyPositiveIntegerEnvOverride(config.models.small, 'maxTokens', process.env.NEO_AGENT_SMALL_MAX_TOKENS);

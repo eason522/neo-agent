@@ -509,3 +509,28 @@ neo-agent 的偏离和原因：
 - 保留 `NEO_AGENT_MAIN_MAX_TOKENS`、`NEO_AGENT_SMALL_MAX_TOKENS`、`NEO_AGENT_VISION_MAX_TOKENS` 运行时覆盖。
 - README 明确已有用户配置可能仍保留旧值，需要用 `neo config set` 更新。
 - smoke 覆盖默认配置和三个环境变量覆盖。
+
+## 2026-05-26：按 OpenViking 官方 GitHub 文档补本地服务提示
+
+用户纠正：OpenViking 走本地服务，官方 GitHub 文档有详细的本地安装部署教程；之前只记录“本机没装所以阻塞”不够。
+
+参考官方 GitHub 文档：
+
+- `docs/en/getting-started/02-quickstart.md`
+- `docs/en/getting-started/03-quickstart-server.md`
+- `docs/en/guides/06-mcp-integration.md`
+
+关键信息：
+
+- 本地安装：`pip install openviking --upgrade --force-reinstall`
+- 首次配置：`openviking-server init`
+- 启动前检查：`openviking-server doctor`
+- 启动服务：`openviking-server`
+- 验证服务：`curl http://localhost:1933/health`
+- `/mcp` 是 `openviking-server` 同一进程同一端口暴露的 HTTP MCP endpoint；localhost 开发模式不需要额外 API key。
+
+修正：
+
+- `OpenVikingMemory.health()` 离线提示中加入官方本地服务流程。
+- `neo doctor` 的 OpenViking 检查改为优先探测 `/health`，服务可用后再探测 `/mcp` 的 `health` tool。
+- README 和二阶段计划同步说明本地服务安装部署流程。

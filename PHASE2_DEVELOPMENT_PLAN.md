@@ -130,6 +130,7 @@
 当前验证结果：
 
 - 当前机器上 `http://localhost:1933` 未运行，`neo openviking doctor` 正确报告 OpenViking 离线，pending 为 0。
+- `neo doctor` / `neo openviking doctor` 已按 OpenViking 官方 GitHub 文档提示本地服务部署流程：`pip install openviking --upgrade --force-reinstall`、`openviking-server init`、`openviking-server doctor`、`openviking-server`、`curl http://localhost:1933/health`。
 
 待收口：
 

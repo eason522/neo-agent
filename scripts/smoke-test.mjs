@@ -171,12 +171,16 @@ test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
     env: {
       NEO_AGENT_MAIN_MAX_TOKENS: '32768',
       NEO_AGENT_SMALL_MAX_TOKENS: '32769',
-      NEO_AGENT_VISION_MAX_TOKENS: '16384'
+      NEO_AGENT_VISION_MAX_TOKENS: '16384',
+      NEO_AGENT_MEMORY_BACKEND: 'openviking',
+      NEO_AGENT_OPENVIKING_URL: 'http://127.0.0.1:1933'
     }
   });
   assertIncludes(maxTokenOverride.stdout, '"maxTokens": 32768');
   assertIncludes(maxTokenOverride.stdout, '"maxTokens": 32769');
   assertIncludes(maxTokenOverride.stdout, '"maxTokens": 16384');
+  assertIncludes(maxTokenOverride.stdout, '"backend": "openviking"');
+  assertIncludes(maxTokenOverride.stdout, '"openVikingUrl": "http://127.0.0.1:1933"');
 
   const projectDir = path.join(tempHome, 'config-project');
   await mkdir(projectDir, { recursive: true });
@@ -931,6 +935,23 @@ test('OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pendin
     await new Promise(resolve => server.close(resolve));
     await rm(memoryHome, { recursive: true, force: true });
   }
+});
+
+test('OpenViking doctor 离线时提示官方本地服务部署流程', async () => {
+  const result = await run(['openviking', 'doctor'], {
+    expectCode: 1,
+    env: {
+      DEEPSEEK_API_KEY: 'test-key',
+      NEO_AGENT_OPENVIKING_URL: 'http://127.0.0.1:1'
+    }
+  });
+  assertIncludes(result.stdout, 'offline mode=offline');
+  assertIncludes(result.stdout, 'pip install openviking --upgrade --force-reinstall');
+  assertIncludes(result.stdout, 'openviking-server init');
+  assertIncludes(result.stdout, 'openviking-server doctor');
+  assertIncludes(result.stdout, 'openviking-server');
+  assertIncludes(result.stdout, 'curl http://127.0.0.1:1/health');
+  assertIncludes(result.stdout, 'localhost 开发模式不需要额外 API key');
 });
 
 test('DreamService 支持锁、报告回放、人工采纳和记忆复查', async () => {
