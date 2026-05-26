@@ -318,7 +318,7 @@ node dist/index.js openviking doctor
 - Python 无确认时拒绝
 - Bash `cwd` 越界拒绝
 - Bash/Python 确认后可执行
-- OpenViking mock `/mcp` 的 `health/store/search/list/forget`
+- OpenViking mock `/mcp` 的 `health/remember/search/list/forget`
 - OpenViking 离线 pending queue 和恢复后 `sync-pending`
 
 专项 smoke 暴露一个真实问题：`NEO_AGENT_WORKSPACE_DIR` 在 `workspace show` 中显示来源为 env，但实际路径仍会被项目配置覆盖。根因是 `defaultConfig()` 先读取环境变量，随后 `loadConfig()` 又用 user/project config 覆盖了 defaults。已修复为：在 `loadConfig()` 和 `mergeConfigSources()` 合并配置后，再应用 `NEO_AGENT_WORKSPACE_DIR` 运行时覆盖，确保 env 优先级最高。
@@ -580,5 +580,37 @@ npm run smoke
 - `neo openviking doctor` 返回 `ok mode=mcp`。
 - 3 条离线 pending 记忆已成功同步。
 - neo 通过 OpenViking 真实服务写入测试记忆，并能搜索命中。
+- `npm run typecheck` 通过。
+- `npm run smoke` 通过。
+
+## 2026-05-26：拆分 REPL 输入和权限确认核心模型
+
+回到二阶段 TUI 里程碑，按计划推进 Ink/React 体验等价的前置拆分。本次只做可复用核心模型，不实现完整 Ink PromptInput 或 PermissionDialog，避免扩大支线。
+
+CC-Source 参考：
+
+- `src/components/PromptInput/*`：输入组件把粘贴、历史、模式和快捷键作为独立交互能力组织。
+- `src/components/permissions/*` 与 `src/utils/permissions/*`：权限请求先形成结构化决策/展示模型，再交给 UI 渲染和用户选择。
+- `src/hooks/useInputBuffer.ts`、`src/hooks/useTextInput.ts`：输入编辑状态和 UI 渲染分层处理。
+
+neo-agent 的偏离和原因：
+
+- neo 当前仍以 legacy REPL 为主，不直接移植 CC-Source 完整 Ink 输入组件。
+- 先把 REPL 中已经稳定的纯逻辑抽出，减少后续 Ink 层对 legacy REPL 私有函数的依赖。
+
+更新：
+
+- 新增 `src/terminal/permissionPrompts.ts`：
+  - `buildMcpPermissionPromptInput`
+  - `buildFilePermissionPromptInput`
+  - `buildExecutionPermissionPromptInput`
+  - 继续保留对应 `format*PermissionPrompt` 和 `parse*PermissionAnswer`
+- 新增 `src/terminal/inputModel.ts`：
+  - 粘贴识别、粘贴文本规范化、长粘贴折叠、占位符展开和历史脱敏过滤。
+- `src/terminal/repl.ts` 改为复用上述模块，并继续 re-export 旧函数，保持现有 smoke 和外部引用兼容。
+
+验证：
+
+- smoke 扩展权限确认测试，覆盖结构化 prompt model、执行权限提示和输入粘贴/历史纯逻辑。
 - `npm run typecheck` 通过。
 - `npm run smoke` 通过。

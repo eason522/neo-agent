@@ -3107,13 +3107,25 @@ test('TUI 状态模型能生成运行时摘要和回合摘要', async () => {
 
 test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄露', async () => {
   const {
+    buildExecutionPermissionPromptInput,
+    buildMcpPermissionPromptInput,
     formatMcpPermissionPrompt,
+    formatExecutionPermissionPrompt,
     formatFilePermissionPrompt,
     parseMcpPermissionAnswer,
-    parseFilePermissionAnswer
+    parseFilePermissionAnswer,
+    parseExecutionPermissionAnswer
   } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'repl.js')).href);
+  const {
+    createPastedContentPlaceholder,
+    expandPastedContentPlaceholders,
+    looksLikePlainTextPaste,
+    normalizePastedText,
+    shouldFoldPastedText,
+    shouldPersistHistory
+  } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'inputModel.js')).href);
 
-  const mcpPrompt = formatMcpPermissionPrompt({
+  const mcpRequest = {
     toolName: 'create_issue',
     fullName: 'mcp__github__create_issue',
     serverName: 'github',
@@ -3122,7 +3134,11 @@ test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄
     risk: '可能写入外部服务',
     argumentKeys: ['title', 'token'],
     argumentChars: 88
-  });
+  };
+  const mcpPromptInput = buildMcpPermissionPromptInput(mcpRequest);
+  if (mcpPromptInput.actions.length !== 4) throw new Error(`MCP 权限模型应暴露 4 个动作：${JSON.stringify(mcpPromptInput)}`);
+  if (!mcpPromptInput.footer?.some(line => line.includes('mcp permission allow'))) throw new Error(`MCP 权限模型应包含持久授权提示：${JSON.stringify(mcpPromptInput)}`);
+  const mcpPrompt = formatMcpPermissionPrompt(mcpRequest);
   assertIncludes(mcpPrompt, '权限确认：MCP 工具');
   assertIncludes(mcpPrompt, '允许本次');
   assertIncludes(mcpPrompt, '始终允许这个工具');
@@ -3133,6 +3149,27 @@ test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄
   if (parseMcpPermissionAnswer('a') !== 'allow_always') throw new Error('MCP a 应解析为持久允许');
   if (parseMcpPermissionAnswer('d') !== 'deny_always') throw new Error('MCP d 应解析为持久拒绝');
   if (parseMcpPermissionAnswer('y') !== 'allow_once') throw new Error('MCP y 应解析为本次允许');
+
+  const execPromptInput = buildExecutionPermissionPromptInput({
+    toolName: 'Python',
+    cwd: '/tmp/project/workspace',
+    command: 'print("hello")',
+    description: '运行 Python',
+    risk: '任意代码执行',
+    reason: 'Python 默认需要确认'
+  });
+  if (execPromptInput.actions.length !== 2) throw new Error(`执行权限模型应暴露允许/拒绝：${JSON.stringify(execPromptInput)}`);
+  const execPrompt = formatExecutionPermissionPrompt({
+    toolName: 'Python',
+    cwd: '/tmp/project/workspace',
+    command: 'print("hello")',
+    description: '运行 Python',
+    risk: '任意代码执行',
+    reason: 'Python 默认需要确认'
+  });
+  assertIncludes(execPrompt, '权限确认：Python');
+  assertIncludes(execPrompt, '高风险 Bash 和 Python 只支持本次确认');
+  if (parseExecutionPermissionAnswer('允许') !== 'allow') throw new Error('Execution 允许 应解析为允许');
 
   const filePrompt = formatFilePermissionPrompt({
     toolName: 'Write',
@@ -3147,6 +3184,16 @@ test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄
   assertIncludes(filePrompt, '文件写入暂只支持本次确认');
   if (parseFilePermissionAnswer('yes') !== 'allow') throw new Error('File yes 应解析为允许');
   if (parseFilePermissionAnswer('n') !== 'deny') throw new Error('File n 应解析为拒绝');
+
+  if (!looksLikePlainTextPaste('第一行\n第二行\n第三行')) throw new Error('多行纯文本应识别为粘贴');
+  const normalizedPaste = normalizePastedText('\u001b[31m第一行\r\n\t第二行\n');
+  if (normalizedPaste !== '第一行\n    第二行') throw new Error(`粘贴文本应去 ANSI、统一换行和 tab：${JSON.stringify(normalizedPaste)}`);
+  if (!shouldFoldPastedText('a\nb\nc\nd')) throw new Error('多行粘贴应折叠为占位符');
+  const pasted = new Map();
+  const placeholder = createPastedContentPlaceholder('secret\nbody', 1, '', pasted);
+  pasted.set(placeholder, 'secret\nbody');
+  if (expandPastedContentPlaceholders(`请处理 ${placeholder}`, pasted) !== '请处理 secret\nbody') throw new Error('粘贴占位符应在提交前展开');
+  if (shouldPersistHistory('sk-abcdefghijklmnop')) throw new Error('包含 API key 的输入不应进入历史');
 });
 
 test('M5 终端体验收口回归覆盖状态、工具、compact 和错误边界', async () => {

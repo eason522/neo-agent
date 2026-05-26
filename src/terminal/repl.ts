@@ -6,15 +6,39 @@ import chalk from 'chalk';
 import type { NeoAgent } from '../neoAgent.js';
 import { extractImageAttachments } from '../input/attachments.js';
 import type { AgentStatusEvent, MemoryCategory, MemoryRecord, SkillImprovementSuggestion, SkillSuggestion, ToolProgressEvent } from '../types.js';
-import type { FilePermissionRequest } from '../files/fileTools.js';
-import type { ExecutionPermissionRequest } from '../tools/executionTools.js';
-import type { McpPermissionAskRequest } from '../mcp/mcpToolRunner.js';
 import { formatWebCrawl, formatWebExtract, formatWebMap, formatWebSearch } from '../web/tavilyClient.js';
 import { createAbortError, isAbortError } from '../utils/abort.js';
 import { formatUsageSummary } from '../usage/usageTracker.js';
 import type { TranscriptSessionSummary } from '../transcript/transcriptService.js';
-import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary, formatPermissionPrompt } from './rendering.js';
+import { formatAssistantResponseBlock, formatDebugEventLine, formatErrorBlock, formatEventSummary } from './rendering.js';
 import { showWorkspace } from '../workspace/workspaceCommands.js';
+import {
+  createPastedContentPlaceholder,
+  expandPastedContentPlaceholders,
+  looksLikePlainTextPaste,
+  normalizePastedText,
+  shouldFoldPastedText,
+  shouldPersistHistory
+} from './inputModel.js';
+import {
+  formatExecutionPermissionPrompt,
+  formatFilePermissionPrompt,
+  formatMcpPermissionPrompt,
+  parseExecutionPermissionAnswer,
+  parseFilePermissionAnswer,
+  parseMcpPermissionAnswer
+} from './permissionPrompts.js';
+export {
+  buildExecutionPermissionPromptInput,
+  buildFilePermissionPromptInput,
+  buildMcpPermissionPromptInput,
+  formatExecutionPermissionPrompt,
+  formatFilePermissionPrompt,
+  formatMcpPermissionPrompt,
+  parseExecutionPermissionAnswer,
+  parseFilePermissionAnswer,
+  parseMcpPermissionAnswer
+} from './permissionPrompts.js';
 
 type ReplState = {
   debugEnabled: boolean;
@@ -54,9 +78,6 @@ const enableModifyOtherKeys = '\x1b[>4;2m';
 const disableModifyOtherKeys = '\x1b[>4m';
 const enableBracketedPaste = '\x1b[?2004h';
 const disableBracketedPaste = '\x1b[?2004l';
-const largePasteThreshold = 800;
-const largePasteMaxVisibleLines = 2;
-
 export async function startRepl(agent: NeoAgent, options: { preloadedInput?: string } = {}): Promise<void> {
   const isInteractiveSession = Boolean(input.isTTY);
   if (isInteractiveSession) {
@@ -510,50 +531,6 @@ function getTerminalColumns(): number {
   return Math.max(20, output.columns || Number(process.env.COLUMNS) || 80);
 }
 
-function looksLikePlainTextPaste(value: string): boolean {
-  if (value.includes('\x1b')) return false;
-  if (!/[\r\n]/.test(value)) return false;
-  return value.length > 12 || (value.match(/\r\n|\r|\n/g)?.length ?? 0) > 1;
-}
-
-function normalizePastedText(value: string): string {
-  const normalized = stripAnsi(value)
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replaceAll('\t', '    ');
-  return normalized.replace(/\n$/, '');
-}
-
-function shouldFoldPastedText(value: string): boolean {
-  if (value.length > largePasteThreshold) return true;
-  return getPastedTextLineBreakCount(value) > largePasteMaxVisibleLines;
-}
-
-function getPastedTextLineBreakCount(value: string): number {
-  return value.match(/\n/g)?.length ?? 0;
-}
-
-function createPastedContentPlaceholder(
-  value: string,
-  pasteId: number,
-  currentInput: string,
-  pastedContents: Map<string, string>
-): string {
-  const base = `[Pasted Content ${value.length} chars]`;
-  if (!currentInput.includes(base) && !pastedContents.has(base)) return base;
-  return `[Pasted Content #${pasteId} ${value.length} chars]`;
-}
-
-function expandPastedContentPlaceholders(value: string, pastedContents: Map<string, string>): string {
-  if (pastedContents.size === 0) return value;
-  const pattern = new RegExp([...pastedContents.keys()].map(escapeRegExp).join('|'), 'g');
-  return value.replace(pattern, placeholder => pastedContents.get(placeholder) ?? placeholder);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function displayWidth(value: string): number {
   let width = 0;
   for (const char of stripAnsi(value)) {
@@ -661,10 +638,6 @@ async function saveReplHistory(filePath: string, line: string): Promise<void> {
   const existing = await loadReplHistory(filePath);
   const next = [...existing.filter(item => item !== normalized), normalized].slice(-200);
   await writeFile(filePath, `${next.join('\n')}\n`, 'utf8');
-}
-
-function shouldPersistHistory(line: string): boolean {
-  return !/(api[-_ ]?key|sk-[A-Za-z0-9]{12,}|tp-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9_-]{12,})/i.test(line);
 }
 
 function findMultilineSequence(input: string): { index: number; sequence: string } | undefined {
@@ -1602,95 +1575,6 @@ function formatSubAgentTask(task: {
     includeOutput && task.output ? `\n${task.output.trimEnd()}` : '',
     includeOutput && task.error ? chalk.red(`\n${task.error}`) : ''
   ].filter(Boolean).join('\n');
-}
-
-export function formatMcpPermissionPrompt(request: McpPermissionAskRequest): string {
-  const keys = request.argumentKeys.length > 0 ? request.argumentKeys.join(', ') : '无';
-  return formatPermissionPrompt({
-    title: chalk.yellow('权限确认：MCP 工具'),
-    subtitle: '外部 MCP server 将收到这次工具调用。',
-    fields: [
-      { label: '工具', value: request.fullName },
-      { label: '来源', value: `${request.serverName}.${request.toolName}` },
-      { label: '说明', value: request.description },
-      { label: '原因', value: request.reason },
-      { label: '风险', value: request.risk },
-      { label: '参数', value: `${request.argumentChars} 字符；字段：${keys}` }
-    ],
-    question: '是否允许 neo 调用这个 MCP 工具？',
-    actions: [
-      { key: 'y', label: '允许本次' },
-      { key: 'a', label: '始终允许这个工具（写入用户配置）' },
-      { key: 'n', label: '拒绝本次' },
-      { key: 'd', label: '始终拒绝这个工具（写入用户配置）' }
-    ],
-    footer: [
-      `持久允许命令：neo mcp permission allow ${request.fullName}`,
-      `持久拒绝命令：neo mcp permission deny ${request.fullName}`
-    ]
-  });
-}
-
-export function parseMcpPermissionAnswer(answer: string): 'allow_once' | 'allow_always' | 'deny' | 'deny_always' {
-  const normalized = answer.trim().toLowerCase();
-  if (/^(a|always|始终允许|永久允许|总是允许)$/i.test(normalized)) return 'allow_always';
-  if (/^(d|deny always|始终拒绝|永久拒绝|总是拒绝)$/i.test(normalized)) return 'deny_always';
-  if (/^(y|yes|允许|同意)$/i.test(normalized)) return 'allow_once';
-  return 'deny';
-}
-
-export function formatFilePermissionPrompt(request: FilePermissionRequest): string {
-  return formatPermissionPrompt({
-    title: chalk.yellow('权限确认：文件写入'),
-    subtitle: '文件内容将被创建、覆盖或编辑。',
-    fields: [
-      { label: '工具', value: request.toolName },
-      { label: '路径', value: request.path },
-      { label: '操作', value: request.operation },
-      { label: '摘要', value: request.summary },
-      { label: '原内容/匹配', value: request.oldChars === undefined ? undefined : `${request.oldChars} 字符` },
-      { label: '新内容', value: `${request.newChars} 字符` }
-    ],
-    question: '是否允许这次文件写入？',
-    actions: [
-      { key: 'y', label: '允许本次' },
-      { key: 'n', label: '拒绝' }
-    ],
-    footer: [
-      '文件写入暂只支持本次确认；长期授权请配置 workspace.dir 或 files.additionalWriteDirs。'
-    ]
-  });
-}
-
-export function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
-  return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
-}
-
-export function formatExecutionPermissionPrompt(request: ExecutionPermissionRequest): string {
-  return formatPermissionPrompt({
-    title: chalk.yellow(`权限确认：${request.toolName}`),
-    subtitle: '命令将在 workspace 内执行。',
-    fields: [
-      { label: '工具', value: request.toolName },
-      { label: 'cwd', value: request.cwd },
-      { label: '说明', value: request.description },
-      { label: '风险', value: request.risk },
-      { label: '原因', value: request.reason },
-      { label: '命令', value: request.command }
-    ],
-    question: '是否允许这次执行？',
-    actions: [
-      { key: 'y', label: '允许本次' },
-      { key: 'n', label: '拒绝' }
-    ],
-    footer: [
-      '只读低风险 Bash 会自动执行；高风险 Bash 和 Python 只支持本次确认。'
-    ]
-  });
-}
-
-export function parseExecutionPermissionAnswer(answer: string): 'allow' | 'deny' {
-  return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
 }
 
 export function formatToolProgressEvent(event: ToolProgressEvent): string {

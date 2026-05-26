@@ -111,7 +111,7 @@
 已交付：
 
 - `OpenVikingMemory` 从检索回退改为主存储客户端。
-- 首选调用 OpenViking `/mcp`：`health/search/list/store/forget`。
+- 首选调用 OpenViking `/mcp`：`health/search/list/remember/forget`。
 - `/mcp` 不可用时仍兼容旧 HTTP `/search` 读取。
 - 写入不可用时进入本地 pending queue：`~/.neo-agent/memory/openviking-pending.json`。
 - 本地 JSON 继续作为备份和离线读取回退。
@@ -137,7 +137,7 @@
 待收口：
 
 - [x] 用真实 `openviking-server` 做 `/mcp` 联调。
-- [x] 用 mock `/mcp` 增加 health/store/search/list/forget 自动化测试。
+- [x] 用 mock `/mcp` 增加 health/remember/search/list/forget 自动化测试。
 - [x] 明确 OpenViking `/mcp` 返回结构后，收紧解析逻辑。
 - 后续如切换 OpenViking 版本，需要复核 `/mcp` Streamable HTTP 会话和工具 schema 是否变化。
 
@@ -162,7 +162,7 @@
 待收口：
 
 - [x] 拆分 TUI 运行时状态和回合摘要模型第一版，使 Ink 层不直接依赖 legacy REPL 私有状态。
-- 拆分现有 REPL 输入和权限确认流程，使 Ink 层能复用核心交互逻辑。
+- [x] 拆分现有 REPL 输入粘贴/历史纯逻辑和权限确认模型第一版，使 Ink PromptInput/PermissionDialog 能复用核心交互数据结构。
 - [x] 增加 TUI 默认入口的非交互 stdin 回退文本回归，防止 TUI header 截断脚本输入。
 - [x] 增加 TUI 状态行窄终端文本回归，覆盖中文宽度截断。
 - 增加 PTY 截图回归，覆盖真实 Ink 交互下的宽窄终端渲染。
