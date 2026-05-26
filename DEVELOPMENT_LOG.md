@@ -903,6 +903,25 @@ neo 当前仍是 readline REPL，没有 CC-Source 的完整 Ink permission dialo
 
 新的 P1 关闭标准是：`npm run typecheck`、`npm run smoke`、关键 REPL 路径回归通过，并且没有影响日常使用的阻塞问题。完整 Ink/TUI 明确属于 P2，不作为 P1 收尾条件。
 
+### 2026-05-26：M5 终端体验收口回归
+
+按 P1 冻结规则执行唯一剩余项 “M5 终端体验回归复查”。先对照 CC-Source：
+
+- `components/Message.tsx`：assistant/user/system/tool/compact 等消息类型各自分派渲染，不把内容混在同一行。
+- `components/StatusLine.tsx`：状态线是可行动摘要，包含模型、工作区、上下文、成本等汇总信息，不能被长字段撑爆。
+- `screens/ResumeConversation.tsx`：resume 要明确展示可恢复会话，并保留 cross-project、加载失败和恢复边界处理。
+- `components/messages/CompactBoundaryMessage.tsx`：compact boundary 是独立消息边界，用户能知道历史已经被压缩。
+- `components/messages/UserImageMessage.tsx`、`AssistantToolUseMessage.tsx`、`SystemAPIErrorMessage.tsx`、`UserToolErrorMessage.tsx`：图片、工具进度、API 错误和工具错误都要短摘要显示，长内容截断并保留展开/日志路径。
+
+neo 没有完整 Ink TUI，本轮只做收口回归和阻塞修复：
+
+- 新增 “M5 终端体验收口回归” smoke，覆盖 assistant 多行分组、状态行、状态事件、工具事件、debug 行、长错误日志提示和 compact reason。
+- 将 `formatStatusLine`、`formatToolProgressEvent`、`formatAgentStatusEvent`、`formatCompactReason` 导出给 smoke 直接覆盖，避免依赖真实模型调用才能验证文本 UI。
+- 回归发现状态行里的长 `routerReason` 未截断，可能把 REPL 终端撑宽；已改为复用 `formatEventSummary` 截断。
+- 没有新增 P1 功能项；完整 Ink/TUI、会话级权限和更细 resume UI 继续留在 P2/未决问题。
+
+验证：`npm run typecheck`、`npm run smoke` 和 `git diff --check` 通过。P1 按冻结规则完成收口，后续不再追加 P1 功能项。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？

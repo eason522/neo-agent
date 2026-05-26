@@ -2653,6 +2653,80 @@ test('REPL 权限确认提示会统一展示范围、选项并避免参数值泄
   if (parseFilePermissionAnswer('n') !== 'deny') throw new Error('File n 应解析为拒绝');
 });
 
+test('M5 终端体验收口回归覆盖状态、工具、compact 和错误边界', async () => {
+  const {
+    formatAssistantResponseBlock,
+    formatDebugEventLine,
+    formatErrorBlock
+  } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'rendering.js')).href);
+  const {
+    formatAgentStatusEvent,
+    formatCompactReason,
+    formatStatusLine,
+    formatToolProgressEvent
+  } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'repl.js')).href);
+
+  const assistant = formatAssistantResponseBlock('neo:main', '第一段回答\n\n第二段回答');
+  assertIncludes(assistant, 'neo:main\n');
+  assertIncludes(assistant, '  第一段回答');
+  assertIncludes(assistant, '  第二段回答');
+
+  const statusLine = formatStatusLine({
+    inputChars: 128,
+    modelKind: 'main',
+    routerReason: '需要主模型处理多工具任务并保留状态边界'.repeat(20),
+    memoryHits: 2,
+    matchedSkills: 1,
+    hasVisionContext: true,
+    hasWebContext: true,
+    durationMs: 1250,
+    toolEvents: [
+      { phase: 'start', round: 0, name: 'Read', summary: '读取 README' },
+      { phase: 'success', round: 0, name: 'Read', summary: '返回 12 行' }
+    ],
+    statusEvents: [],
+    webToolCalls: 1,
+    mcpToolCalls: 1,
+    fileToolCalls: 1,
+    skillToolCalls: 1
+  });
+  assertIncludes(statusLine, '模型=main');
+  assertIncludes(statusLine, '记忆=2');
+  assertIncludes(statusLine, 'skills=1');
+  assertIncludes(statusLine, '工具=1');
+  assertIncludes(statusLine, 'vision');
+  assertIncludes(statusLine, 'webContext');
+  assertIncludes(statusLine, 'web=1,file=1,mcp=1,skill=1');
+  assertIncludes(statusLine, '[truncated]');
+
+  const statusEvent = formatAgentStatusEvent({
+    stage: 'compact',
+    message: '会话上下文已自动压缩：240000 -> 12000 字符'.repeat(16)
+  });
+  assertIncludes(statusEvent, 'compact>');
+  assertIncludes(statusEvent, '[truncated]');
+
+  const toolEvent = formatToolProgressEvent({
+    phase: 'success',
+    round: 1,
+    name: 'WebFetch',
+    summary: '抓取页面并返回摘要 '.repeat(50)
+  });
+  assertIncludes(toolEvent, 'round 2 WebFetch');
+  assertIncludes(toolEvent, '[truncated]');
+
+  const debugLine = formatDebugEventLine('compact:', '保留 compact boundary 并展示 transcript 路径'.repeat(20));
+  assertIncludes(debugLine, '  - compact:');
+  assertIncludes(debugLine, '[truncated]');
+
+  const errorBlock = formatErrorBlock('error', 'API failure\n'.repeat(260), '/tmp/neo-agent.log');
+  assertIncludes(errorBlock, '错误信息已截断');
+  assertIncludes(errorBlock, 'log: /tmp/neo-agent.log');
+
+  if (formatCompactReason('not_enough_messages') !== '可压缩消息不足') throw new Error('compact reason 应可读');
+  if (formatCompactReason('auto_compact_disabled') !== '自动压缩已关闭') throw new Error('auto compact reason 应可读');
+});
+
 test('transcripts 命令能列出会话', async () => {
   const result = await run(['transcripts', '--limit', '5']);
   assertIncludes(result.stdout, 'session_');

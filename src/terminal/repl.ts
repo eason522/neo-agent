@@ -751,7 +751,7 @@ function formatMultilineSupport(support: TerminalMultilineSupport): string {
   ].join('；');
 }
 
-function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
+export function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   const toolCount = turn.toolEvents.filter(event => event.phase === 'start').length;
   const parts = [
     `模型=${turn.modelKind}`,
@@ -769,7 +769,7 @@ function formatStatusLine(turn: NonNullable<ReplState['lastTurn']>): string {
   if (turn.hasVisionContext) detail.push('vision');
   if (turn.hasWebContext) detail.push('webContext');
   if (detail.length > 0) parts.push(detail.join(','));
-  if (turn.routerReason) parts.push(`route="${turn.routerReason}"`);
+  if (turn.routerReason) parts.push(`route="${formatEventSummary(turn.routerReason)}"`);
   return chalk.gray(`status ${parts.join(' ')}`);
 }
 
@@ -809,7 +809,7 @@ function printReplStatus(agent: NeoAgent, state: ReplState): void {
   ].join('\n'));
 }
 
-function formatCompactReason(reason: string | undefined): string {
+export function formatCompactReason(reason: string | undefined): string {
   switch (reason) {
     case 'not_enough_messages':
       return '可压缩消息不足';
@@ -1624,7 +1624,7 @@ export function parseFilePermissionAnswer(answer: string): 'allow' | 'deny' {
   return /^(y|yes|允许|同意)$/i.test(answer.trim()) ? 'allow' : 'deny';
 }
 
-function formatToolProgressEvent(event: ToolProgressEvent): string {
+export function formatToolProgressEvent(event: ToolProgressEvent): string {
   const prefix = event.phase === 'start'
     ? chalk.gray('tool>')
     : event.phase === 'success'
@@ -1636,7 +1636,7 @@ function formatToolProgressEvent(event: ToolProgressEvent): string {
   return `${prefix} ${chalk.gray(`${round} ${event.name}`)} ${formatEventSummary(event.summary)}`;
 }
 
-function formatAgentStatusEvent(event: AgentStatusEvent): string {
+export function formatAgentStatusEvent(event: AgentStatusEvent): string {
   const prefix = event.stage === 'routing'
     ? chalk.cyan('route>')
     : event.stage === 'model'
