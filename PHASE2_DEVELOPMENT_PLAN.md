@@ -92,8 +92,9 @@
 - 新增 `Python` 工具：`code`、`args`、`timeoutMs`、`description`。
 - 默认执行目录为 workspace。
 - `cwd` 必须位于 workspace 内。
-- 只读低风险 Bash 自动允许：`pwd/ls/find/rg/grep/cat/head/tail/wc/stat/file/du/tree`。
+- 只读低风险 Bash 自动允许：`pwd/ls/find/rg/grep/cat/head/tail/wc/stat/file/du/tree/date`。
 - 高风险 Bash 需要确认：写入、删除、安装、网络、git mutation、权限变更、后台进程、环境变量导出、shell 组合和重定向等。
+- 未知 Bash 命令默认需要确认，提示原因应明确为“不在只读低风险白名单内”，不能误导成已经命中写入/联网等危险模式。
 - Python 默认每次确认。
 - 执行结果包含退出码、stdout/stderr、超时状态、耗时和 cwd。
 - stdout/stderr 有截断保护。

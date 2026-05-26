@@ -273,11 +273,12 @@ export class ExecutionToolRunner implements ToolRunner<ExecutionToolCallRecord> 
 function classifyBashCommand(command: string): { risk: 'low' | 'high'; reason: string } {
   const normalized = command.trim();
   const first = normalized.split(/\s+/)[0]?.replace(/^command\s+/, '') ?? '';
-  const lowRisk = /^(pwd|ls|find|rg|grep|cat|head|tail|wc|stat|file|du|tree)$/;
+  const lowRisk = /^(pwd|ls|find|rg|grep|cat|head|tail|wc|stat|file|du|tree|date)$/;
   const highRiskPattern = /(^|\s)(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|sudo|su|git\s+(commit|push|pull|merge|rebase|reset|checkout|switch|branch|tag|clean|add|restore)|npm|pnpm|yarn|bun|pip|pip3|uv|cargo|go\s+(get|install)|curl|wget|ssh|scp|rsync|export|set\s+-|nohup|systemctl|service)\b|[>&|;`$()]|&&|\|\|/i;
-  if (!lowRisk.test(first) || highRiskPattern.test(normalized)) {
+  if (highRiskPattern.test(normalized)) {
     return { risk: 'high', reason: '命令可能写入、删除、联网、安装、修改 git/权限、启动后台进程，或包含 shell 组合/重定向。' };
   }
+  if (!lowRisk.test(first)) return { risk: 'high', reason: '命令不在只读低风险白名单内，需确认。' };
   return { risk: 'low', reason: '只读低风险命令。' };
 }
 

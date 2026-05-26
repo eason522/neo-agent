@@ -2111,6 +2111,14 @@ test('Bash/Python 工具限制在 workspace 并按风险确认', async () => {
     if (pwd.record.exitCode !== 0) throw new Error(`pwd 应成功执行：${JSON.stringify(pwd.record)}`);
     assertIncludes(pwd.content, 'exitCode: 0');
 
+    const date = await runner.execute({
+      id: 'bash_date',
+      type: 'function',
+      function: { name: BASH_TOOL_NAME, arguments: JSON.stringify({ command: 'date +%Y-%m-%d', description: '查看当前日期' }) }
+    });
+    if (date.record.exitCode !== 0) throw new Error(`date 应作为只读低风险命令自动执行：${JSON.stringify(date.record)}`);
+    assertIncludes(date.content, 'exitCode: 0');
+
     await assertRejects(() => runner.execute({
       id: 'bash_touch_denied',
       type: 'function',

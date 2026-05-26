@@ -633,3 +633,18 @@ neo-agent 的偏离和原因：
 
 - smoke 覆盖系统提示中包含命中记忆时间戳。
 - smoke 覆盖 OpenViking Markdown frontmatter 恢复 `createdAt/updatedAt`。
+
+## 2026-05-26：修正 `date` 被误判为高风险 Bash
+
+用户测试记忆回溯时，neo 为了查看当前日期执行 `date +%Y-%m-%d`，但权限提示显示风险为 high。直接原因是 Bash 只读低风险白名单没有包含 `date`，未知命令默认高风险时又复用了“可能写入、删除、联网”等危险模式原因，导致提示过于保守且不准确。
+
+收敛边界：
+
+- 本次归属二阶段里程碑二：Shell / Python 执行能力。
+- 只把明确只读的 `date` 加入低风险白名单。
+- 将“命中危险模式”和“未知命令不在白名单”拆成不同原因。
+- 没有扩大到 `env/printenv/id/hostname` 等可能泄露环境或身份信息的命令，避免权限策略发散。
+
+验证：
+
+- smoke 增加 `date +%Y-%m-%d` 自动执行覆盖。
