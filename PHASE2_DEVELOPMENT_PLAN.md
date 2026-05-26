@@ -70,6 +70,7 @@
 - 路由器已把 HTML/CSS/JS、落地页、单文件、写入文件等任务强制走 main 模型。
 - 新增 `Append` 文件工具，用于内容超出当前输出预算或工具参数已截断后的长文件分块写入：第一块 `mode=create`，后续块 `mode=append`。
 - 文件生成策略已调整为：能一次合法写完时优先 `Write`；必须分块时 `Append` 尽量大块写入，普通单文件落地页目标 1-3 次工具调用完成。
+- 默认输出上限已按当前模型能力同步：`deepseek-v4-pro`/`deepseek-v4-flash` 为 393216，`mimo-v2.5` 为 131072；已有用户配置需用 `neo config set` 更新。
 - QueryEngine 遇到 `finish_reason=length` 且工具参数 JSON 不完整时，不执行坏工具调用，而是强制回灌 `Append` 分块恢复提示。
 - 工具轮次耗尽且长文件没有成功落盘时，最终提示禁止输出长代码兜底，避免返回被截断的不完整 HTML/CSS/JS。
 
@@ -79,6 +80,7 @@
 - [x] README 中的文件工具章节需要同步补充完整文件管理能力。
 - [x] 修复长落地页生成中 `Write` 参数反复被 length 截断、最后刷出不完整代码的问题。
 - [x] 修正 `Append` 分块过小导致 8 轮工具调用仍写不完普通落地页的问题。
+- [x] 同步 main/small/vision 三类模型的默认 `maxTokens` 和覆盖说明。
 
 ## 里程碑二：Shell / Python 执行能力
 

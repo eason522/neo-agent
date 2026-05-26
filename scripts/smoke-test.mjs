@@ -37,6 +37,8 @@ test('初始化配置', async () => {
   const config = await readFile(path.join(tempHome, 'config.json'), 'utf8');
   assertIncludes(config, 'deepseek-v4-pro');
   assertIncludes(config, 'mimo-v2.5');
+  assertIncludes(config, '"maxTokens": 393216');
+  assertIncludes(config, '"maxTokens": 131072');
   assertIncludes(config, '"dreaming"');
   assertIncludes(config, '"conversation"');
   assertIncludes(config, '"compactEnabled"');
@@ -166,9 +168,15 @@ test('config show/set 支持脱敏、scope 和 schema 校验', async () => {
   assertIncludes(raw.stdout, 'test-secret-123456');
 
   const maxTokenOverride = await run(['config', 'show'], {
-    env: { NEO_AGENT_MAIN_MAX_TOKENS: '32768' }
+    env: {
+      NEO_AGENT_MAIN_MAX_TOKENS: '32768',
+      NEO_AGENT_SMALL_MAX_TOKENS: '32769',
+      NEO_AGENT_VISION_MAX_TOKENS: '16384'
+    }
   });
   assertIncludes(maxTokenOverride.stdout, '"maxTokens": 32768');
+  assertIncludes(maxTokenOverride.stdout, '"maxTokens": 32769');
+  assertIncludes(maxTokenOverride.stdout, '"maxTokens": 16384');
 
   const projectDir = path.join(tempHome, 'config-project');
   await mkdir(projectDir, { recursive: true });

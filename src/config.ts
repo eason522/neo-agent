@@ -15,6 +15,9 @@ const modelSchema = z.object({
   retryBaseDelayMs: z.number().int().positive()
 });
 
+export const DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216;
+export const MIMO_MAX_OUTPUT_TOKENS = 131_072;
+
 export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   homeDir: z.string(),
   models: z.object({
@@ -151,7 +154,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: Number.parseInt(process.env.NEO_AGENT_MAIN_MAX_TOKENS || '4096', 10),
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_MAIN_MAX_TOKENS || String(DEEPSEEK_MAX_OUTPUT_TOKENS), 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
@@ -161,7 +164,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.DEEPSEEK_API_KEY,
         apiBase: deepseekApiBase,
         temperature: 0.2,
-        maxTokens: Number.parseInt(process.env.NEO_AGENT_SMALL_MAX_TOKENS || '2048', 10),
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_SMALL_MAX_TOKENS || String(DEEPSEEK_MAX_OUTPUT_TOKENS), 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '45000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)
@@ -171,7 +174,7 @@ export function defaultConfig(): AppConfig {
         apiKey: process.env.MIMO_API_KEY,
         apiBase: process.env.MIMO_API_BASE || 'https://token-plan-cn.xiaomimimo.com/v1',
         temperature: 0.0,
-        maxTokens: Number.parseInt(process.env.NEO_AGENT_VISION_MAX_TOKENS || '2048', 10),
+        maxTokens: Number.parseInt(process.env.NEO_AGENT_VISION_MAX_TOKENS || String(MIMO_MAX_OUTPUT_TOKENS), 10),
         requestTimeoutMs: Number.parseInt(process.env.NEO_AGENT_MODEL_TIMEOUT_MS || '60000', 10),
         maxRetries: Number.parseInt(process.env.NEO_AGENT_MODEL_MAX_RETRIES || '2', 10),
         retryBaseDelayMs: Number.parseInt(process.env.NEO_AGENT_MODEL_RETRY_BASE_DELAY_MS || '500', 10)

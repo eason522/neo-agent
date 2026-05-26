@@ -497,3 +497,15 @@ neo-agent 的偏离和原因：
 - QueryEngine 截断恢复提示改为要求 `Append` 写完整合法的大块，避免退化成极小块。
 - README 明确：服务端最大输出不等于 neo 当前请求 `maxTokens`；新增 `NEO_AGENT_MAIN_MAX_TOKENS`、`NEO_AGENT_SMALL_MAX_TOKENS`、`NEO_AGENT_VISION_MAX_TOKENS` 运行时覆盖。
 - capability 快照补上 `Append`，避免能力报告遗漏。
+
+## 2026-05-26：同步三类模型输出上限配置
+
+用户补充：`deepseek-v4-flash` 的最高输出同样是 384K，`mimo-v2.5` 是 131K。
+
+修正：
+
+- 默认配置中 `deepseek-v4-pro` 和 `deepseek-v4-flash` 的 `maxTokens` 调整为 393216。
+- 默认配置中 `mimo-v2.5` 的 `maxTokens` 调整为 131072。
+- 保留 `NEO_AGENT_MAIN_MAX_TOKENS`、`NEO_AGENT_SMALL_MAX_TOKENS`、`NEO_AGENT_VISION_MAX_TOKENS` 运行时覆盖。
+- README 明确已有用户配置可能仍保留旧值，需要用 `neo config set` 更新。
+- smoke 覆盖默认配置和三个环境变量覆盖。
