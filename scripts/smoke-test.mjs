@@ -1274,6 +1274,15 @@ test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async (
   await writeFile(path.join(projectDir, 'src', 'app.ts'), 'export const answer = 42;\nconsole.log(answer);\n', 'utf8');
   await writeFile(path.join(projectDir, 'README.md'), '# Demo\nanswer lives in src/app.ts\n', 'utf8');
   await writeFile(path.join(projectDir, 'src', 'binary.bin'), Buffer.from([0, 1, 2, 97, 110, 115, 119, 101, 114, 0, 3]));
+  await writeFile(path.join(projectDir, 'src', 'image.png'), Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x03
+  ]));
+  await writeFile(path.join(projectDir, 'src', 'doc.pdf'), '%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n', 'latin1');
+  await writeFile(path.join(projectDir, 'src', 'large.txt'), `${'large line\n'.repeat(70_000)}`, 'utf8');
   await writeFile(path.join(extraReadDir, 'notes.txt'), 'external scope note\n', 'utf8');
   try {
     const { FileToolRunner, GLOB_TOOL_NAME, GREP_TOOL_NAME, READ_TOOL_NAME } = await import(pathToFileURL(path.join(root, 'dist', 'files', 'fileTools.js')).href);
@@ -1290,7 +1299,38 @@ test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async (
       function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/app.ts', limit: 1 }) }
     });
     assertIncludes(read.content, 'export const answer');
+    assertIncludes(read.content, '[Showing lines 1-1 of 3; offset=0; limit=1]');
+    assertIncludes(read.content, '[结果已截断，请使用 offset/limit 继续读取]');
     assertIncludes(read.record.name, READ_TOOL_NAME);
+
+    const image = await runner.execute({
+      id: 'read_image',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/image.png' }) }
+    });
+    assertIncludes(image.content, 'Image file: src/image.png');
+    assertIncludes(image.content, 'mimeType=image/png');
+    assertIncludes(image.content, 'dimensions=2x3');
+
+    const pdf = await runner.execute({
+      id: 'read_pdf',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/doc.pdf' }) }
+    });
+    assertIncludes(pdf.content, 'PDF file: src/doc.pdf');
+    assertIncludes(pdf.content, 'estimatedPages=1');
+
+    await assertRejects(() => runner.execute({
+      id: 'read_binary',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/binary.bin' }) }
+    }), 'Read 拒绝读取二进制文件');
+
+    await assertRejects(() => runner.execute({
+      id: 'read_large',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'src/large.txt', offset: 1, limit: 1 }) }
+    }), 'Read 单次最大读取预算');
 
     const glob = await runner.execute({
       id: 'glob_1',
@@ -1320,7 +1360,13 @@ test('项目文件工具只能读取项目内文件并支持 Glob/Grep', async (
       id: 'read_2',
       type: 'function',
       function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: '/etc/passwd' }) }
-    }), '当前项目目录');
+    }), '拒绝读取越界路径');
+
+    await assertRejects(() => runner.execute({
+      id: 'read_missing',
+      type: 'function',
+      function: { name: READ_TOOL_NAME, arguments: JSON.stringify({ file_path: 'missing.txt' }) }
+    }), '路径不存在');
 
     const externalRead = await runner.execute({
       id: 'read_extra',
@@ -1418,7 +1464,7 @@ test('项目文件 Write/Edit 必须确认权限并限制在项目内', async ()
       id: 'write_outside',
       type: 'function',
       function: { name: WRITE_TOOL_NAME, arguments: JSON.stringify({ file_path: '../outside.ts', content: 'bad' }) }
-    }), '当前项目目录');
+    }), '拒绝写入越界路径');
   } finally {
     await rm(projectDir, { recursive: true, force: true });
     await rm(extraWriteDir, { recursive: true, force: true });

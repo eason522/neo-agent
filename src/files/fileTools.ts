@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ChatToolCall, ChatToolDefinition, FileToolCallRecord } from '../types.js';
@@ -49,11 +49,25 @@ const editInputSchema = z.object({
 
 const ignoredDirectories = new Set(['.git', '.svn', '.hg', '.jj', 'node_modules', 'dist', 'build', '.neo-agent']);
 const maxReadBytes = 512 * 1024;
+const maxReadOutputChars = 100_000;
 const maxGlobResults = 100;
 const defaultGrepLimit = 250;
 const maxSearchFiles = 5000;
 const grepTimeoutMs = 10_000;
 const maxGrepOutputChars = 100_000;
+const pdfExtensions = new Set(['.pdf']);
+const imageExtensions = new Map<string, string>([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp']
+]);
+const knownBinaryExtensions = new Set([
+  '.7z', '.a', '.avi', '.bin', '.bmp', '.class', '.dll', '.dmg', '.doc', '.docx', '.exe', '.gz', '.ico',
+  '.jar', '.mp3', '.mp4', '.o', '.obj', '.odt', '.ppt', '.pptx', '.rar', '.so', '.sqlite', '.tar', '.tgz',
+  '.wasm', '.xls', '.xlsx', '.zip'
+]);
 
 export type FilePermissionRequest = {
   toolName: typeof WRITE_TOOL_NAME | typeof EDIT_TOOL_NAME;
@@ -116,7 +130,7 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
           name: READ_TOOL_NAME,
           description: [
             '读取当前项目目录、workspace 目录和已授权额外目录内的文本文件。结果使用 cat -n 风格，带 1 起始行号。',
-            '只能读取文件，不能读取目录；大文件请使用 offset 和 limit。'
+            '图片和 PDF 只返回安全元数据摘要；普通二进制文件会被拒绝。大文本文件请先用 Grep 定位，再用 offset/limit 读取必要片段。'
           ].join('\n'),
           parameters: {
             type: 'object',
@@ -236,7 +250,41 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     throwIfAborted(signal);
     const fileStat = await stat(filePath);
     if (!fileStat.isFile()) throw new Error(`Read 只能读取文件：${input.file_path}`);
-    if (fileStat.size > maxReadBytes) throw new Error(`文件过大：${formatBytes(fileStat.size)}。请先用 Grep 定位，或后续实现分块读取。`);
+    const fileKind = await inspectReadableFile(filePath, fileStat.size);
+    if (fileKind.kind === 'image') {
+      const content = formatImageSummary(this.relativeToScope(filePath), fileKind);
+      return {
+        content,
+        record: {
+          name: READ_TOOL_NAME,
+          path: this.relativeToScope(filePath),
+          operation: 'read',
+          resultChars: content.length,
+          durationMs: Date.now() - start
+        }
+      };
+    }
+    if (fileKind.kind === 'pdf') {
+      const content = formatPdfSummary(this.relativeToScope(filePath), fileKind);
+      return {
+        content,
+        record: {
+          name: READ_TOOL_NAME,
+          path: this.relativeToScope(filePath),
+          operation: 'read',
+          resultChars: content.length,
+          durationMs: Date.now() - start
+        }
+      };
+    }
+    if (fileKind.kind === 'binary') throw new Error(formatBinaryReadError(this.relativeToScope(filePath), fileKind));
+    if (fileStat.size > maxReadBytes) {
+      throw new Error([
+        `Read 单次最大读取预算为 ${formatBytes(maxReadBytes)}，当前文件 ${this.relativeToScope(filePath)} 为 ${formatBytes(fileStat.size)}。`,
+        'offset/limit 只限制返回行数，不能绕过总字节预算。',
+        '恢复建议：先用 Grep 定位关键符号或字符串，或把目标内容拆成更小的文本文件后再读取。'
+      ].join(' '));
+    }
     const raw = await readFile(filePath, 'utf8');
     const lines = raw.split(/\r?\n/);
     const offset = input.offset ?? 0;
@@ -244,11 +292,15 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const selected = lines.slice(offset, offset + limit);
     const content = selected
       .map((line, index) => `${String(offset + index + 1).padStart(6, ' ')}\t${line}`)
-      .join('\n') || '[空文件]';
-    const truncated = offset + limit < lines.length ? '\n[结果已截断，请使用 offset/limit 继续读取]' : '';
-    const output = `${this.relativeToScope(filePath)}\n${content}${truncated}`;
+      .join('\n') || '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>';
+    const endLine = Math.min(lines.length, offset + selected.length);
+    const pagination = [
+      `[Showing lines ${selected.length > 0 ? offset + 1 : offset}-${endLine} of ${lines.length}; offset=${offset}; limit=${limit}]`,
+      offset + limit < lines.length ? '[结果已截断，请使用 offset/limit 继续读取]' : ''
+    ].filter(Boolean).join('\n');
+    const output = `${this.relativeToScope(filePath)}\n${pagination}\n${content}`;
     return {
-      content: truncate(output, 100_000),
+      content: truncate(output, maxReadOutputChars),
       record: {
         name: READ_TOOL_NAME,
         path: this.relativeToScope(filePath),
@@ -441,9 +493,14 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const root = this.rootRealPath ?? await realpath(this.projectRoot);
     this.rootRealPath = root;
     const absolute = path.isAbsolute(inputPath) ? inputPath : path.resolve(root, inputPath);
-    const resolved = await realpath(absolute);
+    const resolved = await realpath(absolute).catch(error => {
+      if (isNodeErrorCode(error, 'ENOENT')) {
+        throw new Error(`路径不存在：${inputPath}。当前项目根目录是 ${root}；请先用 Glob 查找文件，或确认传入的是 workspace/项目/额外授权读取目录内的路径。`);
+      }
+      throw error;
+    });
     if (!this.isInsideReadScope(resolved)) {
-      throw new Error(`文件工具只能访问当前项目目录、workspace 或已授权额外读取目录内的路径：${inputPath}`);
+      throw new Error(`文件工具拒绝读取越界路径：${inputPath}。允许范围：当前项目目录、workspace 和 files.additionalReadDirs / additionalWriteDirs 中的目录。`);
     }
     return resolved;
   }
@@ -452,13 +509,18 @@ export class FileToolRunner implements ToolRunner<FileToolCallRecord> {
     const root = this.rootRealPath ?? await realpath(this.projectRoot);
     this.rootRealPath = root;
     const absolute = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(root, inputPath);
-    const parent = await realpath(path.dirname(absolute));
+    const parent = await realpath(path.dirname(absolute)).catch(error => {
+      if (isNodeErrorCode(error, 'ENOENT')) {
+        throw new Error(`写入目标父目录不存在：${path.dirname(inputPath)}。请先在 workspace 内创建父目录，或选择已存在的项目/授权写入目录。`);
+      }
+      throw error;
+    });
     if (!this.isInsideWriteScope(parent)) {
-      throw new Error(`文件工具只能写入当前项目目录、workspace 或已授权额外写入目录内的路径：${inputPath}`);
+      throw new Error(`文件工具拒绝写入越界路径：${inputPath}。允许范围：当前项目目录、workspace 和 files.additionalWriteDirs 中的目录；项目目录写入仍需要用户确认。`);
     }
     const target = path.resolve(parent, path.basename(absolute));
     if (!this.isInsideWriteScope(target)) {
-      throw new Error(`文件工具只能写入当前项目目录、workspace 或已授权额外写入目录内的路径：${inputPath}`);
+      throw new Error(`文件工具拒绝写入越界路径：${inputPath}。允许范围：当前项目目录、workspace 和 files.additionalWriteDirs 中的目录；项目目录写入仍需要用户确认。`);
     }
     const existing = await lstat(target).catch(() => undefined);
     if (existing?.isSymbolicLink()) throw new Error(`拒绝写入符号链接：${inputPath}`);
@@ -487,8 +549,9 @@ export function getFileToolPrompt(): string {
   return [
     '# 项目文件工具',
     '- 你可以使用 Read 读取当前项目目录、workspace 目录和已授权额外目录内的文本文件，使用 Glob 按文件名查找文件，使用 Grep 搜索文件内容。',
+    '- Read 会拒绝普通二进制文件；图片和 PDF 只返回元数据摘要，不会把原始字节塞进上下文。',
     '- workspace 目录是 neo 的默认可写工作区，Write/Edit 在 workspace 内拥有完全访问权限；项目目录和额外写入目录的写入仍必须经过用户权限确认。',
-    '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；不要反复读取大文件。',
+    '- 优先用 Glob/Grep 定位文件，再用 Read 读取必要片段；offset/limit 只控制返回行数，不能绕过总字节预算。',
     '- 文件工具默认只能访问 neo 启动时所在的项目目录、workspace 和显式授权额外目录，不能访问其它路径。'
   ].join('\n');
 }
@@ -718,6 +781,158 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)}KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+type ReadableFileKind =
+  | { kind: 'text'; size: number }
+  | { kind: 'image'; size: number; mimeType: string; dimensions?: { width: number; height: number } }
+  | { kind: 'pdf'; size: number; estimatedPages?: number }
+  | { kind: 'binary'; size: number; reason: string; extension?: string };
+
+async function inspectReadableFile(filePath: string, size: number): Promise<ReadableFileKind> {
+  const ext = path.extname(filePath).toLowerCase();
+  const header = await readFileHeader(filePath, 8192);
+  if (isPdf(header, ext)) {
+    return {
+      kind: 'pdf',
+      size,
+      estimatedPages: await estimatePdfPages(filePath, size)
+    };
+  }
+  const image = detectImage(header, ext);
+  if (image) {
+    return {
+      kind: 'image',
+      size,
+      mimeType: image.mimeType,
+      dimensions: image.dimensions
+    };
+  }
+  if (knownBinaryExtensions.has(ext)) {
+    return {
+      kind: 'binary',
+      size,
+      extension: ext,
+      reason: `扩展名 ${ext} 通常是二进制格式`
+    };
+  }
+  if (looksBinary(header)) {
+    return {
+      kind: 'binary',
+      size,
+      extension: ext || undefined,
+      reason: '文件头包含 NUL 或大量不可打印字节'
+    };
+  }
+  return { kind: 'text', size };
+}
+
+async function readFileHeader(filePath: string, bytes: number): Promise<Buffer> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+function isPdf(header: Buffer, ext: string): boolean {
+  return pdfExtensions.has(ext) || header.subarray(0, 5).toString('ascii') === '%PDF-';
+}
+
+function detectImage(header: Buffer, ext: string): { mimeType: string; dimensions?: { width: number; height: number } } | undefined {
+  const extensionMime = imageExtensions.get(ext);
+  if (header.length >= 24 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return {
+      mimeType: 'image/png',
+      dimensions: { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }
+    };
+  }
+  if (header.length >= 10 && header.subarray(0, 6).toString('ascii').match(/^GIF8[79]a$/)) {
+    return {
+      mimeType: 'image/gif',
+      dimensions: { width: header.readUInt16LE(6), height: header.readUInt16LE(8) }
+    };
+  }
+  if (header.length >= 12 && header.subarray(0, 4).toString('ascii') === 'RIFF' && header.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return { mimeType: 'image/webp' };
+  }
+  if (header.length >= 4 && header[0] === 0xff && header[1] === 0xd8) {
+    return { mimeType: 'image/jpeg', dimensions: jpegDimensions(header) };
+  }
+  if (extensionMime) return { mimeType: extensionMime };
+  return undefined;
+}
+
+function jpegDimensions(header: Buffer): { width: number; height: number } | undefined {
+  let index = 2;
+  while (index + 8 < header.length) {
+    if (header[index] !== 0xff) {
+      index += 1;
+      continue;
+    }
+    const marker = header[index + 1];
+    const length = header.readUInt16BE(index + 2);
+    if (length < 2) return undefined;
+    if (marker !== undefined && marker >= 0xc0 && marker <= 0xc3 && index + 8 < header.length) {
+      return {
+        height: header.readUInt16BE(index + 5),
+        width: header.readUInt16BE(index + 7)
+      };
+    }
+    index += 2 + length;
+  }
+  return undefined;
+}
+
+function looksBinary(header: Buffer): boolean {
+  if (header.length === 0) return false;
+  let suspicious = 0;
+  for (const byte of header) {
+    if (byte === 0) return true;
+    if (byte < 7 || (byte > 13 && byte < 32)) suspicious += 1;
+  }
+  return suspicious / header.length > 0.3;
+}
+
+async function estimatePdfPages(filePath: string, size: number): Promise<number | undefined> {
+  if (size > maxReadBytes) return undefined;
+  const raw = await readFile(filePath, 'latin1').catch(() => '');
+  const matches = raw.match(/\/Type\s*\/Page\b/g);
+  return matches?.length;
+}
+
+function formatImageSummary(filePath: string, file: Extract<ReadableFileKind, { kind: 'image' }>): string {
+  return [
+    `Image file: ${filePath}`,
+    `mimeType=${file.mimeType}`,
+    `size=${formatBytes(file.size)}`,
+    file.dimensions ? `dimensions=${file.dimensions.width}x${file.dimensions.height}` : 'dimensions=unknown',
+    'Read does not inline image bytes. 如需视觉分析，请在用户输入中用 @path 附加图片，或让用户明确提供图片附件。'
+  ].join('\n');
+}
+
+function formatPdfSummary(filePath: string, file: Extract<ReadableFileKind, { kind: 'pdf' }>): string {
+  return [
+    `PDF file: ${filePath}`,
+    `size=${formatBytes(file.size)}`,
+    `estimatedPages=${file.estimatedPages ?? 'unknown'}`,
+    'Read 目前不直接抽取 PDF 正文。恢复建议：使用专门的 PDF 提取工具或让用户提供已转换文本；大 PDF 应先限定页码或转换为文本片段。'
+  ].join('\n');
+}
+
+function formatBinaryReadError(filePath: string, file: Extract<ReadableFileKind, { kind: 'binary' }>): string {
+  return [
+    `Read 拒绝读取二进制文件：${filePath} (${formatBytes(file.size)})。`,
+    `原因：${file.reason}。`,
+    '恢复建议：如果这是图片或 PDF，请确认扩展名/文件头正确；如果需要分析二进制，请使用专门解析工具生成文本摘要后再读取。'
+  ].join(' ');
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === code);
 }
 
 function escapeRegex(input: string): string {

@@ -747,6 +747,24 @@ neo 当前已有 JSONL Logger、日志轮转、脱敏和 REPL `/debug` 视图，
 
 验证：`npm run typecheck` 和 `npm run smoke` 通过；新增/扩展 smoke 覆盖运行期 debug 开关、`privacy` 标记、No-PII diagnostic、结构化 `errorCode`、模型 retry 日志和 retryCount。
 
+### 2026-05-26：文件工具类型预检和读取预算第一阶段
+
+继续推进 P1“文件工具补图片/PDF/二进制处理、读取预算和更清晰的拒绝原因”。先对照 CC-Source：
+
+- `tools/FileReadTool/FileReadTool.ts`：Read 是只读工具，但会先做二进制扩展名/设备文件/PDF/图片等预检；大文件受 maxSize 和 maxTokens 双重预算约束。
+- `tools/FileReadTool/prompt.ts`：Read prompt 会明确行号格式、offset/limit、图片、PDF、notebook、目录不可读和空文件提示。
+- `tools/GrepTool/GrepTool.ts`：Grep 会把分页限制写回 tool result，让模型知道可以用 offset/head_limit 继续。
+
+neo 当前没有 CC-Source 的多模态 tool result block、PDF renderer 或 notebook reader，因此第一阶段不假装已经能抽取完整图片/PDF 内容，而是把边界说清楚：
+
+- `Read` 新增文件头和扩展名预检。图片返回 `mimeType/size/dimensions` 元数据摘要；PDF 返回 `size/estimatedPages` 元数据摘要；普通二进制直接拒绝，并给出恢复建议。
+- 文本读取保留 512KB 总字节预算，并明确说明 `offset/limit` 只控制返回行数，不能绕过总字节预算。
+- 文本结果新增 `[Showing lines ...; offset=...; limit=...]` 分页提示，截断时提示继续读取方式；空文件用 system reminder 风格提示。
+- 路径不存在、读取越界、写入越界和缺失父目录的错误信息更具体，减少模型重复错误参数。
+- 文件工具 prompt 同步说明图片/PDF/二进制和预算限制。
+
+验证：`npm run typecheck` 和 `npm run smoke` 通过；新增 smoke 覆盖图片元数据、PDF 元数据、二进制拒绝、大文件预算、分页提示、缺失路径和越界读写拒绝。
+
 ## 未决问题
 
 - OpenViking 的持久化写入应使用哪一个稳定 API 接口？
