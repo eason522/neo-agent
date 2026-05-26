@@ -2861,6 +2861,17 @@ test('REPL 常用命令不触发模型也能运行', async () => {
   assertIncludes(result.stdout, 'neo usage');
 });
 
+test('TUI 默认入口在非交互 stdin 下回退 legacy REPL', async () => {
+  const result = await run(['chat'], {
+    input: ['/help', '/exit', ''].join('\n')
+  });
+  assertIncludes(result.stdout, '/help                 查看命令');
+  assertIncludes(result.stdout, '输入 /help 查看命令。');
+  if (result.stdout.includes('openviking=') || result.stdout.includes('model=deepseek-v4-pro workspace=')) {
+    throw new Error(`非交互 stdin 不应渲染 TUI header：${result.stdout}`);
+  }
+});
+
 test('REPL 会根据终端环境提示多行输入方式', async () => {
   const { detectTerminalMultilineSupport } = await import(pathToFileURL(path.join(root, 'dist', 'terminal', 'repl.js')));
   const wezterm = detectTerminalMultilineSupport({

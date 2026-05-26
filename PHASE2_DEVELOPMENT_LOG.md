@@ -408,3 +408,24 @@ node dist/index.js openviking doctor
 - 这不是完整 Ink TUI。
 - 输入、权限确认、消息流和工具进度仍由 legacy REPL 承担。
 - 下一步应继续拆分输入和权限确认流程，而不是直接把 legacy REPL 代码搬进 Ink 组件。
+
+## 2026-05-26：补 TUI 默认入口非交互回退 smoke
+
+之前引入 TUI wrapper 时，smoke 曾发现非交互 `/help` 会被 TUI banner 截断。虽然当时已修复 `!process.stdin.isTTY` 回退，但缺少一条明确防回归测试。
+
+本次新增 smoke：
+
+- `TUI 默认入口在非交互 stdin 下回退 legacy REPL`
+
+覆盖内容：
+
+- `neo chat` 默认入口在 stdin 非 TTY 时直接进入 legacy REPL。
+- `/help` 能完整输出。
+- 输出中不应出现 TUI header 的 `openviking=` 或 `model=... workspace=...`。
+
+新增测试暴露一个真实问题：短 stdin 输入下，`neo chat` 可能只打印 banner，没有消费 `/help`。根因是 chat/default 入口在初始化 agent 期间可能错过已经结束的 stdin。已修复为：非交互 chat/default 先读取 stdin 快照，再初始化 agent，随后把快照交给 legacy REPL 处理。
+
+边界：
+
+- 这不是完整 PTY 截图测试。
+- 宽窄终端、中文宽度和真实 Ink 交互仍待后续专项处理。

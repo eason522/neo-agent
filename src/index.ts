@@ -1082,20 +1082,22 @@ program
   .option('--resume [session]', '从最近或指定 transcript 恢复上下文')
   .option('--legacy', '使用 legacy readline REPL')
   .action(async (options: { resume?: string | boolean; legacy?: boolean }) => {
+    const preloadedInput = await readStdinIfNonInteractive();
     const config = await loadConfig();
     const agent = new NeoAgent(config);
     await agent.initialize({ resumeSessionId: normalizeResumeOption(options.resume ?? program.opts<{ resume?: string | boolean }>().resume) });
-    if (options.legacy || process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent);
-    else await startTui(agent);
+    if (options.legacy || process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent, { preloadedInput });
+    else await startTui(agent, { preloadedInput });
   });
 
 program
   .action(async () => {
+    const preloadedInput = await readStdinIfNonInteractive();
     const config = await loadConfig();
     const agent = new NeoAgent(config);
     await agent.initialize({ resumeSessionId: normalizeResumeOption(program.opts<{ resume?: string | boolean }>().resume) });
-    if (process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent);
-    else await startTui(agent);
+    if (process.env.NEO_AGENT_LEGACY_REPL === '1') await startRepl(agent, { preloadedInput });
+    else await startTui(agent, { preloadedInput });
   });
 
 program.parseAsync(process.argv).catch(error => {
@@ -1107,6 +1109,14 @@ function parseOptionalInt(input: string | undefined): number | undefined {
   if (!input) return undefined;
   const parsed = Number.parseInt(input, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+async function readStdinIfNonInteractive(): Promise<string | undefined> {
+  if (process.stdin.isTTY) return undefined;
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) input += chunk;
+  return input;
 }
 
 function normalizeResumeOption(input: string | boolean | undefined): string | undefined {

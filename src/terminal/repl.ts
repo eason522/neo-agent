@@ -57,7 +57,7 @@ const disableBracketedPaste = '\x1b[?2004l';
 const largePasteThreshold = 800;
 const largePasteMaxVisibleLines = 2;
 
-export async function startRepl(agent: NeoAgent): Promise<void> {
+export async function startRepl(agent: NeoAgent, options: { preloadedInput?: string } = {}): Promise<void> {
   const isInteractiveSession = Boolean(input.isTTY);
   if (isInteractiveSession) {
     await startInteractiveRepl(agent);
@@ -72,6 +72,7 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
     historySize: 200,
     removeHistoryDuplicates: true
   });
+  input.resume();
   installPersistentHistory(rl, await loadReplHistory(historyFile));
   const terminalSupport = detectTerminalMultilineSupport();
   const state: ReplState = {
@@ -113,17 +114,17 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
 
   try {
     if (isInteractive) rl.prompt();
-    for await (const raw of rl) {
+    const handleRawLine = async (raw: string): Promise<boolean> => {
       const line = raw.trim();
       if (!line) {
         if (isInteractive) rl.prompt();
-        continue;
+        return true;
       }
-      if (line === '/exit' || line === '/quit') break;
+      if (line === '/exit' || line === '/quit') return false;
       await saveReplHistory(historyFile, line);
       if (await handleCommand(agent, line, state, false)) {
         if (isInteractive) rl.prompt();
-        continue;
+        return true;
       }
 
       await runAgentTurn(agent, line, isInteractive, undefined, state, controller => {
@@ -131,6 +132,17 @@ export async function startRepl(agent: NeoAgent): Promise<void> {
       });
       activeController = undefined;
       if (isInteractive) rl.prompt();
+      return true;
+    };
+
+    if (options.preloadedInput !== undefined) {
+      for (const raw of options.preloadedInput.split(/\r?\n/)) {
+        if (!await handleRawLine(raw)) break;
+      }
+    } else {
+      for await (const raw of rl) {
+        if (!await handleRawLine(raw)) break;
+      }
     }
   } finally {
     rl.off('SIGINT', handleSigint);

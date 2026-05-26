@@ -152,6 +152,7 @@
 
 - [x] 拆分 TUI 运行时状态和回合摘要模型第一版，使 Ink 层不直接依赖 legacy REPL 私有状态。
 - 拆分现有 REPL 输入和权限确认流程，使 Ink 层能复用核心交互逻辑。
+- [x] 增加 TUI 默认入口的非交互 stdin 回退文本回归，防止 TUI header 截断脚本输入。
 - 增加 PTY 截图或文本回归，覆盖宽窄终端和中文宽度。
 - 分步实现消息流、PromptInput、StatusLine、PermissionDialog、ToolProgress、ResumePicker 和 DebugPanel。
 

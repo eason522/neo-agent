@@ -23,9 +23,13 @@ function TuiShell(props: TuiShellProps): React.ReactElement {
   );
 }
 
-export async function startTui(agent: NeoAgent): Promise<void> {
+export type StartTuiOptions = {
+  preloadedInput?: string;
+};
+
+export async function startTui(agent: NeoAgent, options: StartTuiOptions = {}): Promise<void> {
   if (!process.stdin.isTTY) {
-    await startRepl(agent);
+    await startRepl(agent, { preloadedInput: options.preloadedInput });
     return;
   }
   const health = await agent.memory.openVikingHealth().catch(() => ({
@@ -45,5 +49,5 @@ export async function startTui(agent: NeoAgent): Promise<void> {
   agent.logger.debug('tui.runtime', { summary: formatTuiRuntimeSummary(runtime) });
   await new Promise(resolve => setTimeout(resolve, 40));
   instance.unmount();
-  await startRepl(agent);
+  await startRepl(agent, { preloadedInput: options.preloadedInput });
 }
