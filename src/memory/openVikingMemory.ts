@@ -303,17 +303,20 @@ function memoryRecordFromUnknown(item: unknown, index: number): MemoryRecord | u
   const content = typeof raw.content === 'string' ? raw.content : typeof raw.text === 'string' ? raw.text : '';
   if (!content.trim()) return undefined;
   const now = new Date().toISOString();
+  const frontmatter = parseFrontmatter(content);
+  const frontmatterUri = stringFromFrontmatter(frontmatter.uri);
+  const resolvedUri = frontmatterUri || uri;
   return {
-    id: typeof raw.id === 'string' ? raw.id : uri.split('/').pop()?.replace(/\.md$/, '') || `openviking_${index}`,
-    uri,
-    category: categoryFromUri(uri),
+    id: typeof raw.id === 'string' ? raw.id : stringFromFrontmatter(frontmatter.id) || resolvedUri.split('/').pop()?.replace(/\.md$/, '') || `openviking_${index}`,
+    uri: resolvedUri,
+    category: memoryCategoryFromUnknown(frontmatter.category) ?? categoryFromUri(resolvedUri),
     content: stripFrontmatter(content),
-    tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : ['openviking'],
+    tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : tagsFromFrontmatter(frontmatter.tags) ?? ['openviking'],
     origin: 'openviking',
-    pinned: Boolean(raw.pinned),
-    status: raw.status === 'archived' ? 'archived' : 'active',
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
+    pinned: typeof raw.pinned === 'boolean' ? raw.pinned : booleanFromFrontmatter(frontmatter.pinned),
+    status: raw.status === 'archived' || frontmatter.status === 'archived' ? 'archived' : 'active',
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : stringFromFrontmatter(frontmatter.createdAt) || now,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : stringFromFrontmatter(frontmatter.updatedAt) || stringFromFrontmatter(frontmatter.createdAt) || now
   };
 }
 
@@ -326,6 +329,61 @@ function categoryFromUri(uri: string | undefined): MemoryCategory {
 
 function stripFrontmatter(content: string): string {
   return content.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+}
+
+function parseFrontmatter(content: string): Record<string, unknown> {
+  const match = /^---\n([\s\S]*?)\n---\n?/.exec(content);
+  if (!match) return {};
+  const output: Record<string, unknown> = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const separator = line.indexOf(':');
+    if (separator < 0) continue;
+    const key = line.slice(0, separator).trim();
+    const rawValue = line.slice(separator + 1).trim();
+    if (!key) continue;
+    output[key] = parseFrontmatterValue(rawValue);
+  }
+  return output;
+}
+
+function parseFrontmatterValue(value: string): unknown {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value.startsWith('[') && value.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed : value;
+    } catch {
+      return value;
+    }
+  }
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function stringFromFrontmatter(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function booleanFromFrontmatter(value: unknown): boolean {
+  return value === true;
+}
+
+function tagsFromFrontmatter(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((tag): tag is string => typeof tag === 'string');
+}
+
+function memoryCategoryFromUnknown(value: unknown): MemoryCategory | undefined {
+  return value === 'preference' || value === 'project_fact' || value === 'workflow' || value === 'session_summary'
+    ? value
+    : undefined;
 }
 
 function yamlString(input: string): string {

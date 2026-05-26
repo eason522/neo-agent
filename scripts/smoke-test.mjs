@@ -911,6 +911,9 @@ test('OpenViking 主存储支持 MCP 写入、搜索、列表、归档和 pendin
 
     const hits = await memory.search('用户反馈');
     if (hits[0]?.source !== 'openviking') throw new Error(`搜索应优先返回 OpenViking 命中：${JSON.stringify(hits)}`);
+    if (hits[0]?.createdAt !== record.createdAt || hits[0]?.updatedAt !== record.updatedAt) {
+      throw new Error(`OpenViking Markdown frontmatter 应恢复记忆时间戳：${JSON.stringify({ record, hit: hits[0] })}`);
+    }
     assertIncludes(hits.map(hit => hit.content).join('\n'), '先收束目标');
 
     const listed = await memory.list(10, 'workflow');
@@ -1081,6 +1084,34 @@ test('NeoAgent 会上报路由、上下文和模型阶段状态', async () => {
     await agent.close();
     await rm(agentHome, { recursive: true, force: true });
   }
+});
+
+test('系统提示会把命中记忆的时间戳交给模型', async () => {
+  const { buildSystemPrompt } = await import(pathToFileURL(path.join(root, 'dist', 'prompts', 'systemPrompt.js')).href);
+  const prompt = buildSystemPrompt({
+    memories: [{
+      id: 'mem-time',
+      uri: 'viking://user/default/memories/preferences/mem-time',
+      category: 'preference',
+      content: '用户喜欢直接说结论。',
+      tags: ['style'],
+      origin: 'manual',
+      pinned: false,
+      status: 'active',
+      createdAt: '2026-05-01T08:00:00.000Z',
+      updatedAt: '2026-05-02T09:30:00.000Z',
+      score: 2,
+      source: 'local'
+    }],
+    skills: [],
+    mcpTools: [],
+    soul: '',
+    modelName: 'test-model',
+    cwd: '/tmp/project'
+  });
+  assertIncludes(prompt, 'createdAt=2026-05-01T08:00:00.000Z');
+  assertIncludes(prompt, 'updatedAt=2026-05-02T09:30:00.000Z');
+  assertIncludes(prompt, '用户喜欢直接说结论。');
 });
 
 test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {

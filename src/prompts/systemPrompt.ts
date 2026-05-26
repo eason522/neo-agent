@@ -170,7 +170,8 @@ function getMemorySection(memories: MemoryHit[]): string {
       ...memories.map(hit => {
         const pin = hit.pinned ? '置顶，' : '';
         const tags = hit.tags.length > 0 ? `，tags=${hit.tags.join(',')}` : '';
-        return `(${hit.source}，${pin}${hit.category}${tags}) ${hit.content}`;
+        const timestamps = `createdAt=${hit.createdAt}，updatedAt=${hit.updatedAt}`;
+        return `(${hit.source}，${pin}${hit.category}，${timestamps}${tags}) ${hit.content}`;
       })
     ])
   ].join('\n');

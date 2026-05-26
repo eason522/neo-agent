@@ -614,3 +614,22 @@ neo-agent 的偏离和原因：
 - smoke 扩展权限确认测试，覆盖结构化 prompt model、执行权限提示和输入粘贴/历史纯逻辑。
 - `npm run typecheck` 通过。
 - `npm run smoke` 通过。
+
+## 2026-05-26：修复记忆回灌缺少时间戳
+
+用户测试“我们认识多久了？”时，neo 回答“记忆里没有保留时间戳”。实际本地记忆结构和 OpenViking Markdown frontmatter 都有 `createdAt/updatedAt`，问题在回灌给模型的上下文丢了时间信息。
+
+根因：
+
+- `buildSystemPrompt()` 的相关记忆列表只包含 source/category/tags/content，没有把 `createdAt/updatedAt` 写入提示。
+- OpenViking `/mcp search` 返回 Markdown 内容时，neo 只去掉 frontmatter，没有从 frontmatter 恢复 `createdAt/updatedAt`，导致命中记录退化为当前解析时间。
+
+修正：
+
+- 相关记忆回灌格式增加 `createdAt=...，updatedAt=...`。
+- `OpenVikingMemory` 解析 Markdown frontmatter，恢复 `id/uri/category/tags/pinned/status/createdAt/updatedAt` 中可用字段。
+
+验证：
+
+- smoke 覆盖系统提示中包含命中记忆时间戳。
+- smoke 覆盖 OpenViking Markdown frontmatter 恢复 `createdAt/updatedAt`。
