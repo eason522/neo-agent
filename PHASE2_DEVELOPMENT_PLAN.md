@@ -143,6 +143,76 @@
 - [x] 明确 OpenViking `/mcp` 返回结构后，收紧解析逻辑。
 - 后续如切换 OpenViking 版本，需要复核 `/mcp` Streamable HTTP 会话和工具 schema 是否变化。
 
+## 收口专项：记忆和梦境
+
+状态：已完成第一版。
+
+当前现状：
+
+- 当前已有 `DreamService`、`neo dream` 和 `/dream`，可以整理近期 transcript 和记忆，生成报告，并通过 dry-run/apply 写入长期记忆。
+- 当前 dreaming 已有报告目录、状态文件、锁、定时门控和记忆复查能力。
+- 已补 deep dream / nap 分层、短期记忆层、运行时空闲 nap、用户级 cron 安装入口和 `SOUL.md` 受控区块自动维护。
+
+目标设计：
+
+- deep dreaming：作为深度梦境，每天中午 12:00 由 Ubuntu 用户级 cron 触发。首次运行时对所有记忆做全量深度分析、精炼和 baseline；之后根据 state 中的 memory/session watermark 做增量分析和精炼。
+- nap：作为浅睡眠，放在 neo 运行时。当交互式运行空闲超过 2 小时，自动分析最近 1-2 天 transcript、近期短期上下文和少量相关长期记忆，粗略总结并写入短期记忆。
+- deep dreaming 需要分析和精炼短期记忆，把真正有长期价值的内容晋升为长期记忆，把过期或低价值短期记忆归档。
+- deep dreaming 的关注重点包括但不限于：用户近期一直关注的事情、一直没有想通的问题、反复卡住的项目、生活中的伤心难过或重大变故、特别高兴的事情、反复出现的偏好和协作模式。
+- deep dreaming 可以对有趣、有价值、有意义的记忆做更自由的联想、整合和关联探索，产出可能带来意外启发的 insights；不确定内容必须标明为灵感或假设，不能伪装成事实。
+- deep dreaming 可以自动维护 `SOUL.md`，但只能写入受控区块 `<!-- neo:dreaming:start --> ... <!-- neo:dreaming:end -->`，不能重写原有人格核心。
+
+记忆分层：
+
+- 长期记忆：稳定、少量、权重高。用于人格默契、长期偏好、长期项目背景、反复出现的问题、重要关系认知和长期有价值的灵感。
+- 短期记忆：新鲜、任务相关、可过期。用于最近 1-2 天正在推进的事情、刚整理出的 nap 摘要、临时卡点和待观察事项。
+- `MemoryRecord` 需要增加 `tier: "long_term" | "short_term"` 和可选 `expiresAt`。旧记忆缺少 `tier` 时按 `long_term` 处理。
+- nap 默认写入 `short_term`，短期记忆默认 14 天过期。
+- deep dreaming 默认写入 `long_term`，并可将短期记忆晋升为长期记忆。
+- OpenViking Markdown frontmatter 需要同步写入和读取 `tier`、`expiresAt`。
+
+记忆注入策略：分层平衡
+
+- neo 不应把全部记忆直接塞进聊天上下文。每轮对话前，先根据用户输入检索相关记忆，再按长期/短期分层注入 prompt。
+- 注入时分两个 prompt 区块：`# 长期记忆` 和 `# 短期记忆`，让模型知道哪些是稳定事实，哪些只是近期上下文。
+- 检索时不是简单混排：先查长期和短期，再按“相关度 + 新鲜度 + pinned + tier 权重”合并。
+- 默认预算为长期 4 条、短期 4 条，总上限 8 条；如果短期无关，就把额度让给长期，反之亦然。
+- 短期记忆带 `expiresAt`，过期后不再默认注入。
+- 关键原则：短期记忆不能直接污染 neo 的长期人格和判断；长期记忆也不能让 neo 忽略最近两天正在发生的上下文。分层注入用来同时保留稳定默契和近期连续性。
+
+后续记忆召回：二段式回忆展开
+
+- 当前第一版记忆召回是一次检索：用户输入命中若干 `MemoryRecord` 后，直接把命中的记忆内容注入 prompt。
+- 后续需要增加 recall expansion：当用户提到某个久远长期记忆，或检索命中的是高相关但较短、较模糊的长期记忆时，neo 应把它当作“记忆碎片”，再沿着线索继续回忆更完整的上下文。
+- 第二阶段回忆展开可以根据 `id`、`uri`、`tags`、`metadata.sourceTranscript`、`metadata.reportId`、未来的 `relatedMemoryIds` 等线索，继续拉取关联记忆、源 transcript 摘要、dream report、insights 和当时的归档/晋升理由。
+- 展开后的内容不应直接混入长期/短期记忆区块，而应单独注入 `# 回忆展开`，明确这是从命中记忆延伸出来的补充上下文。
+- 回忆展开必须有预算限制和触发条件，避免每次普通检索都回看大量旧 transcript 或 dream report。
+- 目标效果是模拟人类“先想起一个模糊线索，再顺着线索慢慢想起更完整内容”的记忆过程。
+
+接口计划：
+
+- `neo dream --mode deep|nap --dry-run --force --scheduled`
+- `/dream` 默认执行 deep dreaming。
+- `/dream nap` 手动执行 nap。
+- `neo dream install-cron --time 12:00 --dry-run` 用于预览或安装用户级 crontab，幂等维护 neo-agent deep dream 标记块。
+- `NEO_AGENT_DREAM_ENABLED=1` 控制 deep scheduled gate。
+- `NEO_AGENT_DREAM_TIME=12:00` 作为 cron 生成默认时间。
+- `NEO_AGENT_NAP_ENABLED=1` 默认开启运行时 nap。
+- `NEO_AGENT_NAP_IDLE_MINUTES=120`
+- `NEO_AGENT_NAP_LOOKBACK_HOURS=48`
+
+待收口：
+
+- [x] 扩展 `DreamService` 为 deep dream / nap 两种模式，并保留现有 `run()` 兼容入口。
+- [x] 增加短期记忆字段、过期过滤、OpenViking frontmatter 同步和本地 JSON 兼容读取。
+- [x] 改造 `memory.search()` 和 system prompt，使长期记忆与短期记忆按分层平衡策略注入上下文。
+- [x] 实现运行时空闲 2 小时自动 nap。
+- [x] 实现 `neo dream install-cron`，默认生成用户级 crontab 12:00 deep dreaming。
+- [x] 实现 deep dreaming 对 `SOUL.md` 受控区块的自动维护和报告审计。
+- [x] 增加 smoke 覆盖 deep 首次 baseline、nap 短期记忆、短期过期过滤、SOUL 受控区块写入、cron dry-run 和分层 prompt 注入。
+- [x] 后续继续强化 deep 增量策略和短期记忆晋升/归档的更细粒度自动化断言。
+- [x] 设计并实现二段式 recall expansion 第一版：久远、模糊或高相关但信息不足的长期记忆命中后，沿 source transcript、dream report 和关联记忆继续展开，并以 `# 回忆展开` 注入上下文。
+
 ## 里程碑四：Ink TUI 体验等价重建
 
 状态：已完成入口层第一版，完整体验等价尚未完成。

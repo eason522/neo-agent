@@ -120,6 +120,7 @@ export class OpenVikingMemory {
       id: item.uri ?? `openviking_${index}`,
       uri: item.uri ?? 'viking://unknown',
       category: categoryFromUri(item.uri),
+      tier: 'long_term',
       content: item.content ?? '',
       tags: ['openviking'],
       origin: 'openviking',
@@ -227,12 +228,14 @@ export function memoryToMarkdown(record: MemoryRecord): string {
     `id: ${yamlString(record.id)}`,
     `uri: ${yamlString(record.uri)}`,
     `category: ${yamlString(record.category)}`,
+    `tier: ${yamlString(record.tier)}`,
     `tags: [${record.tags.map(yamlString).join(', ')}]`,
     `pinned: ${record.pinned}`,
     `status: ${yamlString(record.status)}`,
     `origin: ${yamlString(record.origin)}`,
     `createdAt: ${yamlString(record.createdAt)}`,
     `updatedAt: ${yamlString(record.updatedAt)}`,
+    `expiresAt: ${yamlString(record.expiresAt ?? '')}`,
     `sourceTranscript: ${yamlString(String(record.metadata?.sourceTranscript ?? ''))}`,
     '---'
   ].join('\n');
@@ -310,13 +313,15 @@ function memoryRecordFromUnknown(item: unknown, index: number): MemoryRecord | u
     id: typeof raw.id === 'string' ? raw.id : stringFromFrontmatter(frontmatter.id) || resolvedUri.split('/').pop()?.replace(/\.md$/, '') || `openviking_${index}`,
     uri: resolvedUri,
     category: memoryCategoryFromUnknown(frontmatter.category) ?? categoryFromUri(resolvedUri),
+    tier: memoryTierFromUnknown(frontmatter.tier),
     content: stripFrontmatter(content),
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : tagsFromFrontmatter(frontmatter.tags) ?? ['openviking'],
     origin: 'openviking',
     pinned: typeof raw.pinned === 'boolean' ? raw.pinned : booleanFromFrontmatter(frontmatter.pinned),
     status: raw.status === 'archived' || frontmatter.status === 'archived' ? 'archived' : 'active',
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : stringFromFrontmatter(frontmatter.createdAt) || now,
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : stringFromFrontmatter(frontmatter.updatedAt) || stringFromFrontmatter(frontmatter.createdAt) || now
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : stringFromFrontmatter(frontmatter.updatedAt) || stringFromFrontmatter(frontmatter.createdAt) || now,
+    expiresAt: stringFromFrontmatter(frontmatter.expiresAt)
   };
 }
 
@@ -384,6 +389,10 @@ function memoryCategoryFromUnknown(value: unknown): MemoryCategory | undefined {
   return value === 'preference' || value === 'project_fact' || value === 'workflow' || value === 'session_summary'
     ? value
     : undefined;
+}
+
+function memoryTierFromUnknown(value: unknown): MemoryRecord['tier'] {
+  return value === 'short_term' ? 'short_term' : 'long_term';
 }
 
 function yamlString(input: string): string {

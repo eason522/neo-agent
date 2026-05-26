@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig, ChatMessage, MemoryCategory, MemoryRecord, TextModelKind } from '../types.js';
+import type { AppConfig, ChatMessage, MemoryCategory, MemoryRecord, MemoryTier, TextModelKind } from '../types.js';
 import type { Logger } from '../logging/logger.js';
 import type { MemoryService } from '../memory/memoryService.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
@@ -9,7 +9,12 @@ import { readJsonFile, stableId, writeJsonFile } from '../utils/fs.js';
 
 type DreamState = {
   lastDreamedAt?: string;
+  lastDeepDreamedAt?: string;
+  lastNapAt?: string;
   lastReportPath?: string;
+  baselineCompleted?: boolean;
+  memoryWatermark?: string;
+  sessionWatermark?: string;
 };
 
 type DreamLock = {
@@ -19,9 +24,11 @@ type DreamLock = {
 
 type DreamUpsert = {
   category: MemoryCategory;
+  tier?: MemoryTier;
   content: string;
   tags?: string[];
   pinned?: boolean;
+  expiresAt?: string;
   reason?: string;
 };
 
@@ -35,17 +42,23 @@ type DreamPlan = {
   upserts: DreamUpsert[];
   archives: DreamArchive[];
   insights: string[];
+  soulUpdates: string[];
 };
+
+export type DreamMode = 'deep' | 'nap';
 
 export type DreamReport = {
   id: string;
+  mode: DreamMode;
   ts: string;
   dryRun: boolean;
   modelKind: TextModelKind;
+  baseline: boolean;
   reviewedSessions: TranscriptSessionSummary[];
   reviewedMemories: number;
   plan: DreamPlan;
   raw: string;
+  soulUpdated?: boolean;
   appliedAt?: string;
   appliedCounts?: {
     upserts: number;
@@ -54,15 +67,18 @@ export type DreamReport = {
 };
 
 export type DreamRunOptions = {
+  mode?: DreamMode;
   dryRun?: boolean;
   force?: boolean;
   maxSessions?: number;
   modelKind?: TextModelKind;
+  lookbackHours?: number;
 };
 
 export type DreamRunResult = {
   status: 'skipped' | 'completed';
   reason?: string;
+  mode?: DreamMode;
   dryRun: boolean;
   reportPath?: string;
   summary?: string;
@@ -75,6 +91,7 @@ export type DreamRunResult = {
 
 export type DreamReportSummary = {
   id: string;
+  mode: DreamMode;
   path: string;
   ts: string;
   dryRun: boolean;
@@ -119,7 +136,7 @@ export class DreamService {
     }
 
     const state = await this.readState();
-    const lastDreamedAt = state.lastDreamedAt ? Date.parse(state.lastDreamedAt) : 0;
+    const lastDreamedAt = state.lastDeepDreamedAt ? Date.parse(state.lastDeepDreamedAt) : state.lastDreamedAt ? Date.parse(state.lastDreamedAt) : 0;
     const hoursSince = (Date.now() - lastDreamedAt) / 3_600_000;
     if (lastDreamedAt > 0 && hoursSince < this.config.dreaming.minHours) {
       return skipped(`距离上次 dreaming 只有 ${hoursSince.toFixed(1)} 小时`);
@@ -131,6 +148,7 @@ export class DreamService {
     }
 
     return this.run({
+      mode: 'deep',
       dryRun: false,
       force: true,
       maxSessions: this.config.dreaming.maxSessions,
@@ -158,6 +176,7 @@ export class DreamService {
         if (!report) continue;
         summaries.push({
           id: report.id,
+          mode: report.mode,
           path: filePath,
           ts: report.ts,
           dryRun: report.dryRun,
@@ -181,6 +200,7 @@ export class DreamService {
     if (!report) return undefined;
     return {
       id: report.id,
+      mode: report.mode,
       path: resolved,
       ts: report.ts,
       dryRun: report.dryRun,
@@ -206,8 +226,10 @@ export class DreamService {
       for (const item of report.plan.upserts) {
         await this.memory.remember(item.content, {
           category: item.category,
+          tier: item.tier ?? (report.mode === 'nap' ? 'short_term' : 'long_term'),
           tags: ['dream', ...(item.tags ?? [])],
           pinned: item.pinned ?? false,
+          expiresAt: item.expiresAt ?? defaultExpiresAt(report.mode, this.config),
           origin: 'agent',
           metadata: { reason: item.reason, reportId: report.id }
         });
@@ -215,9 +237,13 @@ export class DreamService {
       for (const item of report.plan.archives) {
         await this.memory.forget(item.id);
       }
+      const soulUpdated = report.mode === 'deep' && report.plan.soulUpdates.length > 0
+        ? await this.applySoulUpdates(report.plan.soulUpdates, report.id)
+        : false;
       const appliedAt = new Date().toISOString();
       const appliedReport: DreamReport = {
         ...report,
+        soulUpdated,
         appliedAt,
         appliedCounts: {
           upserts: report.plan.upserts.length,
@@ -226,11 +252,14 @@ export class DreamService {
       };
       await writeJsonFile(resolved, appliedReport);
       await this.writeState({
+        ...(await this.readState()),
         lastDreamedAt: appliedAt,
+        ...(report.mode === 'deep' ? { lastDeepDreamedAt: appliedAt, baselineCompleted: true } : { lastNapAt: appliedAt }),
         lastReportPath: resolved
       });
       return {
         status: 'completed',
+        mode: report.mode,
         dryRun: false,
         reportPath: resolved,
         summary: report.plan.summary,
@@ -290,9 +319,14 @@ export class DreamService {
 
   private async runLocked(options: DreamRunOptions = {}): Promise<DreamRunResult> {
     const dryRun = options.dryRun ?? false;
+    const mode = options.mode ?? 'deep';
     const state = await this.readState();
-    const lastDreamedAt = state.lastDreamedAt ? Date.parse(state.lastDreamedAt) : 0;
-    const sessions = options.force
+    const lastDreamedAt = mode === 'nap'
+      ? state.lastNapAt ? Date.parse(state.lastNapAt) : 0
+      : state.lastDeepDreamedAt ? Date.parse(state.lastDeepDreamedAt) : state.lastDreamedAt ? Date.parse(state.lastDreamedAt) : 0;
+    const sessions = mode === 'nap'
+      ? await this.recentSessionsWithin(options.lookbackHours ?? this.config.dreaming.napLookbackHours, options.maxSessions ?? this.config.dreaming.maxSessions)
+      : options.force
       ? await this.recentSessions(options.maxSessions ?? this.config.dreaming.maxSessions)
       : await this.recentSessionsSince(lastDreamedAt);
     const selectedSessions = sessions.slice(0, options.maxSessions ?? this.config.dreaming.maxSessions);
@@ -304,14 +338,17 @@ export class DreamService {
 
     const transcriptContext = await this.readTranscriptContext(selectedSessions);
     const prompt = buildDreamPrompt({
+      mode,
       memories,
       transcriptContext,
       dryRun,
-      lastDreamedAt: state.lastDreamedAt
+      baseline: mode === 'deep' && !state.baselineCompleted,
+      lastDreamedAt: mode === 'nap' ? state.lastNapAt : state.lastDeepDreamedAt ?? state.lastDreamedAt
     });
     const modelKind = options.modelKind ?? this.config.dreaming.modelKind;
     this.logger?.info('dream.run.start', {
       dryRun,
+      mode,
       modelKind,
       memories: memories.length,
       sessions: selectedSessions.length
@@ -331,8 +368,10 @@ export class DreamService {
       for (const item of plan.upserts) {
         await this.memory.remember(item.content, {
           category: item.category,
+          tier: item.tier ?? (mode === 'nap' ? 'short_term' : 'long_term'),
           tags: ['dream', ...(item.tags ?? [])],
           pinned: item.pinned ?? false,
+          expiresAt: item.expiresAt ?? defaultExpiresAt(mode, this.config),
           origin: 'agent',
           metadata: { reason: item.reason }
         });
@@ -340,13 +379,19 @@ export class DreamService {
       for (const item of plan.archives) {
         await this.memory.forget(item.id);
       }
+      if (mode === 'deep' && plan.soulUpdates.length > 0) {
+        await this.applySoulUpdates(plan.soulUpdates, 'direct-run');
+      }
     }
 
+    const now = new Date().toISOString();
     const reportPath = await this.writeReport({
       id: stableId('dream'),
-      ts: new Date().toISOString(),
+      mode,
+      ts: now,
       dryRun,
       modelKind,
+      baseline: mode === 'deep' && !state.baselineCompleted,
       reviewedSessions: selectedSessions,
       reviewedMemories: memories.length,
       plan,
@@ -355,13 +400,18 @@ export class DreamService {
 
     if (!dryRun) {
       await this.writeState({
-        lastDreamedAt: new Date().toISOString(),
-        lastReportPath: reportPath
+        ...state,
+        lastDreamedAt: now,
+        ...(mode === 'deep' ? { lastDeepDreamedAt: now, baselineCompleted: true } : { lastNapAt: now }),
+        lastReportPath: reportPath,
+        memoryWatermark: memories[0]?.updatedAt ?? state.memoryWatermark,
+        sessionWatermark: selectedSessions[0]?.updatedAt ?? state.sessionWatermark
       });
     }
 
     this.logger?.info('dream.run.success', {
       dryRun,
+      mode,
       reportPath,
       upserts: plan.upserts.length,
       archives: plan.archives.length,
@@ -370,6 +420,7 @@ export class DreamService {
 
     return {
       status: 'completed',
+      mode,
       dryRun,
       reportPath,
       summary: plan.summary,
@@ -390,6 +441,13 @@ export class DreamService {
     const transcripts = new TranscriptService(this.config, this.logger);
     const sessions = await transcripts.listSessions(Math.max(this.config.dreaming.maxSessions * 4, this.config.dreaming.minSessions * 2));
     return sessions.filter(session => Date.parse(session.updatedAt) > sinceMs);
+  }
+
+  private async recentSessionsWithin(hours: number, limit: number): Promise<TranscriptSessionSummary[]> {
+    const cutoff = Date.now() - hours * 3_600_000;
+    const transcripts = new TranscriptService(this.config, this.logger);
+    const sessions = await transcripts.listSessions(Math.max(limit * 4, 8));
+    return sessions.filter(session => Date.parse(session.updatedAt) >= cutoff).slice(0, limit);
   }
 
   private async readTranscriptContext(sessions: TranscriptSessionSummary[]): Promise<string> {
@@ -435,13 +493,16 @@ export class DreamService {
       if (!parsed || typeof parsed.id !== 'string' || typeof parsed.ts !== 'string' || !parsed.plan) return undefined;
       return {
         id: parsed.id,
+        mode: parsed.mode === 'nap' ? 'nap' : 'deep',
         ts: parsed.ts,
         dryRun: parsed.dryRun === true,
         modelKind: parsed.modelKind === 'small' ? 'small' : 'main',
+        baseline: parsed.baseline === true,
         reviewedSessions: Array.isArray(parsed.reviewedSessions) ? parsed.reviewedSessions : [],
         reviewedMemories: typeof parsed.reviewedMemories === 'number' ? parsed.reviewedMemories : 0,
         plan: parseDreamPlan(JSON.stringify(parsed.plan)),
         raw: typeof parsed.raw === 'string' ? parsed.raw : '',
+        soulUpdated: parsed.soulUpdated === true,
         appliedAt: typeof parsed.appliedAt === 'string' ? parsed.appliedAt : undefined,
         appliedCounts: parsed.appliedCounts
       };
@@ -481,6 +542,18 @@ export class DreamService {
         if (current?.pid === process.pid) await unlink(this.lockPath).catch(() => undefined);
       }
     };
+  }
+
+  private async applySoulUpdates(updates: string[], reportId: string): Promise<boolean> {
+    const cleaned = updates.map(item => item.trim()).filter(Boolean);
+    if (cleaned.length === 0) return false;
+    const soulPath = path.join(process.cwd(), 'SOUL.md');
+    const existing = await readFile(soulPath, 'utf8').catch(() => '');
+    const block = buildSoulDreamBlock(cleaned, reportId);
+    const next = replaceSoulDreamBlock(existing || '# neo 的灵魂\n', block);
+    if (next === existing) return false;
+    await writeFile(soulPath, next, 'utf8');
+    return true;
   }
 }
 
@@ -527,24 +600,35 @@ function compactMemoryText(input: string): string {
 }
 
 function buildDreamPrompt(input: {
+  mode: DreamMode;
   memories: MemoryRecord[];
   transcriptContext: string;
   dryRun: boolean;
+  baseline: boolean;
   lastDreamedAt?: string;
 }): string {
+  const isNap = input.mode === 'nap';
   return [
-    '# Dream: 记忆整理和灵感提炼',
+    isNap ? '# Nap: 短期记忆粗整理' : '# Deep Dream: 长期记忆深度整理和灵感提炼',
     '',
-    '你正在执行 neo 的 dreaming：一次冷静的反思整理。目标不是复述会话，而是把散落、重复、过期、相互矛盾的记忆整理成未来真正有用的长期上下文。',
+    isNap
+      ? '你正在执行 neo 的浅睡眠 nap：目标是粗略整理最近 1-2 天上下文，形成短期记忆，帮助后续连续推进。'
+      : '你正在执行 neo 的 deep dreaming：目标不是复述会话，而是把散落、重复、过期、相互矛盾的记忆整理成未来真正有用的长期上下文。',
     '',
     '参考规则：',
-    '- 只保留长期有价值的信息；不要保存 API key、token、密码、隐私数据。',
+    isNap ? '- nap 只写 short_term 短期记忆，不修改 SOUL.md，不归档长期记忆。' : '- deep dreaming 写 long_term 长期记忆，可以归档过期或被替代的记忆。',
+    '- 不要保存 API key、token、密码、隐私数据。',
     '- 不保存代码结构、文件路径、git 历史、一次性任务流水账；这些应该从当前项目读取。',
-    '- 合并重复记忆，归档明显过期或被更新事实替代的记忆。',
+    isNap ? '- 重点提炼最近任务、临时卡点、近期情绪/生活事件和待观察事项。' : '- 合并重复记忆，归档明显过期或被更新事实替代的记忆。',
+    isNap ? '- 如果内容可能长期有价值，只放入 insights，等待 deep dreaming 再判断是否晋升。' : '- 分析近期用户一直关注的事情、一直没想通的问题、反复卡住的项目、重要生活事件、特别高兴或难过的事情。',
+    isNap ? '' : '- 可以对有趣、有价值、有意义的内容做更自由的联想、整合和关联探索，产出可能带来意外启发的 insights。',
+    isNap ? '' : '- 如发现值得加深 neo 和用户长期默契的内容，可写入 soulUpdates；只写简短稳定认知，不写隐私细节。',
     '- 把相对日期转换成绝对日期。',
     '- 灵感可以大胆一点，但必须标明它为什么可能有用；不确定的灵感放进 insights，不要伪装成事实。',
     '',
+    `mode=${input.mode}`,
     `dryRun=${input.dryRun}`,
+    `baseline=${input.baseline}`,
     `lastDreamedAt=${input.lastDreamedAt ?? 'never'}`,
     '',
     '## 当前记忆',
@@ -558,14 +642,15 @@ function buildDreamPrompt(input: {
     '{',
     '  "summary": "一句话总结本次整理",',
     '  "upserts": [',
-    '    { "category": "preference|project_fact|workflow|session_summary", "content": "要写入的新记忆", "tags": ["dream"], "pinned": false, "reason": "为什么值得长期保存" }',
+    '    { "category": "preference|project_fact|workflow|session_summary", "tier": "long_term|short_term", "content": "要写入的新记忆", "tags": ["dream"], "pinned": false, "expiresAt": "可选 ISO 时间", "reason": "为什么值得保存" }',
     '  ],',
     '  "archives": [',
     '    { "id": "要归档的现有记忆 id", "reason": "为什么归档" }',
     '  ],',
-    '  "insights": ["可能有价值但还不应直接写成事实的灵感"]',
+    '  "insights": ["可能有价值但还不应直接写成事实的灵感"],',
+    '  "soulUpdates": ["仅 deep dreaming 可用：值得写入 SOUL.md 受控区块的长期默契认知"]',
     '}'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function parseDreamPlan(raw: string): DreamPlan {
@@ -574,7 +659,8 @@ function parseDreamPlan(raw: string): DreamPlan {
     summary: typeof parsed.summary === 'string' ? parsed.summary : 'dreaming 完成，但模型没有给出摘要。',
     upserts: Array.isArray(parsed.upserts) ? parsed.upserts.map(normalizeUpsert).filter(isDreamUpsert) : [],
     archives: Array.isArray(parsed.archives) ? parsed.archives.map(normalizeArchive).filter(isDreamArchive) : [],
-    insights: Array.isArray(parsed.insights) ? parsed.insights.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : []
+    insights: Array.isArray(parsed.insights) ? parsed.insights.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [],
+    soulUpdates: Array.isArray(parsed.soulUpdates) ? parsed.soulUpdates.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : []
   };
 }
 
@@ -598,9 +684,11 @@ function normalizeUpsert(raw: unknown): DreamUpsert | undefined {
   if (typeof value.content !== 'string' || !value.content.trim()) return undefined;
   return {
     category: normalizeCategory(value.category),
+    tier: normalizeTier(value.tier),
     content: value.content.trim(),
     tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     pinned: value.pinned === true,
+    expiresAt: typeof value.expiresAt === 'string' && value.expiresAt.trim() ? value.expiresAt.trim() : undefined,
     reason: typeof value.reason === 'string' ? value.reason : undefined
   };
 }
@@ -626,6 +714,46 @@ function isDreamArchive(item: DreamArchive | undefined): item is DreamArchive {
 function normalizeCategory(value: unknown): MemoryCategory {
   if (value === 'project_fact' || value === 'workflow' || value === 'session_summary' || value === 'preference') return value;
   return 'session_summary';
+}
+
+function normalizeTier(value: unknown): MemoryTier | undefined {
+  if (value === 'long_term' || value === 'short_term') return value;
+  return undefined;
+}
+
+function defaultExpiresAt(mode: DreamMode, config: AppConfig): string | undefined {
+  if (mode !== 'nap') return undefined;
+  return new Date(Date.now() + config.dreaming.shortTermTtlDays * 86_400_000).toISOString();
+}
+
+const soulStartMarker = '<!-- neo:dreaming:start -->';
+const soulEndMarker = '<!-- neo:dreaming:end -->';
+
+function buildSoulDreamBlock(updates: string[], reportId: string): string {
+  const lines = [
+    soulStartMarker,
+    '',
+    '## Dreaming 沉淀',
+    '',
+    `最近更新：${new Date().toISOString()}`,
+    `来源报告：${reportId}`,
+    '',
+    ...updates.map(item => `- ${item}`),
+    '',
+    soulEndMarker
+  ];
+  return lines.join('\n');
+}
+
+function replaceSoulDreamBlock(existing: string, block: string): string {
+  const pattern = new RegExp(`${escapeRegExp(soulStartMarker)}[\\s\\S]*?${escapeRegExp(soulEndMarker)}`);
+  const trimmed = existing.trimEnd();
+  if (pattern.test(existing)) return existing.replace(pattern, block);
+  return `${trimmed}\n\n${block}\n`;
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function skipped(reason: string): DreamRunResult {

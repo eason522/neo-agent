@@ -722,3 +722,68 @@ CC-Source 参考：
 
 - 这是 PTY 文本回归，不是截图像素回归。
 - 不实现 PromptInput、PermissionDialog 或消息流组件；这些继续按后续小步推进。
+
+## 2026-05-26：推进记忆和梦境分层
+
+根据二阶段收口专项，补齐 dreaming 与记忆注入第一版。
+
+更新：
+
+- `MemoryRecord` 增加 `tier: long_term|short_term` 和可选 `expiresAt`，旧记忆默认按 `long_term` 读取。
+- 本地记忆和 OpenViking Markdown frontmatter 同步读写 `tier`、`expiresAt`。
+- 记忆检索改为分层平衡：默认长期 4 条、短期 4 条，总上限 8 条，并过滤过期短期记忆。
+- system prompt 将命中记忆拆成 `# 长期记忆` 和 `# 短期记忆`，明确短期记忆只代表近期上下文。
+- `DreamService` 增加 `mode=deep|nap`：deep 默认写长期记忆并可维护 `SOUL.md` 受控区块；nap 默认写带过期时间的短期记忆。
+- 交互式 REPL 默认开启空闲 nap，超过 `NEO_AGENT_NAP_IDLE_MINUTES` 后自动整理近期上下文。
+- CLI 增加 `neo dream --mode deep|nap` 和 `neo dream install-cron --time 12:00 --dry-run`。
+
+安全边界：
+
+- `SOUL.md` 自动写入只允许更新 `<!-- neo:dreaming:start --> ... <!-- neo:dreaming:end -->` 区块，不重写原有人格核心。
+- `install-cron --dry-run` 的解析修复后不会实际安装 crontab；本次 smoke 过程中误安装的 neo-agent 标记块已立即移除，并确认当前 crontab 为空。
+
+验证：
+
+- `npm run typecheck`
+- `npm run smoke`
+
+## 2026-05-26：增加二段式回忆展开
+
+用户提出：当 neo 命中一条久远、模糊的长期记忆时，不应只把这条短片段塞进 prompt，而应像人类一样先想起线索，再沿线索慢慢回忆更完整背景。
+
+实现：
+
+- 新增 `RecallExpansion` 类型，作为独立上下文，不混入长期/短期记忆列表。
+- `MemoryService.expandRecall()` 会对命中的长期记忆做保守展开：短内容、较久远、或带 `sourceTranscript` / `reportId` 的记忆会触发。
+- 展开来源包括关联本地记忆、`metadata.sourceTranscript` 的尾部片段、`metadata.reportId` 对应 dream report 的 summary/insights/soul updates。
+- `NeoAgent.ask()` 在记忆检索后执行 recall expansion，并把数量写入状态事件和日志。
+- system prompt 新增 `# 回忆展开` 区块，明确它是从命中长期记忆延伸出的补充上下文，不能覆盖当前项目事实。
+
+收敛边界：
+
+- 第一版只展开最多 2 条 seed，每条最多少量 fragment，避免普通检索回看大量旧 transcript 或 dream report。
+- 第一版优先使用本地记忆关联；OpenViking 返回的记忆如果没有 metadata，只能依靠已命中的内容和本地关联搜索。
+
+验证：
+
+- smoke 新增 `MemoryService 会对模糊长期记忆做二段式回忆展开`。
+- smoke 更新 system prompt 覆盖 `# 回忆展开` 注入。
+- `npm run typecheck`
+- `npm run smoke`
+
+## 2026-05-26：收口 deep 增量和短期晋升断言
+
+回看二阶段计划中“记忆和梦境”最后一条待收口：deep 增量策略和短期记忆晋升/归档缺少更细粒度自动化断言。
+
+补充验证：
+
+- smoke 在 nap 写入短期记忆后继续运行 deep。
+- 测试模型在 deep prompt 中看到短期记忆时，返回长期记忆 upsert 和短期记忆 archive。
+- 断言 deep 会把短期记忆归档，并生成对应长期记忆，覆盖“短期晋升长期”的行为闭环。
+- 断言 deep 后 `state.json` 写入 `baselineCompleted`、`lastDeepDreamedAt` 和 `memoryWatermark`。
+- 断言 baseline 完成后的 deep report 标记 `baseline=false`。
+
+验证：
+
+- `npm run typecheck`
+- `npm run smoke`

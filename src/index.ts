@@ -318,16 +318,19 @@ const dreamCommand = program
   .description('整理记忆和 transcript，提炼长期记忆与灵感')
   .option('--dry-run', '只生成报告，不写入记忆')
   .option('--force', '忽略定时门控，立即执行')
+  .option('--scheduled', '使用定时门控，不强制执行')
+  .option('--mode <deep|nap>', 'dreaming 模式：deep 或 nap', 'deep')
   .option('-s, --sessions <count>', '最多读取的近期会话数量')
-  .action(async (options: { dryRun?: boolean; force?: boolean; sessions?: string }) => {
+  .action(async (options: { dryRun?: boolean; force?: boolean; scheduled?: boolean; mode?: string; sessions?: string }) => {
     const config = await loadConfig();
     const agent = new NeoAgent(config);
     await agent.initialize({ scheduledDreams: false });
     try {
       const maxSessions = Number.parseInt(options.sessions ?? '', 10);
       const result = await agent.dreams.run({
+        mode: parseDreamMode(options.mode),
         dryRun: options.dryRun ?? false,
-        force: options.force ?? true,
+        force: options.force ?? !options.scheduled,
         maxSessions: Number.isFinite(maxSessions) ? maxSessions : undefined
       });
       if (result.status === 'skipped') {
@@ -335,6 +338,7 @@ const dreamCommand = program
         return;
       }
       console.log(chalk.green(options.dryRun ? 'dream dry-run 完成' : 'dream 完成'));
+      console.log(`模式：${result.mode ?? parseDreamMode(options.mode)}`);
       console.log(`摘要：${result.summary}`);
       console.log(`读取会话：${result.reviewedSessions}，读取记忆：${result.reviewedMemories}`);
       console.log(`新增/更新建议：${result.upserts.length}，归档建议：${result.archives.length}，灵感：${result.insights.length}`);
@@ -342,6 +346,24 @@ const dreamCommand = program
     } finally {
       await agent.close();
     }
+  });
+
+dreamCommand
+  .command('install-cron')
+  .description('安装或预览用户级 crontab，每天定时执行 deep dreaming')
+  .option('--time <HH:mm>', '每天执行时间', '12:00')
+  .option('--dry-run', '只输出将写入的 crontab，不实际安装')
+  .action(async (options: { time: string; dryRun?: boolean }, command: Command) => {
+    const entry = buildDreamCronEntry(options.time);
+    const next = await buildNextCrontab(entry);
+    const dryRun = options.dryRun ?? command.parent?.opts<{ dryRun?: boolean }>().dryRun;
+    if (dryRun) {
+      console.log(next.trimEnd());
+      return;
+    }
+    await installCrontab(next);
+    console.log(chalk.green('dream cron 已安装'));
+    console.log(entry);
   });
 
 const openVikingCommand = program
@@ -431,6 +453,7 @@ dreamCommand
       for (const report of reports) {
         const status = report.appliedAt ? `已采纳 ${report.appliedAt}` : (report.dryRun ? '待采纳' : '已执行');
         console.log(`${report.ts}  ${report.id}  ${status}`);
+        console.log(`模式：${report.mode}`);
         console.log(`摘要：${report.summary}`);
         console.log(chalk.gray(`${report.path} upserts=${report.upserts} archives=${report.archives} insights=${report.insights}`));
       }
@@ -1111,6 +1134,67 @@ function parseOptionalInt(input: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseDreamMode(input: string | undefined): 'deep' | 'nap' {
+  if (!input || input === 'deep') return 'deep';
+  if (input === 'nap') return 'nap';
+  throw new Error(`无效 dream mode：${input}，只能是 deep 或 nap。`);
+}
+
+function buildDreamCronEntry(time: string): string {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(time);
+  if (!match) throw new Error(`无效时间：${time}，格式应为 HH:mm。`);
+  const hour = Number.parseInt(match[1], 10);
+  const minute = Number.parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) throw new Error(`无效时间：${time}，小时应为 0-23，分钟应为 0-59。`);
+  const nodePath = process.execPath;
+  const cliPath = path.resolve(process.argv[1] ?? 'dist/index.js');
+  return `${minute} ${hour} * * * cd ${shellQuote(process.cwd())} && ${shellQuote(nodePath)} ${shellQuote(cliPath)} dream --mode deep --scheduled >> "$HOME/.neo-agent/dream/cron.log" 2>&1`;
+}
+
+async function buildNextCrontab(entry: string): Promise<string> {
+  const current = await readCrontab();
+  const start = '# neo-agent deep dream start';
+  const end = '# neo-agent deep dream end';
+  const block = `${start}\n${entry}\n${end}`;
+  const pattern = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
+  const trimmed = current.trimEnd();
+  if (pattern.test(current)) return `${current.replace(pattern, block).trimEnd()}\n`;
+  return `${trimmed ? `${trimmed}\n` : ''}${block}\n`;
+}
+
+async function readCrontab(): Promise<string> {
+  return runProcess('crontab', ['-l']).catch(() => '');
+}
+
+async function installCrontab(content: string): Promise<void> {
+  await runProcess('crontab', ['-'], content);
+}
+
+async function runProcess(command: string, args: string[], stdin?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += String(chunk); });
+    child.stderr.on('data', chunk => { stderr += String(chunk); });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr.trim() || `${command} exited ${code}`));
+    });
+    if (stdin) child.stdin.end(stdin);
+    else child.stdin.end();
+  });
+}
+
+function shellQuote(input: string): string {
+  return `'${input.replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function readStdinIfNonInteractive(): Promise<string | undefined> {
   if (process.stdin.isTTY) return undefined;
   let input = '';
@@ -1208,6 +1292,7 @@ function formatDreamReport(input: DreamReportSummary & { report: DreamReport }):
   const lines = [
     `${chalk.cyan(input.id)}  ${input.ts}`,
     chalk.gray(input.path),
+    `模式：${input.mode}`,
     `状态：${input.appliedAt ? `已采纳 ${input.appliedAt}` : (input.dryRun ? '待采纳' : '已执行')}`,
     `摘要：${input.summary}`,
     '',
@@ -1215,7 +1300,8 @@ function formatDreamReport(input: DreamReportSummary & { report: DreamReport }):
   ];
   if (input.report.plan.upserts.length === 0) lines.push(chalk.gray('(无)'));
   for (const item of input.report.plan.upserts) {
-    lines.push(`- [${item.category}] ${item.content}`);
+    const tier = item.tier ?? (input.mode === 'nap' ? 'short_term' : 'long_term');
+    lines.push(`- [${item.category}/${tier}] ${item.content}`);
     if (item.reason) lines.push(chalk.gray(`  原因：${item.reason}`));
   }
   lines.push('', '归档建议：');
@@ -1227,6 +1313,9 @@ function formatDreamReport(input: DreamReportSummary & { report: DreamReport }):
   lines.push('', '灵感：');
   if (input.report.plan.insights.length === 0) lines.push(chalk.gray('(无)'));
   for (const item of input.report.plan.insights) lines.push(`- ${item}`);
+  lines.push('', 'SOUL.md 建议：');
+  if (input.report.plan.soulUpdates.length === 0) lines.push(chalk.gray('(无)'));
+  for (const item of input.report.plan.soulUpdates) lines.push(`- ${item}`);
   return lines.join('\n');
 }
 

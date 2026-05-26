@@ -97,6 +97,7 @@ export type ToolPairRecord = {
 export type MemoryBackend = 'local' | 'openviking' | 'hybrid';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 export type MemoryCategory = 'preference' | 'project_fact' | 'workflow' | 'session_summary';
+export type MemoryTier = 'long_term' | 'short_term';
 export type MemoryOrigin = 'manual' | 'session' | 'agent' | 'imported' | 'openviking';
 export type MemoryStatus = 'active' | 'archived';
 export type WebSearchDepth = 'basic' | 'advanced';
@@ -141,6 +142,8 @@ export type AppConfig = {
     backend: MemoryBackend;
     openVikingUrl: string;
     maxHits: number;
+    longTermMaxHits: number;
+    shortTermMaxHits: number;
   };
   dreaming: {
     enabled: boolean;
@@ -150,6 +153,11 @@ export type AppConfig = {
     transcriptTailLines: number;
     maxMemories: number;
     modelKind: TextModelKind;
+    time: string;
+    napEnabled: boolean;
+    napIdleMinutes: number;
+    napLookbackHours: number;
+    shortTermTtlDays: number;
   };
   web: {
     provider: 'tavily';
@@ -241,6 +249,7 @@ export type MemoryRecord = {
   id: string;
   uri: string;
   category: MemoryCategory;
+  tier: MemoryTier;
   content: string;
   tags: string[];
   origin: MemoryOrigin;
@@ -249,12 +258,24 @@ export type MemoryRecord = {
   createdAt: string;
   updatedAt: string;
   lastAccessedAt?: string;
+  expiresAt?: string;
   metadata?: Record<string, unknown>;
 };
 
 export type MemoryHit = MemoryRecord & {
   score: number;
   source: 'local' | 'openviking';
+};
+
+export type RecallExpansion = {
+  seedId: string;
+  seedUri: string;
+  reason: string;
+  fragments: Array<{
+    source: 'memory' | 'transcript' | 'dream_report';
+    title: string;
+    content: string;
+  }>;
 };
 
 export type Skill = {
@@ -319,6 +340,7 @@ export type AgentResponse = {
   skillSuggestion?: SkillSuggestion;
   skillImprovementSuggestion?: SkillImprovementSuggestion;
   memories: MemoryHit[];
+  recallExpansions?: RecallExpansion[];
   skills: Skill[];
 };
 

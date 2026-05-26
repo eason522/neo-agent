@@ -146,19 +146,30 @@ neo doctor
 整理记忆和灵感：
 
 ```bash
-neo dream --dry-run
-neo dream --force --sessions 5
+neo dream --mode deep --dry-run
+neo dream --mode deep --force --sessions 5
+neo dream --mode nap
+neo dream install-cron --time 12:00 --dry-run
 ```
 
-默认不会自动调用模型做 dreaming。需要定时整理时，可在环境变量中开启：
+dreaming 分为两层：
+
+- deep dreaming：深度梦境，整理长期记忆、归档低价值记忆、晋升短期记忆、提炼灵感，并可维护 `SOUL.md` 的受控 dreaming 区块。
+- nap：浅睡眠，整理最近 1-2 天 transcript 和近期上下文，写入可过期的短期记忆。
+
+长期记忆和短期记忆会分区注入聊天上下文。neo 每轮不会全量注入记忆，而是按用户输入检索后分为 `# 长期记忆` 和 `# 短期记忆`；默认长期 4 条、短期 4 条，总上限 8 条。短期记忆带 `expiresAt`，过期后不再默认注入。
+
+默认不会自动调用 deep dreaming。需要定时整理时，可在环境变量中开启：
 
 ```bash
 export NEO_AGENT_DREAM_ENABLED=1
 export NEO_AGENT_DREAM_MIN_HOURS=24
 export NEO_AGENT_DREAM_MIN_SESSIONS=5
+export NEO_AGENT_DREAM_TIME=12:00
+export NEO_AGENT_NAP_IDLE_MINUTES=120
 ```
 
-dream 报告写入 `~/.neo-agent/dream/reports/`，状态写入 `~/.neo-agent/dream/state.json`。
+`neo dream install-cron --time 12:00` 会安装用户级 crontab，在每天 12:00 运行 deep dreaming。交互式 neo 运行时默认开启 nap，空闲超过 `NEO_AGENT_NAP_IDLE_MINUTES` 后触发。dream 报告写入 `~/.neo-agent/dream/reports/`，状态写入 `~/.neo-agent/dream/state.json`。
 
 OpenViking 主存储诊断和迁移：
 

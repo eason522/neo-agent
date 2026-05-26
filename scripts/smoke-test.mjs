@@ -790,6 +790,7 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
     id,
     uri: `viking://user/memories/2026-05-25/${id}`,
     category: options.category ?? 'preference',
+    tier: options.tier,
     content,
     tags: options.tags ?? [],
     origin: options.origin ?? 'manual',
@@ -797,6 +798,7 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
     status: options.status ?? 'active',
     createdAt: options.createdAt ?? isoDaysAgo(options.daysAgo ?? 0),
     updatedAt: options.updatedAt ?? isoDaysAgo(options.daysAgo ?? 0),
+    expiresAt: options.expiresAt,
     metadata: options.metadata
   });
   await mkdir(path.join(memoryHome, 'memory'), { recursive: true });
@@ -817,6 +819,11 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
         category: 'workflow',
         tags: ['回答风格']
       }),
+      record('expired-short-term', 'neo 联网搜索 上下文 这是一条已过期短期记忆。', {
+        tier: 'short_term',
+        expiresAt: isoDaysAgo(1),
+        tags: ['联网搜索', '上下文']
+      }),
       record('archived-exact', '归档：neo 上下文 联网搜索。', {
         status: 'archived',
         tags: ['联网搜索', '上下文']
@@ -830,6 +837,7 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
     throw new Error(`强相关记忆应该排第一：${JSON.stringify(webHits.map(hit => ({ id: hit.id, score: hit.score })))}`);
   }
   if (webHits.some(hit => hit.id === 'archived-exact')) throw new Error(`归档记忆不应出现在搜索结果：${JSON.stringify(webHits)}`);
+  if (webHits.some(hit => hit.id === 'expired-short-term')) throw new Error(`过期短期记忆不应出现在搜索结果：${JSON.stringify(webHits)}`);
   const weakIndex = webHits.findIndex(hit => hit.id === 'weak-pinned');
   const exactIndex = webHits.findIndex(hit => hit.id === 'exact-web-context');
   if (weakIndex >= 0 && weakIndex < exactIndex) throw new Error(`弱相关置顶记忆不应压过强相关记忆：${JSON.stringify(webHits)}`);
@@ -839,6 +847,71 @@ test('LocalMemory 搜索排序优先强相关并过滤归档记忆', async () =>
     throw new Error(`分类和内容共同命中的 workflow 记忆应该排第一：${JSON.stringify(workflowHits.map(hit => ({ id: hit.id, score: hit.score })))}`);
   }
 
+  await rm(memoryHome, { recursive: true, force: true });
+});
+
+test('MemoryService 会对模糊长期记忆做二段式回忆展开', async () => {
+  const { MemoryService } = await import(pathToFileURL(path.join(root, 'dist', 'memory', 'memoryService.js')).href);
+  const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
+  const memoryHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-recall-expansion-'));
+  const config = defaultConfig();
+  config.homeDir = memoryHome;
+  config.memory.backend = 'local';
+  const transcriptPath = path.join(memoryHome, 'transcript.jsonl');
+  await writeFile(transcriptPath, [
+    JSON.stringify({ type: 'user', content: '我们在讨论 recall expansion。' }),
+    JSON.stringify({ type: 'assistant', content: '应该把模糊长期记忆展开成完整上下文。' })
+  ].join('\n'));
+  await mkdir(path.join(memoryHome, 'dream', 'reports'), { recursive: true });
+  await writeFile(path.join(memoryHome, 'dream', 'reports', '2026-05-26.json'), JSON.stringify({
+    id: 'dream_recall',
+    plan: {
+      summary: '二段式回忆展开很重要。',
+      insights: ['先想起线索，再沿线索补完整背景。']
+    }
+  }));
+  await mkdir(path.join(memoryHome, 'memory'), { recursive: true });
+  const old = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const now = new Date().toISOString();
+  await writeFile(path.join(memoryHome, 'memory', 'memories.json'), JSON.stringify({
+    version: 2,
+    records: [{
+      id: 'seed',
+      uri: 'viking://user/default/memories/preferences/seed',
+      category: 'preference',
+      tier: 'long_term',
+      content: '用户提过回忆展开。',
+      tags: ['recall', 'expansion'],
+      origin: 'agent',
+      pinned: false,
+      status: 'active',
+      createdAt: old,
+      updatedAt: old,
+      metadata: { sourceTranscript: transcriptPath, reportId: 'dream_recall' }
+    }, {
+      id: 'related',
+      uri: 'viking://user/default/memories/workflows/related',
+      category: 'workflow',
+      tier: 'long_term',
+      content: '二段式 recall expansion：先命中记忆碎片，再回看关联记忆、transcript 和 dream report。',
+      tags: ['recall', 'expansion'],
+      origin: 'agent',
+      pinned: false,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now
+    }]
+  }, null, 2));
+  const memory = new MemoryService(config);
+  const hits = await memory.search('recall expansion 回忆展开');
+  const seed = hits.find(hit => hit.id === 'seed');
+  if (!seed) throw new Error(`应命中 seed 记忆：${JSON.stringify(hits)}`);
+  const expansions = await memory.expandRecall('recall expansion 回忆展开', [seed]);
+  if (expansions.length !== 1) throw new Error(`应产生回忆展开：${JSON.stringify(expansions)}`);
+  const text = JSON.stringify(expansions);
+  assertIncludes(text, 'related');
+  assertIncludes(text, '模糊长期记忆展开成完整上下文');
+  assertIncludes(text, '先想起线索');
   await rm(memoryHome, { recursive: true, force: true });
 });
 
@@ -972,6 +1045,9 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
   const { MemoryService } = await import(pathToFileURL(path.join(root, 'dist', 'memory', 'memoryService.js')).href);
   const { defaultConfig } = await import(pathToFileURL(path.join(root, 'dist', 'config.js')).href);
   const dreamHome = await mkdtemp(path.join(os.tmpdir(), 'neo-agent-dream-'));
+  const oldCwd = process.cwd();
+  process.chdir(dreamHome);
+  await writeFile(path.join(dreamHome, 'SOUL.md'), '# neo 的灵魂\n\n原始人格核心。\n');
   const config = defaultConfig();
   config.homeDir = dreamHome;
   config.memory.backend = 'local';
@@ -986,8 +1062,41 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
   let modelCalls = 0;
   const models = {
     get: () => ({
-      chat: async () => {
+      chat: async request => {
         modelCalls += 1;
+        const prompt = request.messages.at(-1)?.content ?? '';
+        if (prompt.includes('mode=nap')) {
+          return JSON.stringify({
+            summary: 'nap 整理出一个近期卡点。',
+            upserts: [{
+              category: 'session_summary',
+              content: '最近 48 小时内，用户正在推进记忆和梦境分层设计，重点关注短期记忆不要污染长期人格。',
+              tags: ['nap', 'memory'],
+              pinned: false,
+              reason: '这是近期连续任务上下文。'
+            }],
+            archives: [],
+            insights: ['如果该主题持续出现，deep dreaming 应把它晋升为长期协作偏好。'],
+            soulUpdates: []
+          });
+        }
+        const shortTermMatch = prompt.match(/"id":\s*"([^"]+)"[\s\S]{0,800}最近 48 小时内，用户正在推进记忆和梦境分层设计/);
+        if (shortTermMatch) {
+          return JSON.stringify({
+            summary: 'deep 将短期记忆晋升为长期协作偏好。',
+            upserts: [{
+              category: 'workflow',
+              tier: 'long_term',
+              content: '用户正在推进 neo 的记忆和梦境系统，明确要求短期记忆不能污染长期人格，但长期记忆也不能忽略最近上下文。',
+              tags: ['memory', 'dream'],
+              pinned: false,
+              reason: '短期记忆中的主题已经形成稳定产品方向，值得晋升为长期记忆。'
+            }],
+            archives: [{ id: shortTermMatch[1], reason: '短期记忆已晋升为长期记忆。' }],
+            insights: ['短期记忆晋升应保留原始短期记录的归档链路。'],
+            soulUpdates: []
+          });
+        }
         return JSON.stringify({
           summary: '发现一条可长期复用的工作流。',
           upserts: [{
@@ -998,13 +1107,15 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
             reason: '这是用户反复强调的开发原则。'
           }],
           archives: [{ id: weak.id, reason: '内容过短，缺少可复用上下文。' }],
-          insights: ['dreaming 可以把重复反馈沉淀为开发检查清单。']
+          insights: ['dreaming 可以把重复反馈沉淀为开发检查清单。'],
+          soulUpdates: ['用户重视记忆和梦境分层，neo 需要区分长期默契与近期上下文。']
         });
       }
     })
   };
   const dreams = new DreamService(config, models, memory);
-  const dryRun = await dreams.run({ dryRun: true, force: true });
+  try {
+  const dryRun = await dreams.run({ mode: 'deep', dryRun: true, force: true });
   if (dryRun.status !== 'completed') throw new Error(`dream dry-run 应完成：${JSON.stringify(dryRun)}`);
   if (!dryRun.reportPath) throw new Error('dream dry-run 应写入报告。');
   if (modelCalls !== 1) throw new Error(`dry-run 应调用一次模型：${modelCalls}`);
@@ -1017,6 +1128,11 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
   if (applied.status !== 'completed') throw new Error(`dream apply 应完成：${JSON.stringify(applied)}`);
   const hits = await memory.search('CC-Source 用户反馈');
   assertIncludes(hits.map(hit => hit.content).join('\n'), '处理用户反馈');
+  if (hits[0]?.tier !== 'long_term') throw new Error(`deep dream 默认应写入长期记忆：${JSON.stringify(hits[0])}`);
+  const soul = await readFile(path.join(dreamHome, 'SOUL.md'), 'utf8');
+  assertIncludes(soul, '<!-- neo:dreaming:start -->');
+  assertIncludes(soul, '用户重视记忆和梦境分层');
+  assertIncludes(soul, '原始人格核心');
   const archived = await memory.local.find(weak.id);
   if (archived?.status !== 'archived') throw new Error(`apply 应归档报告里的记忆：${JSON.stringify(archived)}`);
   const appliedAgain = await dreams.applyReport(reports[0].id);
@@ -1029,11 +1145,46 @@ test('DreamService 支持锁、报告回放、人工采纳和记忆复查', asyn
     throw new Error(`记忆复查应该发现重复记忆：${JSON.stringify(review)}`);
   }
 
+  const nap = await dreams.run({ mode: 'nap', dryRun: false, force: true });
+  if (nap.status !== 'completed') throw new Error(`nap 应完成：${JSON.stringify(nap)}`);
+  const napHits = await memory.search('梦境分层 近期上下文');
+  const napMemory = napHits.find(hit => hit.tier === 'short_term');
+  if (!napMemory?.expiresAt) throw new Error(`nap 应写入带 expiresAt 的短期记忆：${JSON.stringify(napHits)}`);
+
+  const deepAfterNap = await dreams.run({ mode: 'deep', dryRun: false, force: true });
+  if (deepAfterNap.status !== 'completed') throw new Error(`deep 应能在 nap 后继续运行：${JSON.stringify(deepAfterNap)}`);
+  const archivedNapMemory = await memory.local.find(napMemory.id);
+  if (archivedNapMemory?.status !== 'archived') throw new Error(`deep 应归档已晋升的短期记忆：${JSON.stringify(archivedNapMemory)}`);
+  const promotedHits = await memory.search('短期记忆 污染 长期人格 最近上下文');
+  const promoted = promotedHits.find(hit => hit.tier === 'long_term' && hit.content.includes('短期记忆不能污染长期人格'));
+  if (!promoted) throw new Error(`deep 应把短期记忆晋升为长期记忆：${JSON.stringify(promotedHits)}`);
+  const state = JSON.parse(await readFile(path.join(dreamHome, 'dream', 'state.json'), 'utf8'));
+  if (state.baselineCompleted !== true || typeof state.lastDeepDreamedAt !== 'string' || typeof state.memoryWatermark !== 'string') {
+    throw new Error(`deep 应写入 baseline 和 watermark state：${JSON.stringify(state)}`);
+  }
+  const deepReports = await dreams.listReports(10);
+  const latestDeep = deepReports.find(report => report.mode === 'deep' && !report.dryRun && !report.appliedAt);
+  const latestDeepShown = latestDeep ? await dreams.showReport(latestDeep.id) : undefined;
+  if (latestDeepShown?.report.baseline !== false) {
+    throw new Error(`baseline 完成后的 deep 报告应标记 baseline=false：${JSON.stringify(latestDeepShown?.report)}`);
+  }
+
   await mkdir(path.join(dreamHome, 'dream'), { recursive: true });
   await writeFile(path.join(dreamHome, 'dream', 'dream.lock'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
   const locked = await dreams.run({ dryRun: true, force: true });
   if (locked.status !== 'skipped' || !locked.reason.includes('正在运行')) throw new Error(`dream 锁应阻止并发：${JSON.stringify(locked)}`);
+  } finally {
+  process.chdir(oldCwd);
   await rm(dreamHome, { recursive: true, force: true });
+  }
+});
+
+test('dream install-cron dry-run 会生成用户级 deep dreaming crontab', async () => {
+  const result = await run(['dream', 'install-cron', '--time', '12:00', '--dry-run']);
+  assertIncludes(result.stdout, '# neo-agent deep dream start');
+  assertIncludes(result.stdout, '0 12 * * *');
+  assertIncludes(result.stdout, 'dream --mode deep --scheduled');
+  assertIncludes(result.stdout, '# neo-agent deep dream end');
 });
 
 test('NeoAgent 会上报路由、上下文和模型阶段状态', async () => {
@@ -1101,6 +1252,7 @@ test('系统提示会把命中记忆的时间戳交给模型', async () => {
       id: 'mem-time',
       uri: 'viking://user/default/memories/preferences/mem-time',
       category: 'preference',
+      tier: 'long_term',
       content: '用户喜欢直接说结论。',
       tags: ['style'],
       origin: 'manual',
@@ -1110,6 +1262,31 @@ test('系统提示会把命中记忆的时间戳交给模型', async () => {
       updatedAt: '2026-05-02T09:30:00.000Z',
       score: 2,
       source: 'local'
+    }, {
+      id: 'mem-short',
+      uri: 'viking://agent/neo-agent/memories/session_summaries/mem-short',
+      category: 'session_summary',
+      tier: 'short_term',
+      content: '最近正在推进记忆和梦境分层。',
+      tags: ['nap'],
+      origin: 'agent',
+      pinned: false,
+      status: 'active',
+      createdAt: '2026-05-25T08:00:00.000Z',
+      updatedAt: '2026-05-25T09:30:00.000Z',
+      expiresAt: '2026-06-08T09:30:00.000Z',
+      score: 3,
+      source: 'local'
+    }],
+    recallExpansions: [{
+      seedId: 'mem-time',
+      seedUri: 'viking://user/default/memories/preferences/mem-time',
+      reason: '命中记忆较短，可能只是线索',
+      fragments: [{
+        source: 'dream_report',
+        title: 'dream_recall',
+        content: 'summary: 用户曾讨论二段式回忆展开。'
+      }]
     }],
     skills: [],
     mcpTools: [],
@@ -1119,7 +1296,13 @@ test('系统提示会把命中记忆的时间戳交给模型', async () => {
   });
   assertIncludes(prompt, 'createdAt=2026-05-01T08:00:00.000Z');
   assertIncludes(prompt, 'updatedAt=2026-05-02T09:30:00.000Z');
+  assertIncludes(prompt, '# 长期记忆');
+  assertIncludes(prompt, '# 短期记忆');
+  assertIncludes(prompt, '# 回忆展开');
   assertIncludes(prompt, '用户喜欢直接说结论。');
+  assertIncludes(prompt, '最近正在推进记忆和梦境分层。');
+  assertIncludes(prompt, '用户曾讨论二段式回忆展开。');
+  assertIncludes(prompt, 'expiresAt=2026-06-08T09:30:00.000Z');
 });
 
 test('工具日志摘要不会记录完整查询和 MCP 参数', async () => {

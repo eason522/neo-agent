@@ -1,8 +1,9 @@
 import os from 'node:os';
-import type { MemoryHit, Skill } from '../types.js';
+import type { MemoryHit, RecallExpansion, Skill } from '../types.js';
 
 type SystemPromptInput = {
   memories: MemoryHit[];
+  recallExpansions?: RecallExpansion[];
   skills: Skill[];
   mcpTools: string[];
   soul: string;
@@ -23,10 +24,30 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     getLanguageSection(),
     getSoulSection(input.soul),
     getMemorySection(input.memories),
+    getRecallExpansionSection(input.recallExpansions ?? []),
     getSkillsSection(input.skills),
     getEnvironmentSection(cwd, input.modelName),
     getSystemRemindersSection()
   ].filter(Boolean).join('\n\n');
+}
+
+function getRecallExpansionSection(expansions: RecallExpansion[]): string {
+  if (expansions.length === 0) return '';
+  return [
+    '# 回忆展开',
+    ...bullets([
+      '下面内容是从命中的长期记忆继续追溯出来的补充上下文。它用于帮助回忆完整背景，但不能覆盖当前项目事实；涉及代码、文件或状态时仍需核实。',
+      ...expansions.flatMap(expansion => [
+        `seed=${expansion.seedId} uri=${expansion.seedUri}；原因：${expansion.reason}`,
+        ...expansion.fragments.map(fragment => `  - (${fragment.source}) ${fragment.title}: ${truncateMemoryFragment(fragment.content)}`)
+      ])
+    ])
+  ].join('\n');
+}
+
+function truncateMemoryFragment(input: string): string {
+  const normalized = input.replace(/\s+/g, ' ').trim();
+  return normalized.length > 1200 ? `${normalized.slice(0, 1200)}...` : normalized;
 }
 
 function getIntroSection(): string {
@@ -143,6 +164,7 @@ function getSoulSection(soul: string): string {
 function getMemorySection(memories: MemoryHit[]): string {
   const memoryRules = [
     '记忆类型固定为 preference、project_fact、workflow、session_summary。',
+    '记忆分为 long_term 和 short_term：长期记忆更稳定，短期记忆只代表近期上下文。',
     'preference 记录用户偏好、沟通方式、长期目标和协作习惯。',
     'project_fact 记录当前项目中不容易从代码直接推导出的目标、约束、决策背景和时间点。',
     'workflow 记录用户认可的重复流程、检查清单和工作方法。',
@@ -162,18 +184,32 @@ function getMemorySection(memories: MemoryHit[]): string {
     ].join('\n');
   }
 
+  const longTerm = memories.filter(memory => memory.tier !== 'short_term');
+  const shortTerm = memories.filter(memory => memory.tier === 'short_term');
   return [
-    '# 相关记忆',
+    '# 记忆',
     ...bullets([
       ...memoryRules,
-      '本次命中的记忆：',
-      ...memories.map(hit => {
-        const pin = hit.pinned ? '置顶，' : '';
-        const tags = hit.tags.length > 0 ? `，tags=${hit.tags.join(',')}` : '';
-        const timestamps = `createdAt=${hit.createdAt}，updatedAt=${hit.updatedAt}`;
-        return `(${hit.source}，${pin}${hit.category}，${timestamps}${tags}) ${hit.content}`;
-      })
-    ])
+      '下面按长期记忆和短期记忆分区。长期记忆更稳定；短期记忆只代表近期上下文，不能直接覆盖长期人格、偏好或事实判断。'
+    ]),
+    formatMemoryGroup('长期记忆', longTerm),
+    formatMemoryGroup('短期记忆', shortTerm)
+  ].filter(Boolean).join('\n\n');
+}
+
+function formatMemoryGroup(title: string, memories: MemoryHit[]): string {
+  if (memories.length === 0) {
+    return [`# ${title}`, ...bullets(['本轮没有命中的相关记忆。'])].join('\n');
+  }
+  return [
+    `# ${title}`,
+    ...bullets(memories.map(hit => {
+      const pin = hit.pinned ? '置顶，' : '';
+      const tags = hit.tags.length > 0 ? `，tags=${hit.tags.join(',')}` : '';
+      const expires = hit.expiresAt ? `，expiresAt=${hit.expiresAt}` : '';
+      const timestamps = `createdAt=${hit.createdAt}，updatedAt=${hit.updatedAt}${expires}`;
+      return `(${hit.source}，${pin}${hit.category}，${timestamps}${tags}) ${hit.content}`;
+    }))
   ].join('\n');
 }
 

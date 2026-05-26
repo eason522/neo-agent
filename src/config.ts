@@ -41,7 +41,9 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   memory: z.object({
     backend: z.enum(['local', 'openviking', 'hybrid']),
     openVikingUrl: z.string(),
-    maxHits: z.number().int().positive()
+    maxHits: z.number().int().positive(),
+    longTermMaxHits: z.number().int().positive(),
+    shortTermMaxHits: z.number().int().positive()
   }),
   dreaming: z.object({
     enabled: z.boolean(),
@@ -50,7 +52,12 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
     maxSessions: z.number().int().positive(),
     transcriptTailLines: z.number().int().positive(),
     maxMemories: z.number().int().positive(),
-    modelKind: z.enum(['main', 'small'])
+    modelKind: z.enum(['main', 'small']),
+    time: z.string(),
+    napEnabled: z.boolean(),
+    napIdleMinutes: z.number().int().positive(),
+    napLookbackHours: z.number().int().positive(),
+    shortTermTtlDays: z.number().int().positive()
   }),
   web: z.object({
     provider: z.literal('tavily'),
@@ -217,7 +224,9 @@ export function defaultConfig(): AppConfig {
     memory: {
       backend: (process.env.NEO_AGENT_MEMORY_BACKEND as AppConfig['memory']['backend']) || 'hybrid',
       openVikingUrl: process.env.NEO_AGENT_OPENVIKING_URL || 'http://localhost:1933',
-      maxHits: 6
+      maxHits: Number.parseInt(process.env.NEO_AGENT_MEMORY_MAX_HITS || '8', 10),
+      longTermMaxHits: Number.parseInt(process.env.NEO_AGENT_MEMORY_LONG_TERM_MAX_HITS || '4', 10),
+      shortTermMaxHits: Number.parseInt(process.env.NEO_AGENT_MEMORY_SHORT_TERM_MAX_HITS || '4', 10)
     },
     dreaming: {
       enabled: process.env.NEO_AGENT_DREAM_ENABLED === '1',
@@ -226,7 +235,12 @@ export function defaultConfig(): AppConfig {
       maxSessions: Number.parseInt(process.env.NEO_AGENT_DREAM_MAX_SESSIONS || '5', 10),
       transcriptTailLines: Number.parseInt(process.env.NEO_AGENT_DREAM_TRANSCRIPT_TAIL_LINES || '80', 10),
       maxMemories: Number.parseInt(process.env.NEO_AGENT_DREAM_MAX_MEMORIES || '80', 10),
-      modelKind: (process.env.NEO_AGENT_DREAM_MODEL_KIND as AppConfig['dreaming']['modelKind']) || 'main'
+      modelKind: (process.env.NEO_AGENT_DREAM_MODEL_KIND as AppConfig['dreaming']['modelKind']) || 'main',
+      time: process.env.NEO_AGENT_DREAM_TIME || '12:00',
+      napEnabled: process.env.NEO_AGENT_NAP_ENABLED !== '0',
+      napIdleMinutes: Number.parseInt(process.env.NEO_AGENT_NAP_IDLE_MINUTES || '120', 10),
+      napLookbackHours: Number.parseInt(process.env.NEO_AGENT_NAP_LOOKBACK_HOURS || '48', 10),
+      shortTermTtlDays: Number.parseInt(process.env.NEO_AGENT_SHORT_TERM_TTL_DAYS || '14', 10)
     },
     web: {
       provider: 'tavily',
@@ -437,6 +451,12 @@ function applyRuntimeEnvOverrides(config: AppConfig): void {
   }
   if (process.env.NEO_AGENT_OPENVIKING_URL) config.memory.openVikingUrl = process.env.NEO_AGENT_OPENVIKING_URL;
   if (process.env.NEO_AGENT_WORKSPACE_DIR) config.workspace.dir = process.env.NEO_AGENT_WORKSPACE_DIR;
+  applyPositiveIntegerEnvOverride(config.memory, 'maxHits', process.env.NEO_AGENT_MEMORY_MAX_HITS);
+  applyPositiveIntegerEnvOverride(config.memory, 'longTermMaxHits', process.env.NEO_AGENT_MEMORY_LONG_TERM_MAX_HITS);
+  applyPositiveIntegerEnvOverride(config.memory, 'shortTermMaxHits', process.env.NEO_AGENT_MEMORY_SHORT_TERM_MAX_HITS);
+  applyPositiveIntegerEnvOverride(config.dreaming, 'napIdleMinutes', process.env.NEO_AGENT_NAP_IDLE_MINUTES);
+  applyPositiveIntegerEnvOverride(config.dreaming, 'napLookbackHours', process.env.NEO_AGENT_NAP_LOOKBACK_HOURS);
+  applyPositiveIntegerEnvOverride(config.dreaming, 'shortTermTtlDays', process.env.NEO_AGENT_SHORT_TERM_TTL_DAYS);
   applyPositiveIntegerEnvOverride(config.models.main, 'maxTokens', process.env.NEO_AGENT_MAIN_MAX_TOKENS);
   applyPositiveIntegerEnvOverride(config.models.small, 'maxTokens', process.env.NEO_AGENT_SMALL_MAX_TOKENS);
   applyPositiveIntegerEnvOverride(config.models.vision, 'maxTokens', process.env.NEO_AGENT_VISION_MAX_TOKENS);

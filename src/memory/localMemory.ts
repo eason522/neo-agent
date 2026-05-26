@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { AppConfig, MemoryCategory, MemoryHit, MemoryOrigin, MemoryRecord, MemoryStatus } from '../types.js';
+import type { AppConfig, MemoryCategory, MemoryHit, MemoryOrigin, MemoryRecord, MemoryStatus, MemoryTier } from '../types.js';
 import { readJsonFile, stableId, writeJsonFile } from '../utils/fs.js';
 
 type MemoryStore = {
@@ -14,16 +14,20 @@ type LegacyMemoryRecord = Partial<MemoryRecord> & {
 type MemoryWriteInput = {
   content: string;
   category?: MemoryCategory;
+  tier?: MemoryTier;
   tags?: string[];
   origin?: MemoryOrigin;
   pinned?: boolean;
+  expiresAt?: string;
   metadata?: Record<string, unknown>;
 };
 
 type MemoryListOptions = {
   limit?: number;
   category?: MemoryCategory;
+  tier?: MemoryTier;
   includeArchived?: boolean;
+  includeExpired?: boolean;
 };
 
 export class LocalMemory {
@@ -39,6 +43,7 @@ export class LocalMemory {
     const normalizedQuery = normalizeText(query);
     return store.records
       .filter(record => record.status === 'active')
+      .filter(record => !isMemoryExpired(record))
       .map(record => ({
         ...record,
         score: scoreRecord(record, queryTerms, normalizedQuery),
@@ -56,6 +61,7 @@ export class LocalMemory {
       id: stableId('mem'),
       uri: buildMemoryUri(payload.category ?? 'preference', stableId('item')),
       category: payload.category ?? 'preference',
+      tier: payload.tier ?? 'long_term',
       content: payload.content.trim(),
       tags: normalizeTags(payload.tags ?? []),
       origin: payload.origin ?? 'manual',
@@ -63,6 +69,7 @@ export class LocalMemory {
       status: 'active',
       createdAt: now,
       updatedAt: now,
+      expiresAt: payload.expiresAt,
       metadata: payload.metadata
     };
     const store = await this.readStore();
@@ -76,12 +83,14 @@ export class LocalMemory {
     const store = await this.readStore();
     return store.records
       .filter(record => resolved.includeArchived || record.status === 'active')
+      .filter(record => resolved.includeExpired || !isMemoryExpired(record))
       .filter(record => !resolved.category || record.category === resolved.category)
+      .filter(record => !resolved.tier || record.tier === resolved.tier)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, resolved.limit ?? 20);
   }
 
-  async update(idOrUri: string, updates: Partial<Pick<MemoryRecord, 'content' | 'category' | 'tags' | 'pinned' | 'status' | 'metadata'>>): Promise<MemoryRecord | undefined> {
+  async update(idOrUri: string, updates: Partial<Pick<MemoryRecord, 'content' | 'category' | 'tier' | 'tags' | 'pinned' | 'status' | 'expiresAt' | 'metadata'>>): Promise<MemoryRecord | undefined> {
     const store = await this.readStore();
     const index = store.records.findIndex(record => matchesRecord(record, idOrUri));
     if (index < 0) return undefined;
@@ -193,6 +202,7 @@ function normalizeRecord(raw: LegacyMemoryRecord): MemoryRecord | undefined {
     id: typeof raw.id === 'string' ? raw.id : stableId('mem'),
     uri: typeof raw.uri === 'string' ? raw.uri : `viking://user/memories/${createdAt.slice(0, 10)}/${stableId('item')}`,
     category: normalizeCategory(raw.category ?? categoryFromLegacyKind(raw.kind)),
+    tier: normalizeTier(raw.tier),
     content: raw.content.trim(),
     tags: normalizeTags(Array.isArray(raw.tags) ? raw.tags : []),
     origin: normalizeOrigin(raw.origin ?? sourceFromLegacyKind(raw.kind)),
@@ -201,6 +211,7 @@ function normalizeRecord(raw: LegacyMemoryRecord): MemoryRecord | undefined {
     createdAt,
     updatedAt,
     lastAccessedAt: typeof raw.lastAccessedAt === 'string' ? raw.lastAccessedAt : undefined,
+    expiresAt: typeof raw.expiresAt === 'string' ? raw.expiresAt : undefined,
     metadata: raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : undefined
   };
 }
@@ -215,10 +226,20 @@ function normalizeCategory(value: unknown): MemoryCategory {
     : 'preference';
 }
 
+function normalizeTier(value: unknown): MemoryTier {
+  return value === 'short_term' ? 'short_term' : 'long_term';
+}
+
 function normalizeOrigin(value: unknown): MemoryOrigin {
   return value === 'manual' || value === 'session' || value === 'agent' || value === 'imported' || value === 'openviking'
     ? value
     : 'manual';
+}
+
+export function isMemoryExpired(record: Pick<MemoryRecord, 'tier' | 'expiresAt'>, now = Date.now()): boolean {
+  if (record.tier !== 'short_term' || !record.expiresAt) return false;
+  const expiresAt = Date.parse(record.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt <= now;
 }
 
 function normalizeStatus(value: unknown): MemoryStatus {

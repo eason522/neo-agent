@@ -185,6 +185,8 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
   const history = await loadReplHistory(historyFile);
   let activeController: AbortController | undefined;
   let closed = false;
+  let napTimer: NodeJS.Timeout | undefined;
+  let napRunning = false;
   const rawModeWasEnabled = Boolean(input.isTTY && input.isRaw);
 
   const askQuestion: AskQuestion = async (prompt, signal) => readInteractiveInput({
@@ -222,6 +224,26 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
   output.write(enableKittyKeyboard);
   output.write(enableModifyOtherKeys);
   printBanner(terminalSupport);
+  const scheduleNap = (): void => {
+    if (napTimer) clearTimeout(napTimer);
+    if (!agent.config.dreaming.napEnabled) return;
+    napTimer = setTimeout(() => {
+      if (closed || activeController || napRunning) return;
+      napRunning = true;
+      output.write(`\n${chalk.gray('nap: 空闲超过阈值，开始整理近期短期记忆...')}\n`);
+      void agent.dreams.run({ mode: 'nap', dryRun: false, force: true }).then(result => {
+        if (result.status === 'skipped') output.write(`${chalk.gray(`nap 跳过：${result.reason}`)}\n`);
+        else output.write(`${chalk.green('nap 完成')} ${result.summary ?? ''}\n`);
+      }).catch(error => {
+        agent.logger.warn('nap.idle.error', { error: error instanceof Error ? error.message : String(error) });
+      }).finally(() => {
+        napRunning = false;
+        scheduleNap();
+      });
+    }, agent.config.dreaming.napIdleMinutes * 60_000);
+    napTimer.unref?.();
+  };
+  scheduleNap();
 
   try {
     while (!closed) {
@@ -230,6 +252,7 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
         history
       });
       const trimmed = line.trim();
+      scheduleNap();
       if (!trimmed) continue;
       if (trimmed === '/exit' || trimmed === '/quit') break;
       await saveReplHistory(historyFile, line);
@@ -241,11 +264,13 @@ async function startInteractiveRepl(agent: NeoAgent): Promise<void> {
         activeController = controller;
       });
       activeController = undefined;
+      scheduleNap();
     }
   } catch (error) {
     if (!isAbortError(error)) throw error;
   } finally {
     closed = true;
+    if (napTimer) clearTimeout(napTimer);
     agent.setToolEventHandler(undefined);
     agent.setMcpPermissionAsker(undefined);
     agent.setFilePermissionAsker(undefined);
@@ -1445,9 +1470,21 @@ async function handleCommand(agent: NeoAgent, line: string, state: ReplState, is
         }
         return true;
       }
+      if (subCommand === 'nap') {
+        const dryRun = dreamRest.includes('--dry-run');
+        const result = await agent.dreams.run({ mode: 'nap', dryRun, force: true });
+        if (result.status === 'skipped') console.log(chalk.gray(`nap 跳过：${result.reason}`));
+        else {
+          console.log(chalk.green(dryRun ? 'nap dry-run 完成' : 'nap 完成'));
+          console.log(`摘要：${result.summary}`);
+          console.log(`新增/更新建议：${result.upserts.length}，归档建议：${result.archives.length}，灵感：${result.insights.length}`);
+          if (result.reportPath) console.log(chalk.gray(result.reportPath));
+        }
+        return true;
+      }
       const dryRun = rest.includes('--dry-run');
       const force = rest.includes('--force') || !rest.includes('--scheduled');
-      const result = await agent.dreams.run({ dryRun, force });
+      const result = await agent.dreams.run({ mode: 'deep', dryRun, force });
       if (result.status === 'skipped') console.log(chalk.gray(`dream 跳过：${result.reason}`));
       else {
         console.log(chalk.green(dryRun ? 'dream dry-run 完成' : 'dream 完成'));
@@ -1527,7 +1564,7 @@ function printHelp(support: TerminalMultilineSupport): void {
     '/usage [天数]          查看模型 token 和成本统计',
     '/hooks                查看 hook 预留事件',
     '/agent <任务>         把聚焦任务交给小模型 sub-agent',
-    '/dream [--dry-run]    整理记忆并提炼灵感；支持 list/show/apply/review',
+    '/dream [--dry-run]    deep dreaming；支持 nap/list/show/apply/review',
     '/web search <查询词>  联网搜索',
     '/web extract <url>    提取网页正文',
     '/web map <url>        发现站点 URL',
@@ -1666,5 +1703,6 @@ function formatMemory(record: MemoryRecord): string {
 function formatMemorySummary(record: MemoryRecord): string {
   const pin = record.pinned ? '置顶 ' : '';
   const tags = record.tags.length > 0 ? ` #${record.tags.join(' #')}` : '';
-  return `${pin}${record.category} ${record.id}${tags}\n${chalk.gray(record.uri)}`;
+  const expires = record.expiresAt ? ` expires=${record.expiresAt}` : '';
+  return `${pin}${record.category}/${record.tier} ${record.id}${expires}${tags}\n${chalk.gray(record.uri)}`;
 }

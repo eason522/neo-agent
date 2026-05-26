@@ -321,12 +321,14 @@ export class NeoAgent {
       loadSoul(),
       useWebToolLoop ? Promise.resolve(undefined) : this.buildWebContext(input, options.signal)
     ]);
+    const recallExpansions = await this.memory.expandRecall(input, memories);
     const matchedSkills = this.skills.matchLoaded(input, allSkills);
     emitAgentStatus(options.onStatus, {
       stage: 'context',
-      message: `上下文已就绪：记忆 ${memories.length}，skills ${matchedSkills.length}，MCP tools ${mcpTools.length}`,
+      message: `上下文已就绪：记忆 ${memories.length}，回忆展开 ${recallExpansions.length}，skills ${matchedSkills.length}，MCP tools ${mcpTools.length}`,
       metadata: {
         memoryHits: memories.length,
+        recallExpansions: recallExpansions.length,
         matchedSkills: matchedSkills.length,
         mcpTools: mcpTools.length,
         hasVisionContext: Boolean(visionContext),
@@ -357,6 +359,7 @@ export class NeoAgent {
       modelKind: decision.modelKind,
       reason: decision.reason,
       memoryHits: memories.length,
+      recallExpansions: recallExpansions.length,
       matchedSkills: matchedSkills.length,
       mcpTools: mcpTools.length,
       hasVisionContext: Boolean(visionContext),
@@ -366,6 +369,7 @@ export class NeoAgent {
     const useToolLoop = true;
     const systemPrompt = this.withToolPrompt(buildSystemPrompt({
       memories,
+      recallExpansions,
       skills: matchedSkills,
       mcpTools,
       soul,
@@ -573,8 +577,9 @@ export class NeoAgent {
         modelKind: decision.modelKind,
         routerReason: decision.reason,
         visionContext,
-        memories,
-        skills: matchedSkills,
+      memories,
+      recallExpansions,
+      skills: matchedSkills,
         webContext,
         webToolCalls: safeWebToolCalls,
         mcpToolCalls: safeMcpToolCalls,
